@@ -7,7 +7,7 @@ tailwind_toolchain(
 
 npm_module(
     name = "lodash",
-    version = "4.17.21",
+    version = "4.17.23",
 )
 
 npm_module(
