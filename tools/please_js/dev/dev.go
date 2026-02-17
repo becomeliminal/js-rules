@@ -97,12 +97,6 @@ func Run(args Args) error {
 		return fmt.Errorf("failed to parse moduleconfig: %w", err)
 	}
 
-	// Build esbuild alias map: module names → absolute plz-out paths
-	alias, err := common.BuildAlias(moduleMap)
-	if err != nil {
-		return err
-	}
-
 	port := args.Port
 	if port == 0 {
 		port = 8080
@@ -123,10 +117,10 @@ func Run(args Args) error {
 		Format:      common.ParseFormat(args.Format),
 		Platform:    common.ParsePlatform(args.Platform),
 		Target:      api.ESNext,
-		LogLevel:    api.LogLevelWarning,
-		Alias:       alias,
-		Loader:      common.Loaders,
+		LogLevel: api.LogLevelWarning,
+		Loader:   common.Loaders,
 		Plugins: []api.Plugin{
+			common.ModuleResolvePlugin(moduleMap),
 			common.RawImportPlugin(),
 			buildTimerPlugin(),
 		},

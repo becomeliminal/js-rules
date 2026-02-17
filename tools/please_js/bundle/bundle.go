@@ -30,12 +30,6 @@ func Run(args Args) error {
 		return fmt.Errorf("failed to parse moduleconfig: %w", err)
 	}
 
-	// Build esbuild alias map: module names → absolute plz-out paths
-	alias, err := common.BuildAlias(moduleMap)
-	if err != nil {
-		return err
-	}
-
 	// Determine output: if Out has no directory component, ensure parent exists
 	outDir := filepath.Dir(args.Out)
 	if outDir != "" && outDir != "." {
@@ -55,9 +49,11 @@ func Run(args Args) error {
 		Target:      api.ESNext,
 		LogLevel:    api.LogLevelInfo,
 		External:    args.External,
-		Alias:       alias,
 		Loader:      common.Loaders,
-		Plugins:     []api.Plugin{common.RawImportPlugin()},
+		Plugins: []api.Plugin{
+			common.ModuleResolvePlugin(moduleMap),
+			common.RawImportPlugin(),
+		},
 		Define: map[string]string{
 			"process.env.NODE_ENV": `"production"`,
 		},
