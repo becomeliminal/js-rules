@@ -121,12 +121,15 @@ func Run(args Args) error {
 		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
 	}
 
+	format := common.ParseFormat(args.Format)
+
 	opts := api.BuildOptions{
 		EntryPoints: []string{args.Entry},
 		Outdir:      outdir,
 		Bundle:      true,
+		Splitting:   format == api.FormatESModule,
 		Write:       false,
-		Format:      common.ParseFormat(args.Format),
+		Format:      format,
 		Platform:    common.ParsePlatform(args.Platform),
 		Target:   api.ESNext,
 		LogLevel: api.LogLevelWarning,

@@ -72,12 +72,8 @@ func ModuleResolvePlugin(moduleMap map[string]string) api.Plugin {
 	return api.Plugin{
 		Name: "module-resolve",
 		Setup: func(build api.PluginBuild) {
-			build.OnResolve(api.OnResolveOptions{Filter: ".*"},
+			build.OnResolve(api.OnResolveOptions{Filter: "^[^./]"},
 				func(args api.OnResolveArgs) (api.OnResolveResult, error) {
-					// Skip relative and absolute paths
-					if len(args.Path) == 0 || args.Path[0] == '.' || args.Path[0] == '/' {
-						return api.OnResolveResult{}, nil
-					}
 
 					// Find longest matching module prefix
 					bestMatch := ""
