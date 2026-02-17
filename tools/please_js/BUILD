@@ -4,6 +4,7 @@ go_binary(
     deps = [
         "//third_party/go:go-flags",
         "//tools/please_js/bundle",
+        "//tools/please_js/dev",
         "//tools/please_js/resolve",
         "//tools/please_js/transpile",
     ],

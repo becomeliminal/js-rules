@@ -7,6 +7,7 @@ import (
 	"github.com/thought-machine/go-flags"
 
 	"tools/please_js/bundle"
+	"tools/please_js/dev"
 	"tools/please_js/resolve"
 	"tools/please_js/transpile"
 )
@@ -37,14 +38,24 @@ var opts = struct {
 		NoDev          bool   `long:"no-dev" description:"Exclude dev dependencies"`
 		SubincludePath string `long:"subinclude-path" default:"///js//build_defs:js" description:"Subinclude path for generated BUILD files"`
 	} `command:"resolve" alias:"r" description:"Generate npm_module BUILD files from package-lock.json"`
+
+	Dev struct {
+		Entry        string `short:"e" long:"entry" required:"true" description:"Entry point file"`
+		ModuleConfig string `short:"m" long:"moduleconfig" description:"Aggregated moduleconfig file"`
+		Servedir     string `short:"s" long:"servedir" default:"." description:"Directory to serve static files from"`
+		Port         int    `short:"p" long:"port" default:"8080" description:"HTTP port"`
+		Format       string `short:"f" long:"format" default:"esm" description:"Output format: esm, cjs, iife"`
+		Platform     string `long:"platform" default:"browser" description:"Target platform: browser, node"`
+	} `command:"dev" alias:"d" description:"Start dev server with live reload using esbuild"`
 }{
 	Usage: `
 please_js is the companion tool for the JavaScript/TypeScript Please build rules.
 
-It provides three main operations:
+It provides four main operations:
   - bundle:    Bundle JS/TS files using esbuild with moduleconfig-based dependency resolution
   - transpile: Transpile individual TS/JSX files to JS without bundling
   - resolve:   Generate npm_module BUILD files from package-lock.json
+  - dev:       Start a dev server with live reload
 `,
 }
 
@@ -78,6 +89,19 @@ var subCommands = map[string]func() int{
 			Out:            opts.Resolve.Out,
 			NoDev:          opts.Resolve.NoDev,
 			SubincludePath: opts.Resolve.SubincludePath,
+		}); err != nil {
+			log.Fatal(err)
+		}
+		return 0
+	},
+	"dev": func() int {
+		if err := dev.Run(dev.Args{
+			Entry:        opts.Dev.Entry,
+			ModuleConfig: opts.Dev.ModuleConfig,
+			Servedir:     opts.Dev.Servedir,
+			Port:         opts.Dev.Port,
+			Format:       opts.Dev.Format,
+			Platform:     opts.Dev.Platform,
 		}); err != nil {
 			log.Fatal(err)
 		}

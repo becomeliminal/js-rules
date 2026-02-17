@@ -1,6 +1,6 @@
 go_library(
-    name = "bundle",
-    srcs = ["bundle.go"],
+    name = "dev",
+    srcs = ["dev.go"],
     deps = [
         "//third_party/go:esbuild_api",
         "//tools/please_js/common",
