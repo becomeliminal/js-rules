@@ -370,8 +370,12 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
     # Break out to double-quoted "$VAR" for build-time expansion of $PKG_DIR,
     # $PLEASE_JS, and $MODCONF_B64.
     agg_cmd = _aggregate_moduleconfig_cmd()
+    # Resolve moduleconfig paths to absolute plz-out paths. In the build sandbox,
+    # dep dirs are symlinks to plz-out, so readlink -f gives the real location.
+    resolve_cmd = "while IFS='=' read -r name path; do echo \"$name=$(readlink -f $path)\"; done < moduleconfig > moduleconfig_abs && mv moduleconfig_abs moduleconfig"
     cmd = " && ".join([
         agg_cmd,
+        resolve_cmd,
         "MODCONF_B64=$(base64 -w0 moduleconfig)",
         "PLEASE_JS=$(readlink -f $TOOLS_PLEASE_JS)",
         "echo '#!/bin/bash' > $OUT",
