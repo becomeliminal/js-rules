@@ -30,8 +30,23 @@ type Args struct {
 // liveReloadBanner is injected into the bundle to enable live reload via esbuild's SSE endpoint.
 const liveReloadBanner = `new EventSource("/esbuild").addEventListener("change", () => window.location.reload());`
 
-// buildTimerPlugin measures and prints build/rebuild times.
-func buildTimerPlugin() api.Plugin {
+// formatSize formats a byte count as a human-readable string.
+func formatSize(bytes int) string {
+	if bytes >= 1024*1024 {
+		return fmt.Sprintf("%.1fMB", float64(bytes)/(1024*1024))
+	}
+	return fmt.Sprintf("%.0fKB", float64(bytes)/1024)
+}
+
+// serverInfo holds serve details for the build timer plugin to print after the first build.
+type serverInfo struct {
+	port uint16
+	ips  []string
+}
+
+// buildTimerPlugin measures and prints build/rebuild times with output diagnostics.
+// On the first build it also prints the URL block, so that branding appears before URLs.
+func buildTimerPlugin(info *serverInfo) api.Plugin {
 	return api.Plugin{
 		Name: "build-timer",
 		Setup: func(build api.PluginBuild) {
@@ -54,17 +69,38 @@ func buildTimerPlugin() api.Plugin {
 				mu.Unlock()
 
 				ms := elapsed.Milliseconds()
+
+				// Calculate output stats
+				totalSize := 0
+				for _, f := range result.OutputFiles {
+					totalSize += len(f.Contents)
+				}
+				numFiles := len(result.OutputFiles)
+
 				if first {
-					// Initial build — branding line
 					if len(result.Errors) == 0 {
-						fmt.Printf("\n  \033[1;36mPLEASE_JS\033[0m  ready in \033[1m%dms\033[0m\n", ms)
+						// Branding line
+						fmt.Printf("\n  \033[1;36mPLEASE_JS\033[0m  ready in \033[1m%d ms\033[0m \033[2m(%s, %d files)\033[0m\n", ms, formatSize(totalSize), numFiles)
+
+						// Metafile analysis — top modules by size
+						if result.Metafile != "" {
+							analysis := api.AnalyzeMetafile(result.Metafile, api.AnalyzeMetafileOptions{})
+							fmt.Println(analysis)
+						}
+
+						// URL block
+						fmt.Printf("\n  \033[36m➜\033[0m  \033[1mLocal:\033[0m   http://localhost:\033[1m%d\033[0m/\n", info.port)
+						for _, ip := range info.ips {
+							fmt.Printf("  \033[36m➜\033[0m  \033[2mNetwork: http://%s:%d/\033[0m\n", ip, info.port)
+						}
+						fmt.Println()
 					} else {
 						fmt.Printf("\n  \033[1;36mPLEASE_JS\033[0m  build failed with %d errors\n", len(result.Errors))
 					}
 				} else {
-					// Watch rebuild
+					// Watch rebuild — compact single line
 					if len(result.Errors) == 0 {
-						fmt.Printf("  \033[2m[rebuild]\033[0m %dms\n", ms)
+						fmt.Printf("  \033[2m[rebuild]\033[0m \033[1m%d ms\033[0m \033[2m(%s, %d files)\033[0m\n", ms, formatSize(totalSize), numFiles)
 					}
 				}
 				return api.OnEndResult{}, nil
@@ -112,10 +148,11 @@ func Run(args Args) error {
 		outdir = "."
 	}
 
+	info := &serverInfo{}
 	plugins := []api.Plugin{
 		common.ModuleResolvePlugin(moduleMap),
 		common.RawImportPlugin(),
-		buildTimerPlugin(),
+		buildTimerPlugin(info),
 	}
 	if args.TailwindBin != "" {
 		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
@@ -127,7 +164,6 @@ func Run(args Args) error {
 		EntryPoints: []string{args.Entry},
 		Outdir:      outdir,
 		Bundle:      true,
-		Splitting:   format == api.FormatESModule,
 		Write:       false,
 		Format:      format,
 		Platform:    common.ParsePlatform(args.Platform),
@@ -141,7 +177,8 @@ func Run(args Args) error {
 		Define: map[string]string{
 			"process.env.NODE_ENV": `"development"`,
 		},
-		Sourcemap: api.SourceMapInline,
+		Sourcemap: api.SourceMapLinked,
+		Metafile:  true,
 	}
 	if args.Tsconfig != "" {
 		opts.Tsconfig = args.Tsconfig
@@ -151,14 +188,8 @@ func Run(args Args) error {
 		return fmt.Errorf("esbuild context creation failed: %v", ctxErr)
 	}
 
-	// Start watching for file changes — triggers initial build which
-	// prints the "ready in Xms" line via the build timer plugin
-	if err := ctx.Watch(api.WatchOptions{}); err != nil {
-		return fmt.Errorf("esbuild watch failed: %v", err)
-	}
-
-	// Start the HTTP server — serves built output from memory + static
-	// files from servedir (index.html, images, etc.)
+	// Start the HTTP server first so we know the port before the
+	// initial build completes and the plugin prints the URL block.
 	serveResult, serveErr := ctx.Serve(api.ServeOptions{
 		Servedir: args.Servedir,
 		Port:     uint16(port),
@@ -168,11 +199,15 @@ func Run(args Args) error {
 		return fmt.Errorf("esbuild serve failed: %v", serveErr)
 	}
 
-	fmt.Printf("\n  ➜  \033[1mLocal:\033[0m   http://localhost:%d/\n", serveResult.Port)
-	for _, ip := range getLocalIPs() {
-		fmt.Printf("  ➜  \033[2mNetwork:\033[0m http://%s:%d/\n", ip, serveResult.Port)
+	// Populate server info before watch triggers the first build.
+	info.port = serveResult.Port
+	info.ips = getLocalIPs()
+
+	// Start watching for file changes — triggers initial build which
+	// prints the branding line and URL block via the build timer plugin.
+	if err := ctx.Watch(api.WatchOptions{}); err != nil {
+		return fmt.Errorf("esbuild watch failed: %v", err)
 	}
-	fmt.Println()
 
 	// Block until Ctrl+C
 	sigCh := make(chan os.Signal, 1)
