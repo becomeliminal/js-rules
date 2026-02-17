@@ -1,160 +1,348 @@
-def node_module(name:str, scope:str = '', module:str = '', version:str = '', visibility:list=[], deps:list=[], hashes:list=None, binary:bool=False, entry_point:str=''):
-    module_name = module or name
-    if scope:
-        url = f'https://registry.yarnpkg.com/{scope}/{module_name}/-/{module_name}-{version}.tgz'
-        module_label = f'{scope}/{module_name}'
-    else:
-        url = f'https://registry.yarnpkg.com/{module_name}/-/{module_name}-{version}.tgz'
-        module_label = f'{module_name}'
+"""Rules to build JavaScript and TypeScript code.
+
+JavaScript has a module-based architecture, so rules map naturally to npm-style
+packages and entry points.
+"""
+
+
+def js_toolchain(name:str, version:str, hashes:list=None, visibility:list=["PUBLIC"]):
+    """Downloads a Node.js SDK and exposes node, npm, and npx entry points.
+
+    To use this rule, add the following to your .plzconfig:
+        [Plugin "js"]
+        NodeTool = //third_party/js:<name>|node
+
+    Args:
+        name: Name of the rule.
+        version: Node.js version to download (e.g. "20.11.0").
+        hashes: Optional hashes for the download.
+        visibility: Visibility specification.
+    """
+    arch = _node_arch()
+    url = f"https://nodejs.org/dist/v{version}/node-v{version}-{CONFIG.OS}-{arch}.tar.gz"
 
     download = remote_file(
-        name=f'_{name}#download',
-        url=url,
-        out=f'{name}#dl',
-        hashes=hashes,
-        extract=True,
+        name = tag(name, "download"),
+        url = url,
+        hashes = hashes,
     )
-    out_file = entry_point.split('/')[-1] if entry_point else 'index.js'
-    entry_point = f'{name}#dl/package/{entry_point}' if entry_point else ''
-    out_location = package_name() + f"/{name}/{out_file}"
+
     return build_rule(
         name = name,
-        outs = [name],
         srcs = [download],
-        exported_deps = deps,
-        tools = [CONFIG.JS.ESBUILD],
-        visibility = visibility,
-        labels = [
-            f'node_module:{module_label}:{out_location}',
-            f'module_version:{module_label}@{version}',
-        ],
-        pre_build = _compile_comand(entry_point=entry_point, binary=binary),
-    )
-
-def js_library(name:str, module_name:str='', srcs:list=[], deps:list=[], visibility:list=[], entry_point:str="index.js"):
-    module_name = module_name or package_name()
-    out_dir = package_name() + f'/{name}'
-    return build_rule(
-        name = name,
+        cmd = "tar -xf $SRCS && mv node-v* $OUT",
         outs = [name],
-        srcs = [entry_point] + srcs,
-        exported_deps = deps,
-        tools = [CONFIG.JS.ESBUILD],
-        visibility = visibility,
-        labels = [
-            f'node_module:{module_name}:{out_dir}/index.js',
-        ],
-        pre_build = _compile_comand(entry_point),
-    )
-
-def jsx_library(name:str, module_name:str='', srcs:list=[], deps:list=[], visibility:list=[], entry_point:str="index.jsx"):
-    """Syntactic sugar for a JSX js_library"""
-    return js_library(
-        name=name,
-        module_name=module_name,
-        srcs=srcs,
-        deps=deps,
-        visibility=visibility,
-        entry_point=entry_point,
-    )
-
-def css_module(name:str, module_name:str='', srcs:list=[], deps:list=[], visibility:list=[], entry_point:str="index.js"):
-    module_name = module_name or package_name()
-    out_dir = package_name() + f'/{name}'
-    return build_rule(
-        name = name,
-        outs = [name],
-        srcs = [entry_point] + srcs,
-        exported_deps = deps,
-        tools = [CONFIG.JS.ESBUILD],
-        visibility = visibility,
-        labels = [
-            f'css_module:{module_name}:{out_dir}/index.css',
-        ],
-        pre_build = _compile_comand(entry_point),
-    )
-
-def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[], visibility:list=[], out_dir:str='dist'):
-    return build_rule(
-        name = name,
-        outs = [out_dir],
-        srcs = srcs,
-        exported_deps = deps,
+        entry_points = {
+            "node": f"{name}/bin/node",
+            "npm": f"{name}/lib/node_modules/npm/bin/npm-cli.js",
+            "npx": f"{name}/lib/node_modules/npm/bin/npx-cli.js",
+        },
         binary = True,
-        tools = [CONFIG.JS.ESBUILD],
         visibility = visibility,
-        pre_build = _link_command(entry_point),
+        building_description = "Installing Node.js...",
     )
 
-def _compile_comand(entry_point:str=None, binary:bool=False):
-    def pre_build(name):
-        entry_point_flag = f"--entry_point=$PKG_DIR/{entry_point}" if entry_point else "--package_json=$(find $PKG_DIR -name 'package.json' | head -n 1)"
-        binary_flag = "--binary" if binary else ""
-        external_flags = _external_flags(name)
-        cmd = f"$TOOLS compile {entry_point_flag} {external_flags} {binary_flag} --out-dir=$OUTS"
-        set_command(name, cmd)
-    return pre_build
 
-def _link_command(entry_point:str):
-    def pre_build(name):
-        module_flags = _module_map_flags(name)
-        css_flags = _css_map_flags(name)
-        cmd = f"$TOOLS link --entry_point $PKG_DIR/{entry_point} {module_flags} {css_flags} --out-dir=$OUT"
-        set_command(name, cmd)
-    return pre_build
+def js_library(name:str, srcs:list, deps:list=[], module_name:str="",
+               entry_point:str="index.js", visibility:list=None,
+               test_only:bool&testonly=False, labels:list=[]):
+    """Compiles JavaScript or TypeScript sources into a library.
 
-def _external_flags(name):
-    modules = [module.split(":")[0] for module in get_labels(name, 'node_module:')]
-    css_modules = [css.split(":")[0] for css in get_labels(name, 'css_module:')]
-    return " ".join([f"--external={module}" for module in modules + css_modules])
+    Each js_library produces:
+    1. An output directory with transpiled sources (TS/JSX -> JS)
+    2. A .moduleconfig file mapping module_name -> output_path
 
-def _module_map_flags(name):
-    modules = [module.split(":") for module in get_labels(name, 'node_module:')]
-    return " ".join([f"--module {module}:{path}" for module, path in modules])
+    The .moduleconfig mechanism is inspired by go-rules' .importconfig:
+    each library produces a config fragment, and js_binary aggregates
+    them all to set up module resolution at bundle time.
 
-def _css_map_flags(name):
-    modules = [module.split(":") for module in get_labels(name, 'css_module:')]
-    return " ".join([f"--css {module}:{path}" for module, path in modules])
+    Args:
+        name: Name of the rule.
+        srcs: Source files (.js, .jsx, .ts, .tsx, .json).
+        deps: Dependencies (other js_library or npm_module targets).
+        module_name: Module name for package imports. Defaults to the package path.
+        entry_point: Entry point file within the library.
+        visibility: Visibility specification.
+        test_only: If True, only visible to test rules.
+        labels: Additional labels.
+    """
+    module_name = module_name or package_name()
 
-
-subinclude("///shell//build_defs:shell")
-def dev_server(name:str, entry_point:str, static_files:list=[], port:int=8080, proxy:str=None):
-    sf = filegroup(
-        name=tag(name, "static_files"),
-        srcs=static_files,
-    )
-    args = [
-        f"-p {port}",
-        f"-d $(out_location {entry_point})",
-        f"-s $(out_dir {sf})",
-    ]
-    log.info(proxy)
-    if proxy:
-        args.append(f"--proxy=$(out_location {proxy})")
-    sh_cmd(
-        name=name,
-        srcs=[entry_point],
-        cmd=" && ".join([
-            f"plz run {CONFIG.JS.DEV_SERVER} -- " + ' '.join(args),
+    return build_rule(
+        name = name,
+        srcs = srcs,
+        deps = deps,
+        outs = {
+            "lib": [name],
+            "moduleconfig": [f"{name}.moduleconfig"],
+        },
+        cmd = " && ".join([
+            "mkdir -p $OUTS_LIB",
+            "$TOOLS_PLEASE_JS transpile --out-dir $OUTS_LIB $SRCS",
+            f'echo "{module_name}=$PKG_DIR/{name}" > $OUTS_MODULECONFIG',
         ]),
-        deps = [entry_point, sf, proxy],
+        tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
+        visibility = visibility,
+        test_only = test_only,
+        labels = labels + [f"js_module:{module_name}"],
+        exported_deps = deps,
+        building_description = "Compiling...",
     )
 
-def http_proxy(name:str, proxy:str, host:str, protocol:str="http", port:int=8081, headers:dict={}, path_rewrite:dict={}):
-    headers = _format_dict(headers)
-    path_rewrite = _format_dict(path_rewrite)
-    genrule(
-        name=name,
-        cmd=f"echo '{{" +
-            f"\"proxy\": \"{proxy}\", " +
-            f"\"host\": \"{host}\", " +
-            f"\"protocol\": \"{protocol}\", " +
-            f"\"port\": {port}, " +
-            f"\"headers\": {headers}, " +
-            f"\"pathRewrite\": {path_rewrite}" +
-            f"}}' > $OUT",
-        outs=["proxy.json"],
+
+def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
+              format:str="esm", platform:str="browser", visibility:list=None,
+              labels:list=[]):
+    """Bundles JavaScript/TypeScript into a single output file.
+
+    Aggregates all .moduleconfig files from transitive dependencies,
+    then runs please_js bundle to produce the final bundle using esbuild.
+
+    Args:
+        name: Name of the rule.
+        entry_point: Entry point source file.
+        srcs: Additional source files.
+        deps: Dependencies (js_library, npm_module targets).
+        format: Output format: esm, cjs, iife.
+        platform: Target platform: browser, node.
+        visibility: Visibility specification.
+        labels: Additional labels.
+    """
+    moduleconfig_flag = "--moduleconfig moduleconfig"
+
+    bundle_cmd = " && ".join([
+        _aggregate_moduleconfig_cmd(),
+        f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} {moduleconfig_flag} --out _bundle.js --format {format} --platform {platform}",
+    ])
+
+    if platform == "node":
+        cmd = f'{bundle_cmd} && echo "#!/usr/bin/env node" > $OUT && cat _bundle.js >> $OUT'
+    else:
+        cmd = f'{bundle_cmd} && mv _bundle.js $OUT'
+
+    return build_rule(
+        name = name,
+        srcs = [entry_point] + srcs,
+        deps = deps,
+        outs = [f"{name}.js"],
+        cmd = cmd,
+        tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
+        binary = True,
+        needs_transitive_deps = True,
+        visibility = visibility,
+        labels = labels,
+        building_description = "Bundling...",
     )
 
-def _format_dict(d: dict) -> str:
-    return "{" + ", ".join([f'"{key}": "{value}"' for key, value in d.items()]) + "}"
+
+def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
+            visibility:list=None, labels:list=[], timeout:int=0,
+            flaky:bool|int=0, size:str=None):
+    """Bundles and runs JavaScript tests using Node.js.
+
+    Args:
+        name: Name of the rule.
+        srcs: Test source files.
+        entry_point: Test entry point. Defaults to first file in srcs.
+        deps: Dependencies.
+        visibility: Visibility specification.
+        labels: Additional labels.
+        timeout: Test timeout in seconds.
+        flaky: True to mark the test as flaky, or an integer for reruns.
+        size: Test size (enormous, large, medium, small).
+    """
+    entry_point = entry_point or srcs[0]
+
+    tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]}
+    if CONFIG.JS.NODE_TOOL:
+        tools["node"] = [CONFIG.JS.NODE_TOOL]
+        test_cmd = "$TOOLS_NODE $TEST"
+    else:
+        test_cmd = "node $TEST"
+
+    return build_rule(
+        name = name,
+        srcs = srcs,
+        deps = deps,
+        outs = [f"{name}.js"],
+        test = True,
+        no_test_output = True,
+        cmd = " && ".join([
+            _aggregate_moduleconfig_cmd(),
+            f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} --moduleconfig moduleconfig --out $OUT --format cjs --platform node",
+        ]),
+        test_cmd = test_cmd,
+        tools = tools,
+        needs_transitive_deps = True,
+        visibility = visibility,
+        labels = labels,
+        test_timeout = timeout,
+        flaky = flaky,
+        size = size,
+        building_description = "Bundling test...",
+    )
+
+
+def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
+               hashes:list=None, visibility:list=["PUBLIC"], labels:list=[],
+               entry_point:str=""):
+    """Downloads an npm package and makes it available as a dependency.
+
+    Downloads a package tarball from the npm registry, extracts it, and
+    produces a .moduleconfig file so that js_binary can resolve imports.
+
+    Args:
+        name: Name of the rule.
+        pkg_name: npm package name (e.g. "react", "@babel/core"). Defaults to name.
+        version: Exact version to fetch.
+        deps: Dependencies on other npm_module targets (for transitive deps).
+        hashes: Optional hashes for the download.
+        visibility: Visibility specification.
+        labels: Additional labels.
+        entry_point: Override the package entry point.
+    """
+    pkg = pkg_name or name
+    if not version:
+        fail("version is required for npm_module")
+
+    # npm tarball URL: scoped packages use @scope/pkg/-/pkg-ver.tgz
+    pkg_basename = pkg.split("/")[-1] if "/" in pkg else pkg
+    if pkg.startswith("@"):
+        url = f"https://registry.npmjs.org/{pkg}/-/{pkg_basename}-{version}.tgz"
+    else:
+        url = f"https://registry.npmjs.org/{pkg}/-/{pkg}-{version}.tgz"
+
+    download = remote_file(
+        name = tag(name, "download"),
+        url = url,
+        out = f"_{name}_dl",
+        hashes = hashes,
+        extract = True,
+    )
+
+    return build_rule(
+        name = name,
+        srcs = [download],
+        outs = {
+            "lib": [name],
+            "moduleconfig": [f"{name}.moduleconfig"],
+        },
+        cmd = " && ".join([
+            "mkdir -p $OUTS_LIB",
+            # npm tarballs extract to a package/ subdirectory
+            "if [ -d $SRCS/package ]; then cp -r $SRCS/package/. $OUTS_LIB/; else cp -r $SRCS/. $OUTS_LIB/; fi",
+            f'echo "{pkg}=$PKG_DIR/{name}" > $OUTS_MODULECONFIG',
+        ]),
+        exported_deps = deps,
+        visibility = visibility,
+        labels = labels + [f"npm_module:{pkg}@{version}"],
+        building_description = "Installing npm package...",
+    )
+
+
+def npm_repo(name:str, package_lock:str, dev:bool=False,
+             subinclude_path:str="///js//build_defs:js",
+             visibility:list=["PUBLIC"]):
+    """Creates a subrepo of npm_module rules from a package-lock.json.
+
+    Reads the lockfile, generates npm_module rules for each package,
+    and registers them as a Please subrepo. Users can then reference
+    packages as ///name//package_name.
+
+    Args:
+        name: Subrepo name (referenced as ///name//package).
+        package_lock: Path to package-lock.json file.
+        dev: Include dev dependencies.
+        subinclude_path: Path to js build_defs for generated BUILD files.
+                         Use "//build_defs:js" when developing js-rules itself.
+        visibility: Visibility specification.
+    """
+    dev_flag = "" if dev else " --no-dev"
+
+    repo = build_rule(
+        name = tag(name, "repo"),
+        srcs = [package_lock],
+        cmd = f"$TOOLS_PLEASE_JS resolve --lockfile $SRCS --out $OUT{dev_flag} --subinclude-path {subinclude_path}",
+        outs = [name],
+        tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
+        output_is_complete = True,
+        visibility = visibility,
+        building_description = "Resolving npm dependencies...",
+    )
+
+    subrepo(
+        name = name,
+        dep = repo,
+    )
+
+
+def tailwind_toolchain(name:str, version:str, hashes:list=None, visibility:list=["PUBLIC"]):
+    """Downloads the Tailwind CSS standalone CLI binary.
+
+    Args:
+        name: Name of the rule.
+        version: Tailwind CSS version to download (e.g. "3.4.17").
+        hashes: Optional hashes for the download.
+        visibility: Visibility specification.
+    """
+    os_name = "macos" if CONFIG.OS == "darwin" else CONFIG.OS
+    arch = "x64" if CONFIG.ARCH == "amd64" else CONFIG.ARCH
+    url = f"https://github.com/tailwindlabs/tailwindcss/releases/download/v{version}/tailwindcss-{os_name}-{arch}"
+
+    return remote_file(
+        name = name,
+        url = url,
+        hashes = hashes,
+        binary = True,
+        visibility = visibility,
+    )
+
+
+def tailwind_css(name:str, src:str, content_srcs:list=[], deps:list=[],
+                 config:str="", minify:bool=True, visibility:list=None):
+    """Compiles Tailwind CSS using the standalone CLI.
+
+    Runs the Tailwind CSS standalone binary on the input CSS file,
+    scanning content_srcs for utility class names. Produces optimized
+    CSS containing only the classes actually used.
+
+    Args:
+        name: Name of the rule.
+        src: Input CSS file (e.g. containing @tailwind directives or @import "tailwindcss").
+        content_srcs: Source files to scan for utility classes (HTML, JSX, TSX).
+        deps: Dependencies (e.g. other CSS files).
+        config: Optional tailwind.config.js for v3 compatibility.
+        minify: Whether to minify the output.
+        visibility: Visibility specification.
+    """
+    minify_flag = "--minify" if minify else ""
+    config_flag = f"--config $PKG_DIR/{config}" if config else ""
+
+    srcs = {"css": [src], "content": content_srcs}
+    if config:
+        srcs["config"] = [config]
+
+    return build_rule(
+        name = name,
+        srcs = srcs,
+        deps = deps,
+        outs = [f"{name}.css"],
+        cmd = f"$TOOLS_TAILWIND --input $SRCS_CSS --output $OUT {minify_flag} {config_flag}".strip(),
+        tools = {"tailwind": [CONFIG.JS.TAILWIND_TOOL]},
+        visibility = visibility,
+        building_description = "Compiling Tailwind CSS...",
+    )
+
+
+def _aggregate_moduleconfig_cmd():
+    """Returns a command that aggregates all .moduleconfig files from deps."""
+    return 'touch moduleconfig && find . -name "*.moduleconfig" -exec cat {} + | sort -u >> moduleconfig'
+
+
+def _node_arch():
+    """Maps Please arch to Node.js arch naming."""
+    if CONFIG.ARCH == "amd64":
+        return "x64"
+    elif CONFIG.ARCH == "arm64":
+        return "arm64"
+    return CONFIG.ARCH
