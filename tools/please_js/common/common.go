@@ -3,6 +3,7 @@ package common
 import (
 	"bufio"
 	"bytes"
+	"crypto/md5"
 	"fmt"
 	"os"
 	"os/exec"
@@ -162,10 +163,12 @@ func RawImportPlugin() api.Plugin {
 }
 
 // tailwindCache caches Tailwind CLI output and tracks when it was last generated.
+// The cache is persisted to a temp file so it survives process restarts.
 type tailwindCache struct {
 	mu          sync.Mutex
 	css         string
 	lastRunTime time.Time
+	diskPath    string
 }
 
 // isStale reports whether the CSS input file or Tailwind config has been
@@ -196,7 +199,7 @@ func (c *tailwindCache) isStale(paths ...string) bool {
 // TailwindPlugin returns an esbuild plugin that processes CSS files containing
 // @tailwind directives through the Tailwind CLI binary. CSS files without
 // @tailwind directives are left for esbuild's default CSS loader.
-// Results are cached and only recomputed when the CSS input or config changes.
+// Results are cached in memory and on disk so they survive process restarts.
 func TailwindPlugin(tailwindBin, tailwindConfig string) api.Plugin {
 	cache := &tailwindCache{}
 
@@ -217,6 +220,35 @@ func TailwindPlugin(tailwindBin, tailwindConfig string) api.Plugin {
 
 					cache.mu.Lock()
 					defer cache.mu.Unlock()
+
+					// Compute disk cache path on first call.
+					if cache.diskPath == "" {
+						h := md5.Sum([]byte(args.Path))
+						cache.diskPath = filepath.Join(os.TempDir(), fmt.Sprintf("tailwind-%x.css", h))
+					}
+
+					// On cold start, try to load from disk cache.
+					if cache.lastRunTime.IsZero() {
+						if info, err := os.Stat(cache.diskPath); err == nil {
+							cacheTime := info.ModTime()
+							valid := true
+							for _, p := range []string{args.Path, tailwindConfig} {
+								if p == "" {
+									continue
+								}
+								if fi, err := os.Stat(p); err == nil && fi.ModTime().After(cacheTime) {
+									valid = false
+									break
+								}
+							}
+							if valid {
+								if data, err := os.ReadFile(cache.diskPath); err == nil {
+									cache.css = string(data)
+									cache.lastRunTime = cacheTime
+								}
+							}
+						}
+					}
 
 					if !cache.isStale(args.Path, tailwindConfig) {
 						css := cache.css
@@ -242,6 +274,9 @@ func TailwindPlugin(tailwindBin, tailwindConfig string) api.Plugin {
 
 					cache.css = stdout.String()
 					cache.lastRunTime = time.Now()
+
+					// Persist to disk (best effort).
+					os.WriteFile(cache.diskPath, []byte(cache.css), 0644)
 
 					css := cache.css
 					return api.OnLoadResult{
