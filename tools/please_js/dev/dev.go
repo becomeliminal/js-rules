@@ -22,6 +22,7 @@ type Args struct {
 	Port         int
 	Format       string
 	Platform     string
+	Tsconfig     string
 }
 
 // liveReloadBanner is injected into the bundle to enable live reload via esbuild's SSE endpoint.
@@ -109,7 +110,7 @@ func Run(args Args) error {
 		outdir = "."
 	}
 
-	ctx, ctxErr := api.Context(api.BuildOptions{
+	opts := api.BuildOptions{
 		EntryPoints: []string{args.Entry},
 		Outdir:      outdir,
 		Bundle:      true,
@@ -117,7 +118,6 @@ func Run(args Args) error {
 		Format:      common.ParseFormat(args.Format),
 		Platform:    common.ParsePlatform(args.Platform),
 		Target:   api.ESNext,
-		JSX:      api.JSXAutomatic,
 		LogLevel: api.LogLevelWarning,
 		Loader:   common.Loaders,
 		Plugins: []api.Plugin{
@@ -132,7 +132,11 @@ func Run(args Args) error {
 			"process.env.NODE_ENV": `"development"`,
 		},
 		Sourcemap: api.SourceMapInline,
-	})
+	}
+	if args.Tsconfig != "" {
+		opts.Tsconfig = args.Tsconfig
+	}
+	ctx, ctxErr := api.Context(opts)
 	if ctxErr != nil {
 		return fmt.Errorf("esbuild context creation failed: %v", ctxErr)
 	}

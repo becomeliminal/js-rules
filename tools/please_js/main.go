@@ -23,6 +23,7 @@ var opts = struct {
 		Platform     string   `short:"p" long:"platform" default:"browser" description:"Target platform: browser, node"`
 		Target       string   `short:"t" long:"target" default:"esnext" description:"Target ES version"`
 		External     []string `long:"external" description:"External packages to exclude from bundle"`
+		Tsconfig     string   `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
 	} `command:"bundle" alias:"b" description:"Bundle JavaScript/TypeScript using esbuild"`
 
 	Transpile struct {
@@ -46,6 +47,7 @@ var opts = struct {
 		Port         int    `short:"p" long:"port" default:"8080" description:"HTTP port"`
 		Format       string `short:"f" long:"format" default:"esm" description:"Output format: esm, cjs, iife"`
 		Platform     string `long:"platform" default:"browser" description:"Target platform: browser, node"`
+		Tsconfig     string `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
 	} `command:"dev" alias:"d" description:"Start dev server with live reload using esbuild"`
 }{
 	Usage: `
@@ -69,6 +71,7 @@ var subCommands = map[string]func() int{
 			Platform:     opts.Bundle.Platform,
 			Target:       opts.Bundle.Target,
 			External:     opts.Bundle.External,
+			Tsconfig:     opts.Bundle.Tsconfig,
 		}); err != nil {
 			log.Fatal(err)
 		}
@@ -102,6 +105,7 @@ var subCommands = map[string]func() int{
 			Port:         opts.Dev.Port,
 			Format:       opts.Dev.Format,
 			Platform:     opts.Dev.Platform,
+			Tsconfig:     opts.Dev.Tsconfig,
 		}); err != nil {
 			log.Fatal(err)
 		}

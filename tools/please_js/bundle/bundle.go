@@ -19,6 +19,7 @@ type Args struct {
 	Platform     string
 	Target       string
 	External     []string
+	Tsconfig     string
 }
 
 // Run bundles JavaScript/TypeScript using esbuild.
@@ -39,7 +40,7 @@ func Run(args Args) error {
 	}
 
 	// Configure and run esbuild
-	result := api.Build(api.BuildOptions{
+	opts := api.BuildOptions{
 		EntryPoints: []string{args.Entry},
 		Outfile:     args.Out,
 		Bundle:      true,
@@ -47,7 +48,6 @@ func Run(args Args) error {
 		Format:      common.ParseFormat(args.Format),
 		Platform:    common.ParsePlatform(args.Platform),
 		Target:      api.ESNext,
-		JSX:         api.JSXAutomatic,
 		LogLevel:    api.LogLevelInfo,
 		External:    args.External,
 		Loader:      common.Loaders,
@@ -59,7 +59,11 @@ func Run(args Args) error {
 			"process.env.NODE_ENV": `"production"`,
 		},
 		Sourcemap: api.SourceMapLinked,
-	})
+	}
+	if args.Tsconfig != "" {
+		opts.Tsconfig = args.Tsconfig
+	}
+	result := api.Build(opts)
 
 	if len(result.Errors) > 0 {
 		return fmt.Errorf("esbuild bundle failed with %d errors", len(result.Errors))

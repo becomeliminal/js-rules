@@ -91,8 +91,8 @@ def js_library(name:str, srcs:list, deps:list=[], module_name:str="",
 
 
 def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
-              format:str="esm", platform:str="browser", visibility:list=None,
-              labels:list=[]):
+              format:str="esm", platform:str="browser", tsconfig:str="",
+              visibility:list=None, labels:list=[]):
     """Bundles JavaScript/TypeScript into a single output file.
 
     Aggregates all .moduleconfig files from transitive dependencies,
@@ -105,14 +105,16 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
         deps: Dependencies (js_library, npm_module targets).
         format: Output format: esm, cjs, iife.
         platform: Target platform: browser, node.
+        tsconfig: Path to tsconfig.json for JSX settings, paths, etc.
         visibility: Visibility specification.
         labels: Additional labels.
     """
     moduleconfig_flag = "--moduleconfig moduleconfig"
+    tsconfig_flag = f"--tsconfig $PKG_DIR/{tsconfig}" if tsconfig else ""
 
     bundle_cmd = " && ".join([
         _aggregate_moduleconfig_cmd(),
-        f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} {moduleconfig_flag} --out _bundle.js --format {format} --platform {platform}",
+        f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} {moduleconfig_flag} --out _bundle.js --format {format} --platform {platform} {tsconfig_flag}",
     ])
 
     if platform == "node":
@@ -120,9 +122,13 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
     else:
         cmd = f'{bundle_cmd} && mv _bundle.js $OUT'
 
+    all_srcs = [entry_point] + srcs
+    if tsconfig:
+        all_srcs = all_srcs + [tsconfig]
+
     return build_rule(
         name = name,
-        srcs = [entry_point] + srcs,
+        srcs = all_srcs,
         deps = deps,
         outs = [f"{name}.js"],
         cmd = cmd,
@@ -136,8 +142,8 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
 
 
 def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
-            dev_deps:list=[], visibility:list=None, labels:list=[],
-            timeout:int=0, flaky:bool|int=0, size:str=None):
+            dev_deps:list=[], tsconfig:str="", visibility:list=None,
+            labels:list=[], timeout:int=0, flaky:bool|int=0, size:str=None):
     """Bundles and runs JavaScript tests using Node.js.
 
     Args:
@@ -146,6 +152,7 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
         entry_point: Test entry point. Defaults to first file in srcs.
         deps: Dependencies.
         dev_deps: Development-only dependencies (test frameworks, mocking tools).
+        tsconfig: Path to tsconfig.json for JSX settings, paths, etc.
         visibility: Visibility specification.
         labels: Additional labels.
         timeout: Test timeout in seconds.
@@ -153,6 +160,7 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
         size: Test size (enormous, large, medium, small).
     """
     entry_point = entry_point or srcs[0]
+    tsconfig_flag = f"--tsconfig $PKG_DIR/{tsconfig}" if tsconfig else ""
 
     tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]}
     if CONFIG.JS.NODE_TOOL:
@@ -161,16 +169,20 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
     else:
         test_cmd = "node $TEST"
 
+    all_srcs = srcs
+    if tsconfig:
+        all_srcs = all_srcs + [tsconfig]
+
     return build_rule(
         name = name,
-        srcs = srcs,
+        srcs = all_srcs,
         deps = deps + dev_deps,
         outs = [f"{name}.js"],
         test = True,
         no_test_output = True,
         cmd = " && ".join([
             _aggregate_moduleconfig_cmd(),
-            f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} --moduleconfig moduleconfig --out $OUT --format cjs --platform node",
+            f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} --moduleconfig moduleconfig --out $OUT --format cjs --platform node {tsconfig_flag}",
         ]),
         test_cmd = test_cmd,
         tools = tools,
@@ -342,7 +354,7 @@ def tailwind_css(name:str, src:str, content_srcs:list=[], deps:list=[],
 def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
                   dev_deps:list=[], servedir:str=".", port:int=8080,
                   format:str="esm", platform:str="browser",
-                  visibility:list=None):
+                  tsconfig:str="", visibility:list=None):
     """Creates a runnable dev server target with live reload.
 
     At build time, aggregates moduleconfigs from dependencies.
@@ -360,6 +372,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
         port: HTTP port for the dev server.
         format: Output format: esm, cjs, iife.
         platform: Target platform: browser, node.
+        tsconfig: Path to tsconfig.json for JSX settings, paths, etc.
         visibility: Visibility specification.
     """
     # Build step: aggregate moduleconfigs, base64-encode them, and produce a
@@ -373,6 +386,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
     # plz-out/gen for .moduleconfig files. Each moduleconfig file's path minus
     # the .moduleconfig suffix IS the output directory path. This avoids needing
     # to resolve build-time sandbox paths to plz-out paths.
+    tsconfig_arg = f' --tsconfig \'\"$PKG_DIR\"\'/{tsconfig}' if tsconfig else ""
     cmd = " && ".join([
         "PLEASE_JS=$(readlink -f $TOOLS_PLEASE_JS)",
         "echo '#!/bin/bash' > $OUT",
@@ -380,13 +394,17 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
         "echo 'MODCONF=$(mktemp)' >> $OUT",
         "echo 'trap \"rm -f $MODCONF\" EXIT' >> $OUT",
         """echo 'find "$(pwd)/plz-out/gen" -name "*.moduleconfig" | while read f; do abs="${f%.moduleconfig}"; while IFS="=" read -r name _; do echo "$name=$abs"; done < "$f"; done > $MODCONF' >> $OUT""",
-        f"echo 'exec '\"$PLEASE_JS\"' dev --entry '\"$PKG_DIR\"'/{entry_point} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --port {port} --format {format} --platform {platform}' >> $OUT",
+        f"echo 'exec '\"$PLEASE_JS\"' dev --entry '\"$PKG_DIR\"'/{entry_point} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --port {port} --format {format} --platform {platform}{tsconfig_arg}' >> $OUT",
         "chmod +x $OUT",
     ])
 
+    all_srcs = [entry_point] + srcs
+    if tsconfig:
+        all_srcs = all_srcs + [tsconfig]
+
     return build_rule(
         name = name,
-        srcs = [entry_point] + srcs,
+        srcs = all_srcs,
         deps = deps + dev_deps,
         outs = [f"{name}.sh"],
         cmd = cmd,
