@@ -2,9 +2,12 @@ package dev
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
 
@@ -23,6 +26,64 @@ type Args struct {
 
 // liveReloadBanner is injected into the bundle to enable live reload via esbuild's SSE endpoint.
 const liveReloadBanner = `new EventSource("/esbuild").addEventListener("change", () => location.reload());`
+
+// buildTimerPlugin measures and prints build/rebuild times.
+func buildTimerPlugin() api.Plugin {
+	return api.Plugin{
+		Name: "build-timer",
+		Setup: func(build api.PluginBuild) {
+			var mu sync.Mutex
+			var buildStart time.Time
+			var isFirst = true
+
+			build.OnStart(func() (api.OnStartResult, error) {
+				mu.Lock()
+				buildStart = time.Now()
+				mu.Unlock()
+				return api.OnStartResult{}, nil
+			})
+
+			build.OnEnd(func(result *api.BuildResult) (api.OnEndResult, error) {
+				mu.Lock()
+				elapsed := time.Since(buildStart)
+				first := isFirst
+				isFirst = false
+				mu.Unlock()
+
+				ms := elapsed.Milliseconds()
+				if first {
+					// Initial build — branding line
+					if len(result.Errors) == 0 {
+						fmt.Printf("\n  \033[1;36mPLEASE_JS\033[0m  ready in \033[1m%dms\033[0m\n", ms)
+					} else {
+						fmt.Printf("\n  \033[1;36mPLEASE_JS\033[0m  build failed with %d errors\n", len(result.Errors))
+					}
+				} else {
+					// Watch rebuild
+					if len(result.Errors) == 0 {
+						fmt.Printf("  \033[2m[rebuild]\033[0m %dms\n", ms)
+					}
+				}
+				return api.OnEndResult{}, nil
+			})
+		},
+	}
+}
+
+// getLocalIPs returns non-loopback IPv4 addresses.
+func getLocalIPs() []string {
+	var ips []string
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+			ips = append(ips, ipnet.IP.String())
+		}
+	}
+	return ips
+}
 
 // Run starts the esbuild dev server with watch mode and live reload.
 //
@@ -61,10 +122,13 @@ func Run(args Args) error {
 		Format:      common.ParseFormat(args.Format),
 		Platform:    common.ParsePlatform(args.Platform),
 		Target:      api.ESNext,
-		LogLevel:    api.LogLevelInfo,
+		LogLevel:    api.LogLevelWarning,
 		NodePaths:   []string{nodeModulesDir},
 		Loader:      common.Loaders,
-		Plugins:     []api.Plugin{common.RawImportPlugin()},
+		Plugins: []api.Plugin{
+			common.RawImportPlugin(),
+			buildTimerPlugin(),
+		},
 		Banner: map[string]string{
 			"js": liveReloadBanner,
 		},
@@ -77,8 +141,8 @@ func Run(args Args) error {
 		return fmt.Errorf("esbuild context creation failed: %v", ctxErr)
 	}
 
-	// Start watching for file changes — watches the real source files
-	// referenced by the entry point, not plz-out copies
+	// Start watching for file changes — triggers initial build which
+	// prints the "ready in Xms" line via the build timer plugin
 	if err := ctx.Watch(api.WatchOptions{}); err != nil {
 		return fmt.Errorf("esbuild watch failed: %v", err)
 	}
@@ -94,8 +158,11 @@ func Run(args Args) error {
 		return fmt.Errorf("esbuild serve failed: %v", serveErr)
 	}
 
-	fmt.Printf("\n  Dev server running at http://localhost:%d/\n", serveResult.Port)
-	fmt.Printf("  Watching %s for changes...\n\n", args.Entry)
+	fmt.Printf("\n  ➜  \033[1mLocal:\033[0m   http://localhost:%d/\n", serveResult.Port)
+	for _, ip := range getLocalIPs() {
+		fmt.Printf("  ➜  \033[2mNetwork:\033[0m http://%s:%d/\n", ip, serveResult.Port)
+	}
+	fmt.Println()
 
 	// Block until Ctrl+C
 	sigCh := make(chan os.Signal, 1)

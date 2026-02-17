@@ -1,5 +1,5 @@
 [please]
-version = >=17.21.0
+version = >=17.27.0
 
 [parse]
 preloadsubincludes = ///go//build_defs:go
