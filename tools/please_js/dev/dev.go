@@ -3,8 +3,11 @@ package dev
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"mime"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,7 +34,7 @@ type Args struct {
 	TailwindConfig string
 }
 
-// liveReloadBanner is injected into the bundle to enable live reload via esbuild's SSE endpoint.
+// liveReloadBanner is injected into the bundle to enable live reload via SSE.
 // Parses the SSE event data and only reloads when output files actually changed.
 // Debounced to collapse rapid rebuilds into a single reload.
 const liveReloadBanner = `(() => { let t; new EventSource("/esbuild").addEventListener("change", (e) => { try { const d = JSON.parse(e.data); if (!d.added.length && !d.removed.length && !d.updated.length) return; } catch {} clearTimeout(t); t = setTimeout(() => window.location.reload(), 200); }); })();`
@@ -50,9 +53,198 @@ type serverInfo struct {
 	ips  []string
 }
 
+// sseEvent is the JSON payload sent to clients on rebuild.
+type sseEvent struct {
+	Added   []string `json:"added"`
+	Removed []string `json:"removed"`
+	Updated []string `json:"updated"`
+}
+
+// devServer serves built output from memory and static files from disk,
+// replacing esbuild's ctx.Serve() to avoid request-triggered rebuilds.
+type devServer struct {
+	mu          sync.RWMutex
+	outputFiles map[string][]byte // URL path ("/main.js") -> contents
+	fileHashes  map[string]string // URL path -> SHA-256 hex
+
+	sseMu   sync.Mutex
+	clients map[chan sseEvent]struct{}
+
+	outdir   string // absolute, for stripping OutputFile.Path prefix
+	servedir string // absolute, for static file serving
+}
+
+func newDevServer(outdir, servedir string) *devServer {
+	absOutdir, _ := filepath.Abs(outdir)
+	absServedir, _ := filepath.Abs(servedir)
+	return &devServer{
+		outputFiles: make(map[string][]byte),
+		fileHashes:  make(map[string]string),
+		clients:     make(map[chan sseEvent]struct{}),
+		outdir:      absOutdir,
+		servedir:    absServedir,
+	}
+}
+
+func (s *devServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	urlPath := r.URL.Path
+
+	// SSE endpoint
+	if urlPath == "/esbuild" {
+		s.handleSSE(w, r)
+		return
+	}
+
+	// Try built files from in-memory map
+	s.mu.RLock()
+	data, ok := s.outputFiles[urlPath]
+	s.mu.RUnlock()
+	if ok {
+		ct := mime.TypeByExtension(filepath.Ext(urlPath))
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+		w.Write(data)
+		fmt.Printf("  \033[2m[req] %s %s \u2192 200 (%dms)\033[0m\n",
+			r.Method, urlPath, time.Since(start).Milliseconds())
+		return
+	}
+
+	// Try static file from servedir
+	filePath := filepath.Join(s.servedir, filepath.FromSlash(urlPath))
+	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, filePath)
+		fmt.Printf("  \033[2m[req] %s %s \u2192 200 (%dms)\033[0m\n",
+			r.Method, urlPath, time.Since(start).Milliseconds())
+		return
+	}
+
+	// SPA fallback — serve index.html
+	indexPath := filepath.Join(s.servedir, "index.html")
+	if _, err := os.Stat(indexPath); err == nil {
+		http.ServeFile(w, r, indexPath)
+		fmt.Printf("  \033[2m[req] %s %s \u2192 200 fallback (%dms)\033[0m\n",
+			r.Method, urlPath, time.Since(start).Milliseconds())
+		return
+	}
+
+	http.NotFound(w, r)
+	fmt.Printf("  \033[2m[req] %s %s \u2192 404 (%dms)\033[0m\n",
+		r.Method, urlPath, time.Since(start).Milliseconds())
+}
+
+func (s *devServer) handleSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	flusher.Flush()
+
+	ch := make(chan sseEvent, 1)
+	s.sseMu.Lock()
+	s.clients[ch] = struct{}{}
+	s.sseMu.Unlock()
+
+	defer func() {
+		s.sseMu.Lock()
+		delete(s.clients, ch)
+		s.sseMu.Unlock()
+	}()
+
+	keepAlive := time.NewTicker(30 * time.Second)
+	defer keepAlive.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case evt := <-ch:
+			data, _ := json.Marshal(evt)
+			fmt.Fprintf(w, "event: change\ndata: %s\n\n", data)
+			flusher.Flush()
+		case <-keepAlive.C:
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// onBuildComplete updates the in-memory output map and broadcasts changes via SSE.
+func (s *devServer) onBuildComplete(result *api.BuildResult, newHashes map[string]string, changed bool) {
+	// Build new output map, converting absolute paths to URL paths
+	newOutputFiles := make(map[string][]byte, len(result.OutputFiles))
+	for _, f := range result.OutputFiles {
+		rel, err := filepath.Rel(s.outdir, f.Path)
+		if err != nil {
+			rel = filepath.Base(f.Path)
+		}
+		urlPath := "/" + filepath.ToSlash(rel)
+		newOutputFiles[urlPath] = f.Contents
+	}
+
+	// Convert absolute-path hashes to URL-path hashes
+	newURLHashes := make(map[string]string, len(newHashes))
+	for absPath, hash := range newHashes {
+		rel, err := filepath.Rel(s.outdir, absPath)
+		if err != nil {
+			rel = filepath.Base(absPath)
+		}
+		urlPath := "/" + filepath.ToSlash(rel)
+		newURLHashes[urlPath] = hash
+	}
+
+	s.mu.Lock()
+	oldHashes := s.fileHashes
+	s.outputFiles = newOutputFiles
+	s.fileHashes = newURLHashes
+	s.mu.Unlock()
+
+	if !changed {
+		return
+	}
+
+	// Compute diff
+	var evt sseEvent
+	for p := range newURLHashes {
+		if _, ok := oldHashes[p]; !ok {
+			evt.Added = append(evt.Added, p)
+		} else if oldHashes[p] != newURLHashes[p] {
+			evt.Updated = append(evt.Updated, p)
+		}
+	}
+	for p := range oldHashes {
+		if _, ok := newURLHashes[p]; !ok {
+			evt.Removed = append(evt.Removed, p)
+		}
+	}
+
+	if len(evt.Added) == 0 && len(evt.Removed) == 0 && len(evt.Updated) == 0 {
+		return
+	}
+
+	// Broadcast to all SSE clients (non-blocking)
+	s.sseMu.Lock()
+	for ch := range s.clients {
+		select {
+		case ch <- evt:
+		default:
+		}
+	}
+	s.sseMu.Unlock()
+}
+
 // buildTimerPlugin measures and prints build/rebuild times with output diagnostics.
 // On the first build it also prints the URL block, so that branding appears before URLs.
-func buildTimerPlugin(info *serverInfo) api.Plugin {
+func buildTimerPlugin(info *serverInfo, server *devServer) api.Plugin {
 	return api.Plugin{
 		Name: "build-timer",
 		Setup: func(build api.PluginBuild) {
@@ -153,6 +345,10 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 						fmt.Printf("  \033[2m[rebuild] %d ms (no change)\033[0m\n", ms)
 					}
 				}
+
+				// Update dev server with build output and broadcast changes
+				server.onBuildComplete(result, newHashes, changed)
+
 				return api.OnEndResult{}, nil
 			})
 		},
@@ -174,12 +370,12 @@ func getLocalIPs() []string {
 	return ips
 }
 
-// Run starts the esbuild dev server with watch mode and live reload.
+// Run starts the dev server with esbuild watch mode and live reload.
 //
-// The entry point and servedir should be real filesystem paths (not plz-out),
-// so that esbuild's watch mode detects edits to actual source files.
-// The moduleconfig maps module names to plz-out dependency outputs, which
-// are stable during development and don't trigger spurious rebuilds.
+// Uses esbuild's ctx.Watch() for file-change detection only. HTTP serving
+// is handled by our own net/http server, which serves built output from
+// memory and static files from disk. This avoids esbuild's ctx.Serve()
+// which triggers rebuilds on every HTTP request.
 func Run(args Args) error {
 	moduleMap, err := common.ParseModuleConfig(args.ModuleConfig)
 	if err != nil {
@@ -192,17 +388,22 @@ func Run(args Args) error {
 	}
 
 	// Outdir = servedir so built output is served at /<basename>.js.
-	// Serve mode keeps output in memory (doesn't write to disk).
-	outdir := args.Servedir
-	if outdir == "" {
-		outdir = "."
+	servedir := args.Servedir
+	if servedir == "" {
+		servedir = "."
+	}
+	outdir := servedir
+
+	server := newDevServer(outdir, servedir)
+	info := &serverInfo{
+		port: uint16(port),
+		ips:  getLocalIPs(),
 	}
 
-	info := &serverInfo{}
 	plugins := []api.Plugin{
 		common.ModuleResolvePlugin(moduleMap),
 		common.RawImportPlugin(),
-		buildTimerPlugin(info),
+		buildTimerPlugin(info, server),
 	}
 	if args.TailwindBin != "" {
 		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
@@ -217,10 +418,10 @@ func Run(args Args) error {
 		Write:       false,
 		Format:      format,
 		Platform:    common.ParsePlatform(args.Platform),
-		Target:   api.ESNext,
-		LogLevel: api.LogLevelWarning,
-		Loader:   common.Loaders,
-		Plugins:  plugins,
+		Target:      api.ESNext,
+		LogLevel:    api.LogLevelWarning,
+		Loader:      common.Loaders,
+		Plugins:     plugins,
 		Banner: map[string]string{
 			"js": liveReloadBanner,
 		},
@@ -238,24 +439,17 @@ func Run(args Args) error {
 		return fmt.Errorf("esbuild context creation failed: %v", ctxErr)
 	}
 
-	// Start the HTTP server first so we know the port before the
-	// initial build completes and the plugin prints the URL block.
-	serveResult, serveErr := ctx.Serve(api.ServeOptions{
-		Servedir: args.Servedir,
-		Port:     uint16(port),
-		Fallback: filepath.Join(args.Servedir, "index.html"),
-		OnRequest: func(args api.ServeOnRequestArgs) {
-			fmt.Printf("  \033[2m[req] %s %s \u2192 %d (%dms)\033[0m\n",
-				args.Method, args.Path, args.Status, args.TimeInMS)
-		},
-	})
-	if serveErr != nil {
-		return fmt.Errorf("esbuild serve failed: %v", serveErr)
+	// Start our HTTP server (replaces esbuild's ctx.Serve)
+	httpServer := &http.Server{
+		Addr:    fmt.Sprintf(":%d", port),
+		Handler: server,
 	}
-
-	// Populate server info before watch triggers the first build.
-	info.port = serveResult.Port
-	info.ips = getLocalIPs()
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "HTTP server error: %v\n", err)
+			os.Exit(1)
+		}
+	}()
 
 	// Start watching for file changes — triggers initial build which
 	// prints the branding line and URL block via the build timer plugin.
@@ -270,5 +464,6 @@ func Run(args Args) error {
 
 	fmt.Println("\nShutting down...")
 	ctx.Dispose()
+	httpServer.Close()
 	return nil
 }
