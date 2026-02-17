@@ -91,6 +91,7 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 						}
 					}
 				}
+				prevHashes := lastFileHashes
 				lastFileHashes = newHashes
 				mu.Unlock()
 
@@ -135,9 +136,21 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 						fmt.Printf("\n  \033[1;36mPLEASE_JS\033[0m  build failed with %d errors\n", len(result.Errors))
 					}
 				} else {
-					// Watch rebuild — compact single line
+					// Watch rebuild
 					if len(result.Errors) == 0 && changed {
 						fmt.Printf("  \033[2m[rebuild]\033[0m \033[1m%d ms\033[0m \033[2m(%s, %d files)\033[0m\n", ms, formatSize(totalSize), numFiles)
+						for path, hash := range newHashes {
+							if prev, ok := prevHashes[path]; ok && prev != hash {
+								fmt.Printf("    \033[33m\u0394 %s\033[0m\n", path)
+							}
+						}
+						for path := range newHashes {
+							if _, ok := prevHashes[path]; !ok {
+								fmt.Printf("    \033[32m+ %s\033[0m\n", path)
+							}
+						}
+					} else if len(result.Errors) == 0 && !changed {
+						fmt.Printf("  \033[2m[rebuild] %d ms (no change)\033[0m\n", ms)
 					}
 				}
 				return api.OnEndResult{}, nil
@@ -231,6 +244,10 @@ func Run(args Args) error {
 		Servedir: args.Servedir,
 		Port:     uint16(port),
 		Fallback: filepath.Join(args.Servedir, "index.html"),
+		OnRequest: func(args api.ServeOnRequestArgs) {
+			fmt.Printf("  \033[2m[req] %s %s \u2192 %d (%dms)\033[0m\n",
+				args.Method, args.Path, args.Status, args.TimeInMS)
+		},
 	})
 	if serveErr != nil {
 		return fmt.Errorf("esbuild serve failed: %v", serveErr)
