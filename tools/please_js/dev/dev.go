@@ -1,6 +1,8 @@
 package dev
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -29,8 +31,9 @@ type Args struct {
 }
 
 // liveReloadBanner is injected into the bundle to enable live reload via esbuild's SSE endpoint.
+// Parses the SSE event data and only reloads when output files actually changed.
 // Debounced to collapse rapid rebuilds into a single reload.
-const liveReloadBanner = `(() => { let t; new EventSource("/esbuild").addEventListener("change", () => { clearTimeout(t); t = setTimeout(() => window.location.reload(), 200); }); })();`
+const liveReloadBanner = `(() => { let t; new EventSource("/esbuild").addEventListener("change", (e) => { try { const d = JSON.parse(e.data); if (!d.added.length && !d.removed.length && !d.updated.length) return; } catch {} clearTimeout(t); t = setTimeout(() => window.location.reload(), 200); }); })();`
 
 // formatSize formats a byte count as a human-readable string.
 func formatSize(bytes int) string {
@@ -55,7 +58,7 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 			var mu sync.Mutex
 			var buildStart time.Time
 			var isFirst = true
-			var lastMetafile string
+			var lastOutputHash string
 
 			build.OnStart(func() (api.OnStartResult, error) {
 				mu.Lock()
@@ -69,8 +72,18 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 				elapsed := time.Since(buildStart)
 				first := isFirst
 				isFirst = false
-				metaChanged := result.Metafile != lastMetafile
-				lastMetafile = result.Metafile
+
+				// Content-addressed output hashing: only consider a rebuild
+				// meaningful if the actual output bytes changed. This follows
+				// Please's philosophy — same content = same hash = no action.
+				h := sha256.New()
+				for _, f := range result.OutputFiles {
+					h.Write([]byte(f.Path))
+					h.Write(f.Contents)
+				}
+				outputHash := hex.EncodeToString(h.Sum(nil))
+				changed := outputHash != lastOutputHash
+				lastOutputHash = outputHash
 				mu.Unlock()
 
 				ms := elapsed.Milliseconds()
@@ -115,7 +128,7 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 					}
 				} else {
 					// Watch rebuild — compact single line
-					if len(result.Errors) == 0 && metaChanged {
+					if len(result.Errors) == 0 && changed {
 						fmt.Printf("  \033[2m[rebuild]\033[0m \033[1m%d ms\033[0m \033[2m(%s, %d files)\033[0m\n", ms, formatSize(totalSize), numFiles)
 					}
 				}
