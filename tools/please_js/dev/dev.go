@@ -59,7 +59,7 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 			var mu sync.Mutex
 			var buildStart time.Time
 			var isFirst = true
-			var lastOutputHash string
+			var lastFileHashes map[string]string
 
 			build.OnStart(func() (api.OnStartResult, error) {
 				mu.Lock()
@@ -75,16 +75,23 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 				isFirst = false
 
 				// Content-addressed output hashing: only consider a rebuild
-				// meaningful if the actual output bytes changed. This follows
-				// Please's philosophy — same content = same hash = no action.
-				h := sha256.New()
+				// meaningful if the actual output bytes changed. Per-file
+				// comparison avoids false positives from OutputFiles reordering.
+				newHashes := make(map[string]string, len(result.OutputFiles))
 				for _, f := range result.OutputFiles {
-					h.Write([]byte(f.Path))
-					h.Write(f.Contents)
+					fh := sha256.Sum256(f.Contents)
+					newHashes[f.Path] = hex.EncodeToString(fh[:])
 				}
-				outputHash := hex.EncodeToString(h.Sum(nil))
-				changed := outputHash != lastOutputHash
-				lastOutputHash = outputHash
+				changed := len(newHashes) != len(lastFileHashes)
+				if !changed {
+					for path, hash := range newHashes {
+						if lastFileHashes[path] != hash {
+							changed = true
+							break
+						}
+					}
+				}
+				lastFileHashes = newHashes
 				mu.Unlock()
 
 				ms := elapsed.Milliseconds()
