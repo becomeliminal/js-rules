@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,63 +168,37 @@ type tailwindCache struct {
 	lastRunTime time.Time
 }
 
-// contentExts are file extensions that can contain Tailwind classes.
-var contentExts = map[string]bool{
-	".js": true, ".jsx": true, ".ts": true, ".tsx": true,
-	".html": true, ".css": true,
-}
-
-// skipDirs are directories to skip when scanning for changed content files.
-var skipDirs = map[string]bool{
-	"node_modules": true, "plz-out": true, ".git": true,
-}
-
-// isStale reports whether any content file under projectDir has been modified
-// since the cache was last populated.
-func (c *tailwindCache) isStale(projectDir string) bool {
+// isStale reports whether the CSS input file or Tailwind config has been
+// modified since the cache was last populated. JS/TS content files are NOT
+// checked — in a dev server, the file edit that triggers each rebuild would
+// always have a newer mtime, defeating the cache entirely. The trade-off is
+// that adding a brand-new Tailwind class in JSX won't appear until the CSS
+// file or config is also saved (or the server is restarted).
+func (c *tailwindCache) isStale(paths ...string) bool {
 	if c.lastRunTime.IsZero() {
 		return true
 	}
-	stale := false
-	filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		info, err := os.Stat(p)
 		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if skipDirs[name] || (len(name) > 0 && name[0] == '.' && path != projectDir) {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !contentExts[filepath.Ext(path)] {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
+			continue
 		}
 		if info.ModTime().After(c.lastRunTime) {
-			stale = true
-			return fs.SkipAll
+			return true
 		}
-		return nil
-	})
-	return stale
+	}
+	return false
 }
 
 // TailwindPlugin returns an esbuild plugin that processes CSS files containing
 // @tailwind directives through the Tailwind CLI binary. CSS files without
 // @tailwind directives are left for esbuild's default CSS loader.
-// Results are cached and only recomputed when content files change.
+// Results are cached and only recomputed when the CSS input or config changes.
 func TailwindPlugin(tailwindBin, tailwindConfig string) api.Plugin {
 	cache := &tailwindCache{}
-
-	// Determine project root for staleness checks.
-	projectDir := "."
-	if tailwindConfig != "" {
-		projectDir = filepath.Dir(tailwindConfig)
-	}
 
 	return api.Plugin{
 		Name: "tailwind-css",
@@ -245,7 +218,7 @@ func TailwindPlugin(tailwindBin, tailwindConfig string) api.Plugin {
 					cache.mu.Lock()
 					defer cache.mu.Unlock()
 
-					if !cache.isStale(projectDir) {
+					if !cache.isStale(args.Path, tailwindConfig) {
 						css := cache.css
 						return api.OnLoadResult{
 							Contents: &css,
