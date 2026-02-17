@@ -3,7 +3,7 @@ package(default_visibility = ["PUBLIC"])
 go_toolchain(
     name = "gotool",
     strip_srcs = True,
-    version = "1.21.3",
+    version = "1.23.4",
 )
 
 go_mod_download(
@@ -33,7 +33,7 @@ go_module(
     name = "x_sys",
     install = ["..."],
     module = "golang.org/x/sys",
-    version = "765f4ea38db36397e827c4153018aa272eed7835",
+    version = "v0.28.0",
 )
 
 go_module(
@@ -41,17 +41,4 @@ go_module(
     module = "github.com/thought-machine/go-flags",
     version = "v1.5.0",
     deps = [":x_sys"],
-)
-
-go_module(
-    name = "x_sync",
-    install = ["..."],
-    module = "golang.org/x/sync",
-    version = "v0.6.0",
-)
-
-go_module(
-    name = "semver",
-    module = "github.com/Masterminds/semver/v3",
-    version = "v3.3.1",
 )

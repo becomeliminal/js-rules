@@ -1,28 +1,30 @@
 [please]
-version = 17.8.7
+version = >=17.21.0
 
 [parse]
 preloadsubincludes = ///go//build_defs:go
-preloadsubincludes = ///shell//build_defs:shell
 
 [PluginDefinition]
-name = "js"
+name = js
 
-[PluginConfig "esbuild"]
-ConfigKey = ESBuild
-DefaultValue = //tools/esbuild
-Help = A file path or build label for esbuild.
+[PluginConfig "please_js_tool"]
+ConfigKey = PleaseJsTool
+DefaultValue = //tools/please_js
+Help = A build label for the please_js companion tool.
 Inherit = true
 
-[PluginConfig "dev_server"]
-ConfigKey = DEV_SERVER
-DefaultValue = //tools/dev_server
-Help = A file path or build label for a dev_server.
+[PluginConfig "node_tool"]
+ConfigKey = NodeTool
+Help = A build label for the Node.js binary (from js_toolchain).
+Optional = true
+Inherit = true
+
+[PluginConfig "tailwind_tool"]
+ConfigKey = TailwindTool
+Help = Build label for the Tailwind CSS standalone CLI (from tailwind_toolchain).
+Optional = true
 Inherit = true
 
 [Plugin "go"]
 Target = //plugins:go
 gotool = //third_party/go:gotool|go
-
-[Plugin "shell"]
-Target = //plugins:shell
