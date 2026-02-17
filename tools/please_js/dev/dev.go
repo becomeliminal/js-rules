@@ -16,17 +16,19 @@ import (
 
 // Args holds the arguments for the dev subcommand.
 type Args struct {
-	Entry        string
-	ModuleConfig string
-	Servedir     string
-	Port         int
-	Format       string
-	Platform     string
-	Tsconfig     string
+	Entry          string
+	ModuleConfig   string
+	Servedir       string
+	Port           int
+	Format         string
+	Platform       string
+	Tsconfig       string
+	TailwindBin    string
+	TailwindConfig string
 }
 
 // liveReloadBanner is injected into the bundle to enable live reload via esbuild's SSE endpoint.
-const liveReloadBanner = `new EventSource("/esbuild").addEventListener("change", () => location.reload());`
+const liveReloadBanner = `new EventSource("/esbuild").addEventListener("change", () => window.location.reload());`
 
 // buildTimerPlugin measures and prints build/rebuild times.
 func buildTimerPlugin() api.Plugin {
@@ -110,6 +112,15 @@ func Run(args Args) error {
 		outdir = "."
 	}
 
+	plugins := []api.Plugin{
+		common.ModuleResolvePlugin(moduleMap),
+		common.RawImportPlugin(),
+		buildTimerPlugin(),
+	}
+	if args.TailwindBin != "" {
+		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
+	}
+
 	opts := api.BuildOptions{
 		EntryPoints: []string{args.Entry},
 		Outdir:      outdir,
@@ -120,11 +131,7 @@ func Run(args Args) error {
 		Target:   api.ESNext,
 		LogLevel: api.LogLevelWarning,
 		Loader:   common.Loaders,
-		Plugins: []api.Plugin{
-			common.ModuleResolvePlugin(moduleMap),
-			common.RawImportPlugin(),
-			buildTimerPlugin(),
-		},
+		Plugins:  plugins,
 		Banner: map[string]string{
 			"js": liveReloadBanner,
 		},

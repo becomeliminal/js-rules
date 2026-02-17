@@ -12,14 +12,16 @@ import (
 
 // Args holds the arguments for the bundle subcommand.
 type Args struct {
-	Entry        string
-	Out          string
-	ModuleConfig string
-	Format       string
-	Platform     string
-	Target       string
-	External     []string
-	Tsconfig     string
+	Entry          string
+	Out            string
+	ModuleConfig   string
+	Format         string
+	Platform       string
+	Target         string
+	External       []string
+	Tsconfig       string
+	TailwindBin    string
+	TailwindConfig string
 }
 
 // Run bundles JavaScript/TypeScript using esbuild.
@@ -40,6 +42,14 @@ func Run(args Args) error {
 	}
 
 	// Configure and run esbuild
+	plugins := []api.Plugin{
+		common.ModuleResolvePlugin(moduleMap),
+		common.RawImportPlugin(),
+	}
+	if args.TailwindBin != "" {
+		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
+	}
+
 	opts := api.BuildOptions{
 		EntryPoints: []string{args.Entry},
 		Outfile:     args.Out,
@@ -51,10 +61,7 @@ func Run(args Args) error {
 		LogLevel:    api.LogLevelInfo,
 		External:    args.External,
 		Loader:      common.Loaders,
-		Plugins: []api.Plugin{
-			common.ModuleResolvePlugin(moduleMap),
-			common.RawImportPlugin(),
-		},
+		Plugins:     plugins,
 		Define: map[string]string{
 			"process.env.NODE_ENV": `"production"`,
 		},

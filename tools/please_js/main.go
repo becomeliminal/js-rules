@@ -16,14 +16,16 @@ var opts = struct {
 	Usage string
 
 	Bundle struct {
-		Entry        string   `short:"e" long:"entry" required:"true" description:"Entry point file"`
-		Out          string   `short:"o" long:"out" required:"true" description:"Output file"`
-		ModuleConfig string   `short:"m" long:"moduleconfig" description:"Aggregated moduleconfig file"`
-		Format       string   `short:"f" long:"format" default:"esm" description:"Output format: esm, cjs, iife"`
-		Platform     string   `short:"p" long:"platform" default:"browser" description:"Target platform: browser, node"`
-		Target       string   `short:"t" long:"target" default:"esnext" description:"Target ES version"`
-		External     []string `long:"external" description:"External packages to exclude from bundle"`
-		Tsconfig     string   `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
+		Entry          string   `short:"e" long:"entry" required:"true" description:"Entry point file"`
+		Out            string   `short:"o" long:"out" required:"true" description:"Output file"`
+		ModuleConfig   string   `short:"m" long:"moduleconfig" description:"Aggregated moduleconfig file"`
+		Format         string   `short:"f" long:"format" default:"esm" description:"Output format: esm, cjs, iife"`
+		Platform       string   `short:"p" long:"platform" default:"browser" description:"Target platform: browser, node"`
+		Target         string   `short:"t" long:"target" default:"esnext" description:"Target ES version"`
+		External       []string `long:"external" description:"External packages to exclude from bundle"`
+		Tsconfig       string   `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
+		TailwindBin    string   `long:"tailwind-bin" description:"Path to Tailwind CSS binary"`
+		TailwindConfig string   `long:"tailwind-config" description:"Path to tailwind.config.js"`
 	} `command:"bundle" alias:"b" description:"Bundle JavaScript/TypeScript using esbuild"`
 
 	Transpile struct {
@@ -41,13 +43,15 @@ var opts = struct {
 	} `command:"resolve" alias:"r" description:"Generate npm_module BUILD files from package-lock.json"`
 
 	Dev struct {
-		Entry        string `short:"e" long:"entry" required:"true" description:"Entry point file"`
-		ModuleConfig string `short:"m" long:"moduleconfig" description:"Aggregated moduleconfig file"`
-		Servedir     string `short:"s" long:"servedir" default:"." description:"Directory to serve static files from"`
-		Port         int    `short:"p" long:"port" default:"8080" description:"HTTP port"`
-		Format       string `short:"f" long:"format" default:"esm" description:"Output format: esm, cjs, iife"`
-		Platform     string `long:"platform" default:"browser" description:"Target platform: browser, node"`
-		Tsconfig     string `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
+		Entry          string `short:"e" long:"entry" required:"true" description:"Entry point file"`
+		ModuleConfig   string `short:"m" long:"moduleconfig" description:"Aggregated moduleconfig file"`
+		Servedir       string `short:"s" long:"servedir" default:"." description:"Directory to serve static files from"`
+		Port           int    `short:"p" long:"port" default:"8080" description:"HTTP port"`
+		Format         string `short:"f" long:"format" default:"esm" description:"Output format: esm, cjs, iife"`
+		Platform       string `long:"platform" default:"browser" description:"Target platform: browser, node"`
+		Tsconfig       string `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
+		TailwindBin    string `long:"tailwind-bin" description:"Path to Tailwind CSS binary"`
+		TailwindConfig string `long:"tailwind-config" description:"Path to tailwind.config.js"`
 	} `command:"dev" alias:"d" description:"Start dev server with live reload using esbuild"`
 }{
 	Usage: `
@@ -64,14 +68,16 @@ It provides four main operations:
 var subCommands = map[string]func() int{
 	"bundle": func() int {
 		if err := bundle.Run(bundle.Args{
-			Entry:        opts.Bundle.Entry,
-			Out:          opts.Bundle.Out,
-			ModuleConfig: opts.Bundle.ModuleConfig,
-			Format:       opts.Bundle.Format,
-			Platform:     opts.Bundle.Platform,
-			Target:       opts.Bundle.Target,
-			External:     opts.Bundle.External,
-			Tsconfig:     opts.Bundle.Tsconfig,
+			Entry:          opts.Bundle.Entry,
+			Out:            opts.Bundle.Out,
+			ModuleConfig:   opts.Bundle.ModuleConfig,
+			Format:         opts.Bundle.Format,
+			Platform:       opts.Bundle.Platform,
+			Target:         opts.Bundle.Target,
+			External:       opts.Bundle.External,
+			Tsconfig:       opts.Bundle.Tsconfig,
+			TailwindBin:    opts.Bundle.TailwindBin,
+			TailwindConfig: opts.Bundle.TailwindConfig,
 		}); err != nil {
 			log.Fatal(err)
 		}
@@ -99,13 +105,15 @@ var subCommands = map[string]func() int{
 	},
 	"dev": func() int {
 		if err := dev.Run(dev.Args{
-			Entry:        opts.Dev.Entry,
-			ModuleConfig: opts.Dev.ModuleConfig,
-			Servedir:     opts.Dev.Servedir,
-			Port:         opts.Dev.Port,
-			Format:       opts.Dev.Format,
-			Platform:     opts.Dev.Platform,
-			Tsconfig:     opts.Dev.Tsconfig,
+			Entry:          opts.Dev.Entry,
+			ModuleConfig:   opts.Dev.ModuleConfig,
+			Servedir:       opts.Dev.Servedir,
+			Port:           opts.Dev.Port,
+			Format:         opts.Dev.Format,
+			Platform:       opts.Dev.Platform,
+			Tsconfig:       opts.Dev.Tsconfig,
+			TailwindBin:    opts.Dev.TailwindBin,
+			TailwindConfig: opts.Dev.TailwindConfig,
 		}); err != nil {
 			log.Fatal(err)
 		}

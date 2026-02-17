@@ -2,7 +2,10 @@ package common
 
 import (
 	"bufio"
+	"bytes"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -149,6 +152,51 @@ func RawImportPlugin() api.Plugin {
 					return api.OnResolveResult{
 						Path:      resolved,
 						Namespace: "file",
+					}, nil
+				},
+			)
+		},
+	}
+}
+
+// TailwindPlugin returns an esbuild plugin that processes CSS files containing
+// @tailwind directives through the Tailwind CLI binary. CSS files without
+// @tailwind directives are left for esbuild's default CSS loader.
+func TailwindPlugin(tailwindBin, tailwindConfig string) api.Plugin {
+	return api.Plugin{
+		Name: "tailwind-css",
+		Setup: func(build api.PluginBuild) {
+			build.OnLoad(api.OnLoadOptions{Filter: `\.css$`},
+				func(args api.OnLoadArgs) (api.OnLoadResult, error) {
+					content, err := os.ReadFile(args.Path)
+					if err != nil {
+						return api.OnLoadResult{}, err
+					}
+
+					// Only process files that contain @tailwind directives
+					if !bytes.Contains(content, []byte("@tailwind")) {
+						return api.OnLoadResult{}, nil
+					}
+
+					cmdArgs := []string{"--input", args.Path}
+					if tailwindConfig != "" {
+						cmdArgs = append(cmdArgs, "--config", tailwindConfig)
+					}
+
+					cmd := exec.Command(tailwindBin, cmdArgs...)
+					var stdout, stderr bytes.Buffer
+					cmd.Stdout = &stdout
+					cmd.Stderr = &stderr
+
+					if err := cmd.Run(); err != nil {
+						return api.OnLoadResult{}, fmt.Errorf("tailwind failed on %s: %v\n%s", args.Path, err, stderr.String())
+					}
+
+					css := stdout.String()
+					loader := api.LoaderCSS
+					return api.OnLoadResult{
+						Contents: &css,
+						Loader:   loader,
 					}, nil
 				},
 			)
