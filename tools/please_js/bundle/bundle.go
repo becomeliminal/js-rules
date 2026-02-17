@@ -47,6 +47,7 @@ func Run(args Args) error {
 		Format:      common.ParseFormat(args.Format),
 		Platform:    common.ParsePlatform(args.Platform),
 		Target:      api.ESNext,
+		JSX:         api.JSXAutomatic,
 		LogLevel:    api.LogLevelInfo,
 		External:    args.External,
 		Loader:      common.Loaders,

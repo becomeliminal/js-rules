@@ -116,7 +116,8 @@ func Run(args Args) error {
 		Write:       false,
 		Format:      common.ParseFormat(args.Format),
 		Platform:    common.ParsePlatform(args.Platform),
-		Target:      api.ESNext,
+		Target:   api.ESNext,
+		JSX:      api.JSXAutomatic,
 		LogLevel: api.LogLevelWarning,
 		Loader:   common.Loaders,
 		Plugins: []api.Plugin{
