@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -82,10 +83,21 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 						// Branding line
 						fmt.Printf("\n  \033[1;36mPLEASE_JS\033[0m  ready in \033[1m%d ms\033[0m \033[2m(%s, %d files)\033[0m\n", ms, formatSize(totalSize), numFiles)
 
-						// Metafile analysis — top modules by size
+						// Metafile analysis — top modules by size (JS bundle only)
 						if result.Metafile != "" {
 							analysis := api.AnalyzeMetafile(result.Metafile, api.AnalyzeMetafileOptions{})
-							fmt.Println(analysis)
+							sections := strings.Split(strings.TrimSpace(analysis), "\n\n")
+							if len(sections) > 0 {
+								lines := strings.Split(sections[0], "\n")
+								const maxInputs = 10
+								for i, line := range lines {
+									if i > maxInputs {
+										fmt.Printf("   └ \033[2m... and %d more\033[0m\n", len(lines)-1-maxInputs)
+										break
+									}
+									fmt.Println(line)
+								}
+							}
 						}
 
 						// URL block
