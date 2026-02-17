@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
 )
@@ -159,10 +162,71 @@ func RawImportPlugin() api.Plugin {
 	}
 }
 
+// tailwindCache caches Tailwind CLI output and tracks when it was last generated.
+type tailwindCache struct {
+	mu          sync.Mutex
+	css         string
+	lastRunTime time.Time
+}
+
+// contentExts are file extensions that can contain Tailwind classes.
+var contentExts = map[string]bool{
+	".js": true, ".jsx": true, ".ts": true, ".tsx": true,
+	".html": true, ".css": true,
+}
+
+// skipDirs are directories to skip when scanning for changed content files.
+var skipDirs = map[string]bool{
+	"node_modules": true, "plz-out": true, ".git": true,
+}
+
+// isStale reports whether any content file under projectDir has been modified
+// since the cache was last populated.
+func (c *tailwindCache) isStale(projectDir string) bool {
+	if c.lastRunTime.IsZero() {
+		return true
+	}
+	stale := false
+	filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if skipDirs[name] || (len(name) > 0 && name[0] == '.' && path != projectDir) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !contentExts[filepath.Ext(path)] {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if info.ModTime().After(c.lastRunTime) {
+			stale = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return stale
+}
+
 // TailwindPlugin returns an esbuild plugin that processes CSS files containing
 // @tailwind directives through the Tailwind CLI binary. CSS files without
 // @tailwind directives are left for esbuild's default CSS loader.
+// Results are cached and only recomputed when content files change.
 func TailwindPlugin(tailwindBin, tailwindConfig string) api.Plugin {
+	cache := &tailwindCache{}
+
+	// Determine project root for staleness checks.
+	projectDir := "."
+	if tailwindConfig != "" {
+		projectDir = filepath.Dir(tailwindConfig)
+	}
+
 	return api.Plugin{
 		Name: "tailwind-css",
 		Setup: func(build api.PluginBuild) {
@@ -176,6 +240,17 @@ func TailwindPlugin(tailwindBin, tailwindConfig string) api.Plugin {
 					// Only process files that contain @tailwind directives
 					if !bytes.Contains(content, []byte("@tailwind")) {
 						return api.OnLoadResult{}, nil
+					}
+
+					cache.mu.Lock()
+					defer cache.mu.Unlock()
+
+					if !cache.isStale(projectDir) {
+						css := cache.css
+						return api.OnLoadResult{
+							Contents: &css,
+							Loader:   api.LoaderCSS,
+						}, nil
 					}
 
 					cmdArgs := []string{"--input", args.Path}
@@ -192,11 +267,13 @@ func TailwindPlugin(tailwindBin, tailwindConfig string) api.Plugin {
 						return api.OnLoadResult{}, fmt.Errorf("tailwind failed on %s: %v\n%s", args.Path, err, stderr.String())
 					}
 
-					css := stdout.String()
-					loader := api.LoaderCSS
+					cache.css = stdout.String()
+					cache.lastRunTime = time.Now()
+
+					css := cache.css
 					return api.OnLoadResult{
 						Contents: &css,
-						Loader:   loader,
+						Loader:   api.LoaderCSS,
 					}, nil
 				},
 			)
