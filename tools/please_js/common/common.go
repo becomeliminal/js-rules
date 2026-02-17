@@ -36,6 +36,18 @@ var Loaders = map[string]api.Loader{
 	".gif":   api.LoaderFile,
 }
 
+// ParseDefines parses a list of "key=value" strings into a map.
+func ParseDefines(defs []string) map[string]string {
+	result := make(map[string]string, len(defs))
+	for _, d := range defs {
+		parts := strings.SplitN(d, "=", 2)
+		if len(parts) == 2 {
+			result[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+	return result
+}
+
 // ParseModuleConfig reads a moduleconfig file mapping module names to paths.
 // Each line has the format "module_name=path_to_output_dir".
 func ParseModuleConfig(path string) (map[string]string, error) {

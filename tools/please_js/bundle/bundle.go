@@ -19,6 +19,8 @@ type Args struct {
 	Platform       string
 	Target         string
 	External       []string
+	Define         []string
+	Minify         bool
 	Tsconfig       string
 	TailwindBin    string
 	TailwindConfig string
@@ -50,22 +52,29 @@ func Run(args Args) error {
 		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
 	}
 
+	// Merge user defines with default NODE_ENV
+	define := common.ParseDefines(args.Define)
+	if _, ok := define["process.env.NODE_ENV"]; !ok {
+		define["process.env.NODE_ENV"] = `"production"`
+	}
+
 	opts := api.BuildOptions{
-		EntryPoints: []string{args.Entry},
-		Outfile:     args.Out,
-		Bundle:      true,
-		Write:       true,
-		Format:      common.ParseFormat(args.Format),
-		Platform:    common.ParsePlatform(args.Platform),
-		Target:      api.ESNext,
-		LogLevel:    api.LogLevelInfo,
-		External:    args.External,
-		Loader:      common.Loaders,
-		Plugins:     plugins,
-		Define: map[string]string{
-			"process.env.NODE_ENV": `"production"`,
-		},
-		Sourcemap: api.SourceMapLinked,
+		EntryPoints:       []string{args.Entry},
+		Outfile:           args.Out,
+		Bundle:            true,
+		Write:             true,
+		Format:            common.ParseFormat(args.Format),
+		Platform:          common.ParsePlatform(args.Platform),
+		Target:            api.ESNext,
+		LogLevel:          api.LogLevelInfo,
+		External:          args.External,
+		Loader:            common.Loaders,
+		Plugins:           plugins,
+		Define:            define,
+		MinifySyntax:      args.Minify,
+		MinifyWhitespace:  args.Minify,
+		MinifyIdentifiers: args.Minify,
+		Sourcemap:         api.SourceMapLinked,
 	}
 	if args.Tsconfig != "" {
 		opts.Tsconfig = args.Tsconfig

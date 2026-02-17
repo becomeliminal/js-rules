@@ -2,15 +2,19 @@ package dev
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"mime"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -29,6 +33,8 @@ type Args struct {
 	Port           int
 	Format         string
 	Platform       string
+	Define         []string
+	Proxy          []string
 	Tsconfig       string
 	TailwindBin    string
 	TailwindConfig string
@@ -70,19 +76,71 @@ type devServer struct {
 	sseMu   sync.Mutex
 	clients map[chan sseEvent]struct{}
 
-	outdir   string // absolute, for stripping OutputFile.Path prefix
-	servedir string // absolute, for static file serving
+	outdir        string // absolute, for stripping OutputFile.Path prefix
+	servedir      string // absolute, for static file serving
+	proxies       map[string]*httputil.ReverseProxy
+	proxyPrefixes []string // sorted longest-first for greedy matching
 }
 
-func newDevServer(outdir, servedir string) *devServer {
+// parseProxies converts "prefix=target" strings into reverse proxy instances.
+// Each proxy is configured with Vite-equivalent defaults:
+//   - changeOrigin: Host header is rewritten to the target (so backends
+//     behind virtual hosts or CORS checks see the right origin)
+//   - secure=false: TLS certificate verification is skipped (dev servers
+//     commonly proxy to localhost HTTPS with self-signed certs)
+//   - All headers (including Cookie / Set-Cookie) are forwarded as-is
+func parseProxies(specs []string) (map[string]*httputil.ReverseProxy, []string) {
+	proxies := make(map[string]*httputil.ReverseProxy, len(specs))
+	var prefixes []string
+	for _, spec := range specs {
+		parts := strings.SplitN(spec, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		prefix := strings.TrimSpace(parts[0])
+		target := strings.TrimSpace(parts[1])
+		u, err := url.Parse(target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: invalid proxy target %q: %v\n", target, err)
+			continue
+		}
+		proxy := httputil.NewSingleHostReverseProxy(u)
+
+		// changeOrigin: rewrite Host header to the target host so backends
+		// behind virtual hosts / CORS checks see the correct origin.
+		originalDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			req.Host = u.Host
+		}
+
+		// secure=false: skip TLS verification for the proxy target.
+		proxy.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+
+		proxies[prefix] = proxy
+		prefixes = append(prefixes, prefix)
+	}
+	// Sort longest-first so /api/v2 matches before /api
+	sort.Slice(prefixes, func(i, j int) bool {
+		return len(prefixes[i]) > len(prefixes[j])
+	})
+	return proxies, prefixes
+}
+
+func newDevServer(outdir, servedir string, proxySpecs []string) *devServer {
 	absOutdir, _ := filepath.Abs(outdir)
 	absServedir, _ := filepath.Abs(servedir)
+	proxies, proxyPrefixes := parseProxies(proxySpecs)
 	return &devServer{
-		outputFiles: make(map[string][]byte),
-		fileHashes:  make(map[string]string),
-		clients:     make(map[chan sseEvent]struct{}),
-		outdir:      absOutdir,
-		servedir:    absServedir,
+		outputFiles:   make(map[string][]byte),
+		fileHashes:    make(map[string]string),
+		clients:       make(map[chan sseEvent]struct{}),
+		outdir:        absOutdir,
+		servedir:      absServedir,
+		proxies:       proxies,
+		proxyPrefixes: proxyPrefixes,
 	}
 }
 
@@ -94,6 +152,15 @@ func (s *devServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if urlPath == "/esbuild" {
 		s.handleSSE(w, r)
 		return
+	}
+
+	// Proxy matching requests to backend services
+	for _, prefix := range s.proxyPrefixes {
+		if strings.HasPrefix(urlPath, prefix) {
+			fmt.Printf("  \033[2m[proxy] %s %s\033[0m\n", r.Method, urlPath)
+			s.proxies[prefix].ServeHTTP(w, r)
+			return
+		}
 	}
 
 	// Try built files from in-memory map
@@ -394,7 +461,7 @@ func Run(args Args) error {
 	}
 	outdir := servedir
 
-	server := newDevServer(outdir, servedir)
+	server := newDevServer(outdir, servedir, args.Proxy)
 	info := &serverInfo{
 		port: uint16(port),
 		ips:  getLocalIPs(),
@@ -411,6 +478,12 @@ func Run(args Args) error {
 
 	format := common.ParseFormat(args.Format)
 
+	// Merge user defines with default NODE_ENV
+	define := common.ParseDefines(args.Define)
+	if _, ok := define["process.env.NODE_ENV"]; !ok {
+		define["process.env.NODE_ENV"] = `"development"`
+	}
+
 	opts := api.BuildOptions{
 		EntryPoints: []string{args.Entry},
 		Outdir:      outdir,
@@ -425,9 +498,7 @@ func Run(args Args) error {
 		Banner: map[string]string{
 			"js": liveReloadBanner,
 		},
-		Define: map[string]string{
-			"process.env.NODE_ENV": `"development"`,
-		},
+		Define:    define,
 		Sourcemap: api.SourceMapLinked,
 		Metafile:  true,
 	}

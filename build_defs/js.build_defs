@@ -92,6 +92,7 @@ def js_library(name:str, srcs:list, deps:list=[], module_name:str="",
 
 def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
               format:str="esm", platform:str="browser", tsconfig:str="",
+              define:dict={}, external:list=[], minify:bool=False,
               tailwind_config:str="", visibility:list=None, labels:list=[]):
     """Bundles JavaScript/TypeScript into a single output file.
 
@@ -106,6 +107,9 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
         format: Output format: esm, cjs, iife.
         platform: Target platform: browser, node.
         tsconfig: Path to tsconfig.json for JSX settings, paths, etc.
+        define: Dict of compile-time string replacements (e.g. {"import.meta.env.MODE": '"production"'}).
+        external: List of packages to exclude from the bundle (e.g. ["fs", "path"]).
+        minify: Whether to minify the output (syntax, whitespace, identifiers).
         tailwind_config: Path to tailwind.config.js. When set, CSS files with
                          @tailwind directives are compiled via the Tailwind CLI.
         visibility: Visibility specification.
@@ -113,11 +117,14 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
     """
     moduleconfig_flag = "--moduleconfig moduleconfig"
     tsconfig_flag = f"--tsconfig $PKG_DIR/{tsconfig}" if tsconfig else ""
+    define_flags = " ".join([f"--define '{k}={v}'" for k, v in sorted(define.items())])
+    external_flags = " ".join([f"--external {pkg}" for pkg in external])
+    minify_flag = "--minify" if minify else ""
     tailwind_flags = f"--tailwind-bin $TOOLS_TAILWIND --tailwind-config $PKG_DIR/{tailwind_config}" if tailwind_config else ""
 
     bundle_cmd = " && ".join([
         _aggregate_moduleconfig_cmd(),
-        f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} {moduleconfig_flag} --out _bundle.js --format {format} --platform {platform} {tsconfig_flag} {tailwind_flags}",
+        f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} {moduleconfig_flag} --out _bundle.js --format {format} --platform {platform} {tsconfig_flag} {define_flags} {external_flags} {minify_flag} {tailwind_flags}",
     ])
 
     tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]}
@@ -157,7 +164,8 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
 
 
 def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
-            dev_deps:list=[], tsconfig:str="", tailwind_config:str="",
+            dev_deps:list=[], tsconfig:str="", define:dict={},
+            tailwind_config:str="",
             visibility:list=None, labels:list=[], timeout:int=0,
             flaky:bool|int=0, size:str=None):
     """Bundles and runs JavaScript tests using Node.js.
@@ -179,6 +187,7 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
     """
     entry_point = entry_point or srcs[0]
     tsconfig_flag = f"--tsconfig $PKG_DIR/{tsconfig}" if tsconfig else ""
+    define_flags = " ".join([f"--define '{k}={v}'" for k, v in sorted(define.items())])
     tailwind_flags = f"--tailwind-bin $TOOLS_TAILWIND --tailwind-config $PKG_DIR/{tailwind_config}" if tailwind_config else ""
 
     tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]}
@@ -204,7 +213,7 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
         no_test_output = True,
         cmd = " && ".join([
             _aggregate_moduleconfig_cmd(),
-            f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} --moduleconfig moduleconfig --out $OUT --format cjs --platform node {tsconfig_flag} {tailwind_flags}",
+            f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} --moduleconfig moduleconfig --out $OUT --format cjs --platform node {tsconfig_flag} {define_flags} {tailwind_flags}",
         ]),
         test_cmd = test_cmd,
         tools = tools,
@@ -376,7 +385,8 @@ def tailwind_css(name:str, src:str, content_srcs:list=[], deps:list=[],
 def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
                   dev_deps:list=[], servedir:str=".", port:int=8080,
                   format:str="esm", platform:str="browser",
-                  tsconfig:str="", tailwind_config:str="",
+                  tsconfig:str="", define:dict={}, proxy:dict={},
+                  tailwind_config:str="",
                   visibility:list=None):
     """Creates a runnable dev server target with live reload.
 
@@ -396,6 +406,8 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
         format: Output format: esm, cjs, iife.
         platform: Target platform: browser, node.
         tsconfig: Path to tsconfig.json for JSX settings, paths, etc.
+        define: Dict of compile-time string replacements (e.g. {"import.meta.env.MODE": '"production"'}).
+        proxy: Dict mapping URL prefixes to backend targets (e.g. {"/api": "http://localhost:3001"}).
         tailwind_config: Path to tailwind.config.js. When set, CSS files with
                          @tailwind directives are compiled via the Tailwind CLI.
         visibility: Visibility specification.
@@ -412,6 +424,8 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
     # the .moduleconfig suffix IS the output directory path. This avoids needing
     # to resolve build-time sandbox paths to plz-out paths.
     tsconfig_arg = f' --tsconfig \'\"$PKG_DIR\"\'/{tsconfig}' if tsconfig else ""
+    define_arg = "".join([f" --define '{k}={v}'" for k, v in sorted(define.items())])
+    proxy_arg = "".join([f" --proxy '{prefix}={target}'" for prefix, target in sorted(proxy.items())])
 
     tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]}
 
@@ -430,7 +444,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
         "echo 'MODCONF=$(mktemp)' >> $OUT",
         "echo 'trap \"rm -f $MODCONF\" EXIT' >> $OUT",
         """echo 'find "$(pwd)/plz-out/gen" -name "*.moduleconfig" | while read f; do abs="${f%.moduleconfig}"; while IFS="=" read -r name _; do echo "$name=$abs"; done < "$f"; done > $MODCONF' >> $OUT""",
-        f"echo 'exec '\"$PLEASE_JS\"' dev --entry '\"$PKG_DIR\"'/{entry_point} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --port {port} --format {format} --platform {platform}{tsconfig_arg}{tailwind_arg}' >> $OUT",
+        f"echo 'exec '\"$PLEASE_JS\"' dev --entry '\"$PKG_DIR\"'/{entry_point} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --port {port} --format {format} --platform {platform}{tsconfig_arg}{define_arg}{proxy_arg}{tailwind_arg}' >> $OUT",
         "chmod +x $OUT",
     ])
 

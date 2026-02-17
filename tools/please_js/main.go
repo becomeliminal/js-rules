@@ -24,6 +24,8 @@ var opts = struct {
 		Target         string   `short:"t" long:"target" default:"esnext" description:"Target ES version"`
 		External       []string `long:"external" description:"External packages to exclude from bundle"`
 		Tsconfig       string   `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
+		Define         []string `long:"define" description:"Define substitutions (key=value)"`
+		Minify         bool     `long:"minify" description:"Minify output (syntax, whitespace, identifiers)"`
 		TailwindBin    string   `long:"tailwind-bin" description:"Path to Tailwind CSS binary"`
 		TailwindConfig string   `long:"tailwind-config" description:"Path to tailwind.config.js"`
 	} `command:"bundle" alias:"b" description:"Bundle JavaScript/TypeScript using esbuild"`
@@ -50,8 +52,10 @@ var opts = struct {
 		Format         string `short:"f" long:"format" default:"esm" description:"Output format: esm, cjs, iife"`
 		Platform       string `long:"platform" default:"browser" description:"Target platform: browser, node"`
 		Tsconfig       string `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
-		TailwindBin    string `long:"tailwind-bin" description:"Path to Tailwind CSS binary"`
-		TailwindConfig string `long:"tailwind-config" description:"Path to tailwind.config.js"`
+		Define         []string `long:"define" description:"Define substitutions (key=value)"`
+		Proxy          []string `long:"proxy" description:"Proxy rules (prefix=target)"`
+		TailwindBin    string   `long:"tailwind-bin" description:"Path to Tailwind CSS binary"`
+		TailwindConfig string   `long:"tailwind-config" description:"Path to tailwind.config.js"`
 	} `command:"dev" alias:"d" description:"Start dev server with live reload using esbuild"`
 }{
 	Usage: `
@@ -75,6 +79,8 @@ var subCommands = map[string]func() int{
 			Platform:       opts.Bundle.Platform,
 			Target:         opts.Bundle.Target,
 			External:       opts.Bundle.External,
+			Define:         opts.Bundle.Define,
+			Minify:         opts.Bundle.Minify,
 			Tsconfig:       opts.Bundle.Tsconfig,
 			TailwindBin:    opts.Bundle.TailwindBin,
 			TailwindConfig: opts.Bundle.TailwindConfig,
@@ -111,6 +117,8 @@ var subCommands = map[string]func() int{
 			Port:           opts.Dev.Port,
 			Format:         opts.Dev.Format,
 			Platform:       opts.Dev.Platform,
+			Define:         opts.Dev.Define,
+			Proxy:          opts.Dev.Proxy,
 			Tsconfig:       opts.Dev.Tsconfig,
 			TailwindBin:    opts.Dev.TailwindBin,
 			TailwindConfig: opts.Dev.TailwindConfig,
