@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -222,7 +223,7 @@ func Run(args Args) error {
 	serveResult, serveErr := ctx.Serve(api.ServeOptions{
 		Servedir: args.Servedir,
 		Port:     uint16(port),
-		Fallback: "index.html",
+		Fallback: filepath.Join(args.Servedir, "index.html"),
 	})
 	if serveErr != nil {
 		return fmt.Errorf("esbuild serve failed: %v", serveErr)
