@@ -43,6 +43,7 @@ type resolvedPackage struct {
 	Version  string
 	Resolved string   // tarball URL
 	Deps     []string // dependency package names (mapped to subrepo targets)
+	Dev      bool     // true if this is a dev-only package
 }
 
 // Run executes the resolve subcommand.
@@ -152,6 +153,7 @@ func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage 
 			Version:  info.Version,
 			Resolved: info.Resolved,
 			Deps:     deps,
+			Dev:      info.Dev,
 		})
 	}
 
@@ -223,6 +225,10 @@ func writeBuildFile(outDir string, pkg resolvedPackage, subincludePath string) e
 			b.WriteString(fmt.Sprintf("        %q,\n", target))
 		}
 		b.WriteString("    ],\n")
+	}
+
+	if pkg.Dev {
+		b.WriteString("    labels = [\"npm:dev\"],\n")
 	}
 
 	b.WriteString("    visibility = [\"PUBLIC\"],\n")

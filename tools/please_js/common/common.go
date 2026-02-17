@@ -51,43 +51,25 @@ func ParseModuleConfig(path string) (map[string]string, error) {
 	return modules, scanner.Err()
 }
 
-// SetupNodeModules creates a node_modules directory with symlinks for each module.
-// Returns the absolute path to the node_modules directory.
-func SetupNodeModules(moduleMap map[string]string) (string, error) {
+// BuildAlias converts a moduleconfig map to an esbuild Alias map with
+// absolute paths. esbuild's Alias option maps bare import specifiers
+// (e.g. "react") directly to filesystem paths (plz-out outputs),
+// eliminating the need for node_modules symlinks.
+func BuildAlias(moduleMap map[string]string) (map[string]string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("failed to get working directory: %w", err)
+		return nil, fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	nodeModulesDir := filepath.Join(wd, "node_modules")
-	if err := os.MkdirAll(nodeModulesDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create node_modules: %w", err)
-	}
-
+	alias := make(map[string]string, len(moduleMap))
 	for moduleName, modulePath := range moduleMap {
 		absPath := modulePath
 		if !filepath.IsAbs(absPath) {
 			absPath = filepath.Join(wd, absPath)
 		}
-
-		linkPath := filepath.Join(nodeModulesDir, moduleName)
-
-		// Handle scoped packages: @scope/pkg needs @scope/ directory
-		if strings.Contains(moduleName, "/") {
-			if err := os.MkdirAll(filepath.Dir(linkPath), 0755); err != nil {
-				return "", fmt.Errorf("failed to create scope directory for %s: %w", moduleName, err)
-			}
-		}
-
-		// Remove existing symlink if any
-		os.Remove(linkPath)
-
-		if err := os.Symlink(absPath, linkPath); err != nil {
-			return "", fmt.Errorf("failed to symlink %s -> %s: %w", linkPath, absPath, err)
-		}
+		alias[moduleName] = absPath
 	}
-
-	return nodeModulesDir, nil
+	return alias, nil
 }
 
 // ParseFormat converts a format string to an esbuild Format constant.

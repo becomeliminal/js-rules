@@ -97,7 +97,8 @@ func Run(args Args) error {
 		return fmt.Errorf("failed to parse moduleconfig: %w", err)
 	}
 
-	nodeModulesDir, err := common.SetupNodeModules(moduleMap)
+	// Build esbuild alias map: module names → absolute plz-out paths
+	alias, err := common.BuildAlias(moduleMap)
 	if err != nil {
 		return err
 	}
@@ -123,7 +124,7 @@ func Run(args Args) error {
 		Platform:    common.ParsePlatform(args.Platform),
 		Target:      api.ESNext,
 		LogLevel:    api.LogLevelWarning,
-		NodePaths:   []string{nodeModulesDir},
+		Alias:       alias,
 		Loader:      common.Loaders,
 		Plugins: []api.Plugin{
 			common.RawImportPlugin(),

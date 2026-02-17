@@ -22,8 +22,7 @@ type Args struct {
 }
 
 // Run bundles JavaScript/TypeScript using esbuild.
-// It reads a moduleconfig file to set up a node_modules directory with symlinks,
-// then runs esbuild with its native resolver.
+// It reads a moduleconfig file to resolve module aliases, then runs esbuild.
 func Run(args Args) error {
 	// Parse moduleconfig: each line is "module_name=path_to_output_dir"
 	moduleMap, err := common.ParseModuleConfig(args.ModuleConfig)
@@ -31,8 +30,8 @@ func Run(args Args) error {
 		return fmt.Errorf("failed to parse moduleconfig: %w", err)
 	}
 
-	// Create node_modules directory with symlinks for each module
-	nodeModulesDir, err := common.SetupNodeModules(moduleMap)
+	// Build esbuild alias map: module names → absolute plz-out paths
+	alias, err := common.BuildAlias(moduleMap)
 	if err != nil {
 		return err
 	}
@@ -56,7 +55,7 @@ func Run(args Args) error {
 		Target:      api.ESNext,
 		LogLevel:    api.LogLevelInfo,
 		External:    args.External,
-		NodePaths:   []string{nodeModulesDir},
+		Alias:       alias,
 		Loader:      common.Loaders,
 		Plugins:     []api.Plugin{common.RawImportPlugin()},
 		Define: map[string]string{

@@ -136,8 +136,8 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
 
 
 def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
-            visibility:list=None, labels:list=[], timeout:int=0,
-            flaky:bool|int=0, size:str=None):
+            dev_deps:list=[], visibility:list=None, labels:list=[],
+            timeout:int=0, flaky:bool|int=0, size:str=None):
     """Bundles and runs JavaScript tests using Node.js.
 
     Args:
@@ -145,6 +145,7 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
         srcs: Test source files.
         entry_point: Test entry point. Defaults to first file in srcs.
         deps: Dependencies.
+        dev_deps: Development-only dependencies (test frameworks, mocking tools).
         visibility: Visibility specification.
         labels: Additional labels.
         timeout: Test timeout in seconds.
@@ -163,7 +164,7 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
     return build_rule(
         name = name,
         srcs = srcs,
-        deps = deps,
+        deps = deps + dev_deps,
         outs = [f"{name}.js"],
         test = True,
         no_test_output = True,
@@ -240,7 +241,7 @@ def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
     )
 
 
-def npm_repo(name:str, package_lock:str, dev:bool=False,
+def npm_repo(name:str, package_lock:str, no_dev:bool=False,
              subinclude_path:str="///js//build_defs:js",
              visibility:list=["PUBLIC"]):
     """Creates a subrepo of npm_module rules from a package-lock.json.
@@ -249,15 +250,19 @@ def npm_repo(name:str, package_lock:str, dev:bool=False,
     and registers them as a Please subrepo. Users can then reference
     packages as ///name//package_name.
 
+    By default, all packages (including devDependencies) are included,
+    matching the behavior of npm install / Vite / webpack. Dev-only
+    packages are labeled with npm:dev for identification.
+
     Args:
         name: Subrepo name (referenced as ///name//package).
         package_lock: Path to package-lock.json file.
-        dev: Include dev dependencies.
+        no_dev: Exclude dev dependencies from the generated subrepo.
         subinclude_path: Path to js build_defs for generated BUILD files.
                          Use "//build_defs:js" when developing js-rules itself.
         visibility: Visibility specification.
     """
-    dev_flag = "" if dev else " --no-dev"
+    dev_flag = " --no-dev" if no_dev else ""
 
     repo = build_rule(
         name = tag(name, "repo"),
@@ -335,8 +340,9 @@ def tailwind_css(name:str, src:str, content_srcs:list=[], deps:list=[],
 
 
 def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
-                  servedir:str=".", port:int=8080, format:str="esm",
-                  platform:str="browser", visibility:list=None):
+                  dev_deps:list=[], servedir:str=".", port:int=8080,
+                  format:str="esm", platform:str="browser",
+                  visibility:list=None):
     """Creates a runnable dev server target with live reload.
 
     At build time, aggregates moduleconfigs from dependencies.
@@ -347,7 +353,9 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
         name: Name of the rule.
         entry_point: Entry point source file (e.g. "src/main.jsx").
         srcs: Additional source files.
-        deps: Dependencies (js_library, npm_module targets).
+        deps: Production dependencies (js_library, npm_module targets).
+        dev_deps: Development-only dependencies (testing tools, dev plugins).
+                  These are included in the dev server but not in js_binary.
         servedir: Directory to serve static files from, relative to package.
         port: HTTP port for the dev server.
         format: Output format: esm, cjs, iife.
@@ -378,7 +386,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
     return build_rule(
         name = name,
         srcs = [entry_point] + srcs,
-        deps = deps,
+        deps = deps + dev_deps,
         outs = [f"{name}.sh"],
         cmd = cmd,
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
