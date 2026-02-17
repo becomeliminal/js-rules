@@ -29,7 +29,8 @@ type Args struct {
 }
 
 // liveReloadBanner is injected into the bundle to enable live reload via esbuild's SSE endpoint.
-const liveReloadBanner = `new EventSource("/esbuild").addEventListener("change", () => window.location.reload());`
+// Debounced to collapse rapid rebuilds into a single reload.
+const liveReloadBanner = `(() => { let t; new EventSource("/esbuild").addEventListener("change", () => { clearTimeout(t); t = setTimeout(() => window.location.reload(), 200); }); })();`
 
 // formatSize formats a byte count as a human-readable string.
 func formatSize(bytes int) string {
@@ -54,6 +55,7 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 			var mu sync.Mutex
 			var buildStart time.Time
 			var isFirst = true
+			var lastMetafile string
 
 			build.OnStart(func() (api.OnStartResult, error) {
 				mu.Lock()
@@ -67,6 +69,8 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 				elapsed := time.Since(buildStart)
 				first := isFirst
 				isFirst = false
+				metaChanged := result.Metafile != lastMetafile
+				lastMetafile = result.Metafile
 				mu.Unlock()
 
 				ms := elapsed.Milliseconds()
@@ -111,7 +115,7 @@ func buildTimerPlugin(info *serverInfo) api.Plugin {
 					}
 				} else {
 					// Watch rebuild — compact single line
-					if len(result.Errors) == 0 {
+					if len(result.Errors) == 0 && metaChanged {
 						fmt.Printf("  \033[2m[rebuild]\033[0m \033[1m%d ms\033[0m \033[2m(%s, %d files)\033[0m\n", ms, formatSize(totalSize), numFiles)
 					}
 				}
