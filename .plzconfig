@@ -25,6 +25,11 @@ Help = Build label for the Tailwind CSS standalone CLI (from tailwind_toolchain)
 Optional = true
 Inherit = true
 
+[Plugin "js"]
+Target = //plugins:js
+PleaseJsTool = //tools/please_js
+TailwindTool = //third_party/js:tailwind
+
 [Plugin "go"]
 Target = //plugins:go
 gotool = //third_party/go:gotool|go

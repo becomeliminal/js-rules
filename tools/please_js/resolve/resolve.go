@@ -69,16 +69,16 @@ func Run(args Args) error {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	subinclude := args.SubincludePath
+	subincludePath := args.SubincludePath
 
-	// Write .plzconfig with preloadsubincludes
-	if err := writePlzConfig(args.Out, subinclude); err != nil {
+	// Write .plzconfig with plugin declaration
+	if err := writePlzConfig(args.Out); err != nil {
 		return fmt.Errorf("failed to write .plzconfig: %w", err)
 	}
 
-	// Generate BUILD files
+	// Generate BUILD files with explicit subinclude
 	for _, pkg := range packages {
-		if err := writeBuildFile(args.Out, pkg); err != nil {
+		if err := writeBuildFile(args.Out, pkg, subincludePath); err != nil {
 			return fmt.Errorf("failed to write BUILD for %s: %w", pkg.Name, err)
 		}
 	}
@@ -186,13 +186,13 @@ func isNestedPackage(path string) bool {
 }
 
 // writePlzConfig writes the .plzconfig for the subrepo.
-func writePlzConfig(outDir, subincludePath string) error {
-	content := fmt.Sprintf("[parse]\npreloadsubincludes = %s\n", subincludePath)
+func writePlzConfig(outDir string) error {
+	content := "[Plugin \"js\"]\nTarget=@//plugins:js\n"
 	return os.WriteFile(filepath.Join(outDir, ".plzconfig"), []byte(content), 0644)
 }
 
 // writeBuildFile generates a BUILD file for a single npm package.
-func writeBuildFile(outDir string, pkg resolvedPackage) error {
+func writeBuildFile(outDir string, pkg resolvedPackage, subincludePath string) error {
 	// Determine directory path for the package
 	pkgDir := filepath.Join(outDir, pkg.Name)
 	if err := os.MkdirAll(pkgDir, 0755); err != nil {
@@ -208,6 +208,7 @@ func writeBuildFile(outDir string, pkg resolvedPackage) error {
 
 	var b strings.Builder
 
+	b.WriteString(fmt.Sprintf("subinclude(%q)\n\n", subincludePath))
 	b.WriteString(fmt.Sprintf("npm_module(\n"))
 	b.WriteString(fmt.Sprintf("    name = %q,\n", targetName))
 	if targetName != pkg.Name {

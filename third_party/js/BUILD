@@ -1,5 +1,10 @@
 subinclude("//build_defs:js")
 
+tailwind_toolchain(
+    name = "tailwind",
+    version = "3.4.17",
+)
+
 npm_module(
     name = "lodash",
     version = "4.17.21",
