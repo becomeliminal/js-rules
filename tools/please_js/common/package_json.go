@@ -36,11 +36,61 @@ func (v *exportValue) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// browserField represents the package.json "browser" field, which can be:
+//   - A string: "browser": "lib/browser.js" (alternative entry point)
+//   - An object: "browser": {"./lib/index.js": "./lib/browser.js", "fs": false}
+//     (per-file replacements; false means "replace with empty module")
+type browserField struct {
+	Path string
+	Map  map[string]string // source path → replacement path ("" if false)
+}
+
+func (b *browserField) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		b.Path = s
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	b.Map = make(map[string]string, len(m))
+	for k, raw := range m {
+		var val string
+		if err := json.Unmarshal(raw, &val); err == nil {
+			b.Map[k] = val
+		} else {
+			// false or other non-string → empty replacement
+			b.Map[k] = ""
+		}
+	}
+	return nil
+}
+
+// Lookup checks if a file path is remapped by this browser field's object form.
+// Returns the replacement path and true, or "" and false if no mapping exists.
+func (b *browserField) Lookup(filePath string) (string, bool) {
+	if b.Map == nil {
+		return "", false
+	}
+	// Normalize to "./" prefix for comparison
+	normalized := "./" + strings.TrimPrefix(filePath, "./")
+	for key, val := range b.Map {
+		normalizedKey := "./" + strings.TrimPrefix(key, "./")
+		if normalizedKey == normalized {
+			return val, true
+		}
+	}
+	return "", false
+}
+
 // packageJSON holds the fields we need for module resolution.
 type packageJSON struct {
-	Exports *exportValue `json:"exports"`
-	Module  string       `json:"module"`
-	Main    string       `json:"main"`
+	Exports *exportValue  `json:"exports"`
+	Browser *browserField `json:"browser"`
+	Module  string        `json:"module"`
+	Main    string        `json:"main"`
 }
 
 // resolvePackageEntry reads a package's package.json and resolves the entry
@@ -66,15 +116,40 @@ func resolvePackageEntry(pkgDir, subpath, platform string) string {
 		}
 	}
 
-	// Fallback to module/main for root subpath only
+	// Fallback to browser/module/main for root subpath only.
 	if subpath == "." {
+		// Browser string form: "browser": "lib/browser.js"
+		if platform == "browser" && pkg.Browser != nil && pkg.Browser.Path != "" {
+			resolved := filepath.Join(pkgDir, pkg.Browser.Path)
+			if _, err := os.Stat(resolved); err == nil {
+				return resolved
+			}
+		}
+
+		// Resolve via module → main
+		var entryPath string
 		for _, val := range []string{pkg.Module, pkg.Main} {
 			if val != "" {
 				resolved := filepath.Join(pkgDir, val)
 				if _, err := os.Stat(resolved); err == nil {
-					return resolved
+					entryPath = val
+					break
 				}
 			}
+		}
+
+		if entryPath != "" {
+			// Browser object form: "browser": {"./lib/index.js": "./lib/browser.js"}
+			// If the resolved entry is mapped, use the replacement instead.
+			if platform == "browser" && pkg.Browser != nil {
+				if replacement, ok := pkg.Browser.Lookup(entryPath); ok && replacement != "" {
+					resolved := filepath.Join(pkgDir, replacement)
+					if _, err := os.Stat(resolved); err == nil {
+						return resolved
+					}
+				}
+			}
+			return filepath.Join(pkgDir, entryPath)
 		}
 	}
 
