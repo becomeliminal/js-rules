@@ -510,11 +510,16 @@ func Run(args Args) error {
 		ips:  getLocalIPs(),
 	}
 
-	plugins := []api.Plugin{
+	var plugins []api.Plugin
+	// For browser builds, replace Node.js built-in imports with empty modules.
+	if args.Platform != "node" {
+		plugins = append(plugins, common.NodeBuiltinEmptyPlugin())
+	}
+	plugins = append(plugins,
 		common.ModuleResolvePlugin(moduleMap, args.Platform),
 		common.RawImportPlugin(),
 		buildTimerPlugin(info, server),
-	}
+	)
 	if args.TailwindBin != "" {
 		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
 	}
@@ -535,12 +540,6 @@ func Run(args Args) error {
 	}
 	common.MergeEnvDefines(define, "development")
 
-	// For browser builds, externalize Node.js built-in modules.
-	var external []string
-	if args.Platform != "node" {
-		external = common.NodeBuiltins
-	}
-
 	opts := api.BuildOptions{
 		EntryPoints: []string{args.Entry},
 		Outdir:      outdir,
@@ -550,7 +549,7 @@ func Run(args Args) error {
 		Platform:    common.ParsePlatform(args.Platform),
 		Target:      api.ESNext,
 		LogLevel:    api.LogLevelWarning,
-		External:    external,
+		External:    nil,
 		Loader:      common.Loaders,
 		Plugins:     plugins,
 		Banner: map[string]string{

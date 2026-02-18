@@ -46,10 +46,17 @@ func Run(args Args) error {
 	}
 
 	// Configure and run esbuild
-	plugins := []api.Plugin{
+	var plugins []api.Plugin
+	// For browser builds, replace Node.js built-in imports with empty modules.
+	// Using a plugin instead of External avoids leaving bare import "stream"
+	// statements in the output that browsers can't resolve.
+	if args.Platform != "node" {
+		plugins = append(plugins, common.NodeBuiltinEmptyPlugin())
+	}
+	plugins = append(plugins,
 		common.ModuleResolvePlugin(moduleMap, args.Platform),
 		common.RawImportPlugin(),
-	}
+	)
 	if args.TailwindBin != "" {
 		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
 	}
@@ -68,14 +75,6 @@ func Run(args Args) error {
 	}
 	common.MergeEnvDefines(define, "production")
 
-	// For browser builds, externalize Node.js built-in modules so packages
-	// with dead Node code paths (e.g. pngjs via qrcode.react) don't break
-	// the bundle. This matches Vite's behavior.
-	external := args.External
-	if args.Platform != "node" {
-		external = append(common.NodeBuiltins, external...)
-	}
-
 	opts := api.BuildOptions{
 		EntryPoints:       []string{args.Entry},
 		Outfile:           args.Out,
@@ -85,7 +84,7 @@ func Run(args Args) error {
 		Platform:          common.ParsePlatform(args.Platform),
 		Target:            api.ESNext,
 		LogLevel:          api.LogLevelInfo,
-		External:          external,
+		External:          args.External,
 		Loader:            common.Loaders,
 		Plugins:           plugins,
 		Define:            define,

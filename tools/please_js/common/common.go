@@ -42,6 +42,42 @@ var NodeBuiltins = []string{
 	"node:worker_threads", "node:zlib",
 }
 
+// NodeBuiltinEmptyPlugin returns an esbuild plugin that resolves Node.js
+// built-in module imports to empty modules. For browser builds, this replaces
+// the External approach — instead of leaving bare import "stream" statements
+// in the output (which browsers can't resolve), it bundles an empty module.
+func NodeBuiltinEmptyPlugin() api.Plugin {
+	builtinSet := make(map[string]bool, len(NodeBuiltins))
+	for _, b := range NodeBuiltins {
+		builtinSet[b] = true
+	}
+	return api.Plugin{
+		Name: "node-builtin-empty",
+		Setup: func(build api.PluginBuild) {
+			build.OnResolve(api.OnResolveOptions{Filter: "^[^./]"},
+				func(args api.OnResolveArgs) (api.OnResolveResult, error) {
+					if builtinSet[args.Path] {
+						return api.OnResolveResult{
+							Path:      args.Path,
+							Namespace: "node-builtin-empty",
+						}, nil
+					}
+					return api.OnResolveResult{}, nil
+				},
+			)
+			build.OnLoad(api.OnLoadOptions{Filter: ".*", Namespace: "node-builtin-empty"},
+				func(args api.OnLoadArgs) (api.OnLoadResult, error) {
+					contents := "export default {};"
+					return api.OnLoadResult{
+						Contents: &contents,
+						Loader:   api.LoaderJS,
+					}, nil
+				},
+			)
+		},
+	}
+}
+
 // Loaders maps file extensions to esbuild loaders.
 var Loaders = map[string]api.Loader{
 	".js":    api.LoaderJS,
