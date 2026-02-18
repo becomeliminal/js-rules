@@ -17,7 +17,8 @@ var opts = struct {
 
 	Bundle struct {
 		Entry          string   `short:"e" long:"entry" required:"true" description:"Entry point file"`
-		Out            string   `short:"o" long:"out" required:"true" description:"Output file"`
+		Out            string   `short:"o" long:"out" description:"Output file"`
+		OutDir         string   `long:"out-dir" description:"Output directory (for code splitting)"`
 		ModuleConfig   string   `short:"m" long:"moduleconfig" description:"Aggregated moduleconfig file"`
 		Format         string   `short:"f" long:"format" default:"esm" description:"Output format: esm, cjs, iife"`
 		Platform       string   `short:"p" long:"platform" default:"browser" description:"Target platform: browser, node"`
@@ -26,6 +27,8 @@ var opts = struct {
 		Tsconfig       string   `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
 		Define         []string `long:"define" description:"Define substitutions (key=value)"`
 		Minify         bool     `long:"minify" description:"Minify output (syntax, whitespace, identifiers)"`
+		Splitting      bool     `long:"splitting" description:"Enable code splitting (requires ESM format)"`
+		HTML           bool     `long:"html" description:"Generate index.html with module scripts and preload hints"`
 		EnvFile        string   `long:"env-file" description:"Base .env file path for auto-discovery"`
 		EnvPrefix      string   `long:"env-prefix" default:"PLZ_" description:"Prefix filter for .env variables"`
 		TailwindBin    string   `long:"tailwind-bin" description:"Path to Tailwind CSS binary"`
@@ -78,6 +81,7 @@ var subCommands = map[string]func() int{
 		if err := bundle.Run(bundle.Args{
 			Entry:          opts.Bundle.Entry,
 			Out:            opts.Bundle.Out,
+			OutDir:         opts.Bundle.OutDir,
 			ModuleConfig:   opts.Bundle.ModuleConfig,
 			Format:         opts.Bundle.Format,
 			Platform:       opts.Bundle.Platform,
@@ -85,6 +89,8 @@ var subCommands = map[string]func() int{
 			External:       opts.Bundle.External,
 			Define:         opts.Bundle.Define,
 			Minify:         opts.Bundle.Minify,
+			Splitting:      opts.Bundle.Splitting,
+			HTML:           opts.Bundle.HTML,
 			EnvFile:        opts.Bundle.EnvFile,
 			EnvPrefix:      opts.Bundle.EnvPrefix,
 			Tsconfig:       opts.Bundle.Tsconfig,
