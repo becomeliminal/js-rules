@@ -92,7 +92,7 @@ func Run(args Args) error {
 func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage {
 	// Build set of known top-level package names for dep resolution
 	topLevel := make(map[string]bool)
-	for path := range pkgs {
+	for path, info := range pkgs {
 		if path == "" {
 			continue // skip root
 		}
@@ -102,6 +102,10 @@ func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage 
 		}
 		// Only consider top-level (not nested node_modules)
 		if isNestedPackage(path) {
+			continue
+		}
+		// Skip optional packages so they don't appear in other packages' deps
+		if info.Optional {
 			continue
 		}
 		topLevel[name] = true
