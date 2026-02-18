@@ -93,7 +93,7 @@ def js_library(name:str, srcs:list, deps:list=[], module_name:str="",
 def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
               format:str="esm", platform:str="browser", tsconfig:str="",
               define:dict={}, external:list=[], minify:bool=False,
-              env_file:str="", tailwind_config:str="",
+              env_file:str="", css:bool=False, tailwind_config:str="",
               visibility:list=None, labels:list=[]):
     """Bundles JavaScript/TypeScript into a single output file.
 
@@ -113,6 +113,8 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
         minify: Whether to minify the output (syntax, whitespace, identifiers).
         env_file: Base .env file path for auto-discovery of .env variants.
                   Only variables with the configured prefix (default PLZ_) are exposed.
+        css: Whether the bundle produces CSS output (e.g. from CSS modules).
+             When True, outputs both name.js and name.css.
         tailwind_config: Path to tailwind.config.js. When set, CSS files with
                          @tailwind directives are compiled via the Tailwind CLI.
         visibility: Visibility specification.
@@ -140,9 +142,13 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
     if tsconfig:
         all_srcs = all_srcs + [tsconfig]
 
+    has_css_output = css or bool(tailwind_config)
+
     if tailwind_config:
         tools["tailwind"] = [CONFIG.JS.TAILWIND_TOOL]
         all_srcs = all_srcs + [tailwind_config]
+
+    if has_css_output:
         if platform == "node":
             cmd = f'{bundle_cmd} && echo "#!/usr/bin/env node" > "{name}.js" && cat _bundle.js >> "{name}.js" && mv _bundle.css "{name}.css"'
         else:
