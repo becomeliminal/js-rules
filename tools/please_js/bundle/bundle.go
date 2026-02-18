@@ -52,11 +52,8 @@ func Run(args Args) error {
 		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
 	}
 
-	// Merge user defines with default NODE_ENV
 	define := common.ParseDefines(args.Define)
-	if _, ok := define["process.env.NODE_ENV"]; !ok {
-		define["process.env.NODE_ENV"] = `"production"`
-	}
+	common.MergeEnvDefines(define, "production")
 
 	opts := api.BuildOptions{
 		EntryPoints:       []string{args.Entry},

@@ -478,11 +478,8 @@ func Run(args Args) error {
 
 	format := common.ParseFormat(args.Format)
 
-	// Merge user defines with default NODE_ENV
 	define := common.ParseDefines(args.Define)
-	if _, ok := define["process.env.NODE_ENV"]; !ok {
-		define["process.env.NODE_ENV"] = `"development"`
-	}
+	common.MergeEnvDefines(define, "development")
 
 	opts := api.BuildOptions{
 		EntryPoints: []string{args.Entry},

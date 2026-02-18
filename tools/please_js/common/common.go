@@ -36,6 +36,25 @@ var Loaders = map[string]api.Loader{
 	".gif":   api.LoaderFile,
 }
 
+// MergeEnvDefines merges auto-injected env defaults into a user define map,
+// only setting keys the user hasn't already provided.
+func MergeEnvDefines(define map[string]string, mode string) {
+	isDev := mode == "development"
+	defaults := map[string]string{
+		"process.env.NODE_ENV":     fmt.Sprintf(`"%s"`, mode),
+		"import.meta.env.MODE":     fmt.Sprintf(`"%s"`, mode),
+		"import.meta.env.DEV":      fmt.Sprintf("%t", isDev),
+		"import.meta.env.PROD":     fmt.Sprintf("%t", !isDev),
+		"import.meta.env.BASE_URL": `"/"`,
+		"import.meta.env.SSR":      "false",
+	}
+	for k, v := range defaults {
+		if _, ok := define[k]; !ok {
+			define[k] = v
+		}
+	}
+}
+
 // ParseDefines parses a list of "key=value" strings into a map.
 func ParseDefines(defs []string) map[string]string {
 	result := make(map[string]string, len(defs))
