@@ -146,6 +146,19 @@ func ModuleResolvePlugin(moduleMap map[string]string, platform string) api.Plugi
 						return api.OnResolveResult{Path: result.Path}, nil
 					}
 
+					// Importer-aware fallback: resolve from the importer's directory.
+					// This finds packages in nested node_modules/ inside parent packages
+					// (e.g., porto/node_modules/zod for "zod/mini" imported from porto).
+					if args.Importer != "" {
+						result2 := build.Resolve(args.Path, api.ResolveOptions{
+							ResolveDir: filepath.Dir(args.Importer),
+							Kind:       args.Kind,
+						})
+						if len(result2.Errors) == 0 {
+							return api.OnResolveResult{Path: result2.Path}, nil
+						}
+					}
+
 					return api.OnResolveResult{}, nil
 				},
 			)

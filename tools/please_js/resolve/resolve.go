@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"tools/please_js/common"
 )
 
 // Args holds the arguments for the resolve subcommand.
@@ -45,12 +47,23 @@ type packageInfo struct {
 
 // resolvedPackage is the processed form we use for BUILD file generation.
 type resolvedPackage struct {
-	Name     string   // npm package name or alias (e.g., "react", "my-ms")
-	RealName string   // real npm package name if aliased (e.g., "ms"); empty if not aliased
-	Version  string
-	Resolved string   // tarball URL
-	Deps     []string // dependency package names (mapped to subrepo targets)
-	Dev      bool     // true if this is a dev-only package
+	Name       string            // npm package name or alias (e.g., "react", "my-ms")
+	RealName   string            // real npm package name if aliased (e.g., "ms"); empty if not aliased
+	Version    string
+	Resolved   string            // tarball URL
+	Deps       []string          // dependency package names (mapped to subrepo targets)
+	Dev        bool              // true if this is a dev-only package
+	NestedDeps map[string]string // import_name -> subrepo target for version-conflict deps
+}
+
+// conflictTarget represents an additional npm_module target for a specific
+// version of a package that conflicts with the top-level version.
+type conflictTarget struct {
+	Dir        string   // subrepo directory path (e.g., "zod", "@types/react")
+	TargetName string   // version-qualified name (e.g., "zod_v4_3_6")
+	PkgName    string   // real npm package name
+	Version    string
+	Deps       []string // dependency package names
 }
 
 // Run executes the resolve subcommand.
@@ -69,8 +82,8 @@ func Run(args Args) error {
 		return fmt.Errorf("unsupported lockfile version %d (expected 2 or 3)", lock.LockfileVersion)
 	}
 
-	// Collect all top-level packages (skip root, nested, dev)
-	packages := collectPackages(lock.Packages, args.NoDev)
+	// Collect all top-level packages (skip root, nested, dev) and version-conflict targets
+	packages, conflictTargets := collectPackages(lock.Packages, args.NoDev)
 	breakCycles(packages)
 
 	// Generate output directory
@@ -92,7 +105,15 @@ func Run(args Args) error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "Generated %d npm_module rules\n", len(packages))
+	// Append version-conflict targets to existing BUILD files
+	for _, ct := range conflictTargets {
+		if err := appendConflictTarget(args.Out, ct); err != nil {
+			return fmt.Errorf("failed to write conflict target %s: %w", ct.TargetName, err)
+		}
+	}
+
+	total := len(packages) + len(conflictTargets)
+	fmt.Fprintf(os.Stderr, "Generated %d npm_module rules (%d version-conflict targets)\n", total, len(conflictTargets))
 	return nil
 }
 
@@ -133,53 +154,126 @@ func breakCycles(packages []resolvedPackage) {
 	}
 }
 
-// collectPackages extracts top-level packages from the lockfile.
-func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage {
-	// Build set of known top-level package names for dep resolution
+// collectPackages extracts top-level packages from the lockfile and detects
+// version conflicts. It returns regular packages (including promoted nested-only
+// packages) and version-conflict targets for packages that exist at multiple versions.
+func collectPackages(pkgs map[string]packageInfo, noDev bool) ([]resolvedPackage, []conflictTarget) {
+	// Phase 1: Build set of top-level package names and their versions
 	topLevel := make(map[string]bool)
-	for path := range pkgs {
-		if path == "" {
-			continue // skip root
-		}
-		name := extractPackageName(path)
-		if name == "" {
+	topLevelVersions := make(map[string]string)
+	for path, info := range pkgs {
+		if path == "" || common.IsNestedPackage(path) {
 			continue
 		}
-		// Only consider top-level (not nested node_modules)
-		if isNestedPackage(path) {
+		name := common.ExtractPackageName(path)
+		if name == "" {
 			continue
 		}
 		topLevel[name] = true
+		topLevelVersions[name] = info.Version
 	}
 
-	var result []resolvedPackage
-	for path, info := range pkgs {
-		if path == "" {
-			continue // skip root package
+	// Phase 2: Promote nested-only packages (exist ONLY as nested, no top-level)
+	promoted := make(map[string]string) // name -> lockfile path
+	for path := range pkgs {
+		if path == "" || !common.IsNestedPackage(path) {
+			continue
 		}
+		name := common.ExtractPackageName(path)
+		if name == "" || topLevel[name] {
+			continue
+		}
+		if _, already := promoted[name]; already {
+			continue
+		}
+		promoted[name] = path
+		topLevel[name] = true
+	}
 
-		name := extractPackageName(path)
+	// Phase 3: Detect version conflicts (nested package version differs from top-level)
+	type parentConflict struct {
+		ParentName string
+		DepName    string
+		Version    string
+	}
+	var conflicts []parentConflict
+	conflictVersionInfos := make(map[string]map[string]packageInfo) // depName -> version -> info
+
+	for path, info := range pkgs {
+		if path == "" || !common.IsNestedPackage(path) {
+			continue
+		}
+		name := common.ExtractPackageName(path)
 		if name == "" {
 			continue
 		}
-
-		// Skip nested node_modules (version conflicts) for v1
-		if isNestedPackage(path) {
-			log.Printf("warning: skipping nested package %s (version conflict handling not yet supported)", path)
+		// Skip promoted packages (they're treated as top-level)
+		if promoted[name] == path {
 			continue
 		}
-
-		// Skip dev packages if --no-dev
-		if noDev && info.Dev {
+		// Only detect conflicts where a different top-level version exists
+		topVer, exists := topLevelVersions[name]
+		if !exists || info.Version == topVer {
 			continue
 		}
-
-		// Skip packages without a resolved URL (local packages, workspace refs)
 		if info.Resolved == "" {
 			continue
 		}
 
-		// Map dependencies to target names (only include deps that exist at top level)
+		parentPath := common.ExtractParentPackagePath(path)
+		parentName := common.ExtractPackageName(parentPath)
+		if parentName == "" {
+			continue
+		}
+
+		conflicts = append(conflicts, parentConflict{
+			ParentName: parentName,
+			DepName:    name,
+			Version:    info.Version,
+		})
+
+		if conflictVersionInfos[name] == nil {
+			conflictVersionInfos[name] = make(map[string]packageInfo)
+		}
+		conflictVersionInfos[name][info.Version] = info
+	}
+
+	// Build parent -> nested deps mapping
+	parentNestedDeps := make(map[string]map[string]string) // parentName -> depName -> target
+	for _, c := range conflicts {
+		if parentNestedDeps[c.ParentName] == nil {
+			parentNestedDeps[c.ParentName] = make(map[string]string)
+		}
+		targetName := versionedTargetName(c.DepName, c.Version)
+		parentNestedDeps[c.ParentName][c.DepName] = fmt.Sprintf("//%s:%s", c.DepName, targetName)
+	}
+
+	// Phase 4: Build resolvedPackage entries
+	var result []resolvedPackage
+	for path, info := range pkgs {
+		if path == "" {
+			continue
+		}
+		name := common.ExtractPackageName(path)
+		if name == "" {
+			continue
+		}
+
+		// Handle nested packages: only allow promoted ones through
+		if common.IsNestedPackage(path) {
+			if promoted[name] != path {
+				continue
+			}
+		}
+
+		if noDev && info.Dev {
+			continue
+		}
+
+		if info.Resolved == "" {
+			continue
+		}
+
 		var deps []string
 		for dep := range info.Dependencies {
 			if topLevel[dep] {
@@ -196,50 +290,81 @@ func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage 
 		}
 		sort.Strings(deps)
 
-		// Detect npm aliases: directory name differs from the real package in the tarball URL
 		var realName string
-		if rn := extractRealPackageName(info.Resolved); rn != "" && rn != name {
+		if rn := common.ExtractRealPackageName(info.Resolved); rn != "" && rn != name {
 			realName = rn
 		}
 
-		result = append(result, resolvedPackage{
+		pkg := resolvedPackage{
 			Name:     name,
 			RealName: realName,
 			Version:  info.Version,
 			Resolved: info.Resolved,
 			Deps:     deps,
 			Dev:      info.Dev,
-		})
+		}
+
+		if nd, ok := parentNestedDeps[name]; ok {
+			pkg.NestedDeps = nd
+		}
+
+		result = append(result, pkg)
 	}
 
-	// Sort for deterministic output
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Name < result[j].Name
 	})
 
-	return result
-}
+	// Phase 5: Build conflict targets
+	var ctargets []conflictTarget
+	seen := make(map[string]bool)
+	for _, c := range conflicts {
+		key := c.DepName + "@" + c.Version
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 
-// extractPackageName extracts the npm package name from a lockfile path.
-// "node_modules/react" → "react"
-// "node_modules/@types/react" → "@types/react"
-func extractPackageName(path string) string {
-	const prefix = "node_modules/"
-	if !strings.HasPrefix(path, prefix) {
-		return ""
+		info := conflictVersionInfos[c.DepName][c.Version]
+
+		var deps []string
+		for dep := range info.Dependencies {
+			if topLevel[dep] {
+				deps = append(deps, dep)
+			}
+		}
+		sort.Strings(deps)
+
+		ctargets = append(ctargets, conflictTarget{
+			Dir:        c.DepName,
+			TargetName: versionedTargetName(c.DepName, c.Version),
+			PkgName:    c.DepName,
+			Version:    c.Version,
+			Deps:       deps,
+		})
 	}
-	// Find the last occurrence of "node_modules/" to handle nested packages
-	idx := strings.LastIndex(path, prefix)
-	return path[idx+len(prefix):]
+
+	sort.Slice(ctargets, func(i, j int) bool {
+		if ctargets[i].Dir != ctargets[j].Dir {
+			return ctargets[i].Dir < ctargets[j].Dir
+		}
+		return ctargets[i].TargetName < ctargets[j].TargetName
+	})
+
+	return result, ctargets
 }
 
-// isNestedPackage checks if a package is inside another package's node_modules.
-// "node_modules/react" → false
-// "node_modules/@types/react" → false
-// "node_modules/react-dom/node_modules/scheduler" → true
-func isNestedPackage(path string) bool {
-	// Count occurrences of "node_modules/"
-	return strings.Count(path, "node_modules/") > 1
+// versionedTargetName generates a version-qualified target name for a conflict target.
+// "zod", "4.3.6" → "zod_v4_3_6"
+// "@types/react", "17.0.0" → "react_v17_0_0"
+func versionedTargetName(name, version string) string {
+	base := name
+	if strings.Contains(name, "/") {
+		parts := strings.Split(name, "/")
+		base = parts[len(parts)-1]
+	}
+	v := strings.NewReplacer(".", "_", "-", "_").Replace(version)
+	return fmt.Sprintf("%s_v%s", base, v)
 }
 
 // writePlzConfig writes the .plzconfig for the subrepo.
@@ -288,6 +413,19 @@ func writeBuildFile(outDir string, pkg resolvedPackage, subincludePath string) e
 		b.WriteString("    ],\n")
 	}
 
+	if len(pkg.NestedDeps) > 0 {
+		b.WriteString("    nested_deps = {\n")
+		var keys []string
+		for k := range pkg.NestedDeps {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			b.WriteString(fmt.Sprintf("        %q: %q,\n", k, pkg.NestedDeps[k]))
+		}
+		b.WriteString("    },\n")
+	}
+
 	if pkg.Dev {
 		b.WriteString("    labels = [\"npm:dev\"],\n")
 	}
@@ -298,20 +436,37 @@ func writeBuildFile(outDir string, pkg resolvedPackage, subincludePath string) e
 	return os.WriteFile(filepath.Join(pkgDir, "BUILD"), []byte(b.String()), 0644)
 }
 
-// extractRealPackageName extracts the real npm package name from a registry URL.
-// "https://registry.npmjs.org/@coinbase/wallet-sdk/-/wallet-sdk-3.9.3.tgz" → "@coinbase/wallet-sdk"
-// "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz" → "ms"
-func extractRealPackageName(resolved string) string {
-	const prefix = "https://registry.npmjs.org/"
-	if !strings.HasPrefix(resolved, prefix) {
-		return ""
+// appendConflictTarget appends a version-conflict npm_module target to an existing BUILD file.
+func appendConflictTarget(outDir string, ct conflictTarget) error {
+	pkgDir := filepath.Join(outDir, ct.Dir)
+	buildFile := filepath.Join(pkgDir, "BUILD")
+
+	var b strings.Builder
+	b.WriteString("\nnpm_module(\n")
+	b.WriteString(fmt.Sprintf("    name = %q,\n", ct.TargetName))
+	b.WriteString(fmt.Sprintf("    pkg_name = %q,\n", ct.PkgName))
+	b.WriteString(fmt.Sprintf("    version = %q,\n", ct.Version))
+
+	if len(ct.Deps) > 0 {
+		b.WriteString("    deps = [\n")
+		for _, dep := range ct.Deps {
+			target := depTarget(dep)
+			b.WriteString(fmt.Sprintf("        %q,\n", target))
+		}
+		b.WriteString("    ],\n")
 	}
-	rest := resolved[len(prefix):]
-	sepIdx := strings.Index(rest, "/-/")
-	if sepIdx < 0 {
-		return ""
+
+	b.WriteString("    visibility = [\"PUBLIC\"],\n")
+	b.WriteString(")\n")
+
+	f, err := os.OpenFile(buildFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
 	}
-	return rest[:sepIdx]
+	defer f.Close()
+
+	_, err = f.WriteString(b.String())
+	return err
 }
 
 // depTarget converts a package name to a subrepo target reference.

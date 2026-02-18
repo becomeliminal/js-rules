@@ -150,3 +150,53 @@ func resolveCondition(value *exportValue, platform string) string {
 	}
 	return ""
 }
+
+// ExtractPackageName extracts the npm package name from a lockfile path.
+// "node_modules/react" → "react"
+// "node_modules/@types/react" → "@types/react"
+// "node_modules/react-dom/node_modules/scheduler" → "scheduler"
+func ExtractPackageName(path string) string {
+	const prefix = "node_modules/"
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	// Find the last occurrence of "node_modules/" to handle nested packages
+	idx := strings.LastIndex(path, prefix)
+	return path[idx+len(prefix):]
+}
+
+// IsNestedPackage checks if a package is inside another package's node_modules.
+// "node_modules/react" → false
+// "node_modules/@types/react" → false
+// "node_modules/react-dom/node_modules/scheduler" → true
+func IsNestedPackage(path string) bool {
+	return strings.Count(path, "node_modules/") > 1
+}
+
+// ExtractParentPackagePath returns the lockfile path of the parent package
+// for a nested dependency.
+// "node_modules/porto/node_modules/zod" → "node_modules/porto"
+// "node_modules/@metamask/utils/node_modules/semver" → "node_modules/@metamask/utils"
+func ExtractParentPackagePath(path string) string {
+	idx := strings.LastIndex(path, "/node_modules/")
+	if idx < 0 {
+		return ""
+	}
+	return path[:idx]
+}
+
+// ExtractRealPackageName extracts the real npm package name from a registry URL.
+// "https://registry.npmjs.org/@coinbase/wallet-sdk/-/wallet-sdk-3.9.3.tgz" → "@coinbase/wallet-sdk"
+// "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz" → "ms"
+func ExtractRealPackageName(resolved string) string {
+	const prefix = "https://registry.npmjs.org/"
+	if !strings.HasPrefix(resolved, prefix) {
+		return ""
+	}
+	rest := resolved[len(prefix):]
+	sepIdx := strings.Index(rest, "/-/")
+	if sepIdx < 0 {
+		return ""
+	}
+	return rest[:sepIdx]
+}

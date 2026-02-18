@@ -249,8 +249,8 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
 
 
 def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
-               hashes:list=None, visibility:list=["PUBLIC"], labels:list=[],
-               entry_point:str=""):
+               nested_deps:dict={}, hashes:list=None, visibility:list=["PUBLIC"],
+               labels:list=[], entry_point:str=""):
     """Downloads an npm package and makes it available as a dependency.
 
     Downloads a package tarball from the npm registry, extracts it, and
@@ -261,6 +261,10 @@ def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
         pkg_name: npm package name (e.g. "react", "@babel/core"). Defaults to name.
         version: Exact version to fetch.
         deps: Dependencies on other npm_module targets (for transitive deps).
+        nested_deps: Dict mapping import names to version-specific target labels
+                     for packages that need a different version than the top-level.
+                     The nested dep's lib output is placed into node_modules/<import_name>/
+                     inside this package's output directory.
         hashes: Optional hashes for the download.
         visibility: Visibility specification.
         labels: Additional labels.
@@ -297,19 +301,42 @@ def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
         extract = True,
     )
 
-    return build_rule(
-        name = name,
-        srcs = [download],
-        outs = {
-            "lib": [name],
-            "moduleconfig": [f"{name}.moduleconfig"],
-        },
+    if nested_deps:
+        # Named srcs: main package download + each nested dep's lib output.
+        # Use numeric keys (n0, n1, ...) since Please uppercases dict keys
+        # for variable names and the build language lacks .upper().
+        srcs = {"pkg": [download]}
+        nested_cmds = []
+        for i, import_name in enumerate(sorted(nested_deps.keys())):
+            dep_label = nested_deps[import_name]
+            srcs[f"n{i}"] = [f"{dep_label}|lib"]
+            nested_cmds += [
+                f"mkdir -p $OUTS_LIB/node_modules/{import_name}",
+                f"cp -r $SRCS_N{i}/. $OUTS_LIB/node_modules/{import_name}/",
+            ]
+        cmd = " && ".join([
+            "mkdir -p $OUTS_LIB",
+            "if [ -d $SRCS_PKG/package ]; then cp -r $SRCS_PKG/package/. $OUTS_LIB/; else cp -r $SRCS_PKG/. $OUTS_LIB/; fi",
+        ] + nested_cmds + [
+            f'echo "{import_key}=$PKG_DIR/{name}" > $OUTS_MODULECONFIG',
+        ])
+    else:
+        srcs = [download]
         cmd = " && ".join([
             "mkdir -p $OUTS_LIB",
             # npm tarballs extract to a package/ subdirectory
             "if [ -d $SRCS/package ]; then cp -r $SRCS/package/. $OUTS_LIB/; else cp -r $SRCS/. $OUTS_LIB/; fi",
             f'echo "{import_key}=$PKG_DIR/{name}" > $OUTS_MODULECONFIG',
-        ]),
+        ])
+
+    return build_rule(
+        name = name,
+        srcs = srcs,
+        outs = {
+            "lib": [name],
+            "moduleconfig": [f"{name}.moduleconfig"],
+        },
+        cmd = cmd,
         exported_deps = deps,
         visibility = visibility,
         labels = labels + [f"npm_module:{pkg}@{version}"],
