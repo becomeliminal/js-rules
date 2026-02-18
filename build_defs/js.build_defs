@@ -93,7 +93,8 @@ def js_library(name:str, srcs:list, deps:list=[], module_name:str="",
 def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
               format:str="esm", platform:str="browser", tsconfig:str="",
               define:dict={}, external:list=[], minify:bool=False,
-              tailwind_config:str="", visibility:list=None, labels:list=[]):
+              env_file:str="", tailwind_config:str="",
+              visibility:list=None, labels:list=[]):
     """Bundles JavaScript/TypeScript into a single output file.
 
     Aggregates all .moduleconfig files from transitive dependencies,
@@ -110,11 +111,17 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
         define: Dict of compile-time string replacements (e.g. {"import.meta.env.MODE": '"production"'}).
         external: List of packages to exclude from the bundle (e.g. ["fs", "path"]).
         minify: Whether to minify the output (syntax, whitespace, identifiers).
+        env_file: Base .env file path for auto-discovery of .env variants.
+                  Only variables with the configured prefix (default PLZ_) are exposed.
         tailwind_config: Path to tailwind.config.js. When set, CSS files with
                          @tailwind directives are compiled via the Tailwind CLI.
         visibility: Visibility specification.
         labels: Additional labels.
     """
+    env_prefix = CONFIG.JS.ENV_PREFIX
+    env_srcs = glob(f"{env_file}*", hidden=True) if env_file else []
+    env_flags = f"--env-file $PKG_DIR/{env_file} --env-prefix {env_prefix}" if env_file else ""
+
     moduleconfig_flag = "--moduleconfig moduleconfig"
     tsconfig_flag = f"--tsconfig $PKG_DIR/{tsconfig}" if tsconfig else ""
     define_flags = " ".join([f"--define '{k}={v}'" for k, v in sorted(define.items())])
@@ -124,12 +131,12 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
 
     bundle_cmd = " && ".join([
         _aggregate_moduleconfig_cmd(),
-        f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} {moduleconfig_flag} --out _bundle.js --format {format} --platform {platform} {tsconfig_flag} {define_flags} {external_flags} {minify_flag} {tailwind_flags}",
+        f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} {moduleconfig_flag} --out _bundle.js --format {format} --platform {platform} {tsconfig_flag} {define_flags} {external_flags} {minify_flag} {env_flags} {tailwind_flags}",
     ])
 
     tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]}
 
-    all_srcs = [entry_point] + srcs
+    all_srcs = [entry_point] + srcs + env_srcs
     if tsconfig:
         all_srcs = all_srcs + [tsconfig]
 
@@ -165,7 +172,7 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
 
 def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
             dev_deps:list=[], tsconfig:str="", define:dict={},
-            tailwind_config:str="",
+            env_file:str="", tailwind_config:str="",
             visibility:list=None, labels:list=[], timeout:int=0,
             flaky:bool|int=0, size:str=None):
     """Bundles and runs JavaScript tests using Node.js.
@@ -177,6 +184,8 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
         deps: Dependencies.
         dev_deps: Development-only dependencies (test frameworks, mocking tools).
         tsconfig: Path to tsconfig.json for JSX settings, paths, etc.
+        env_file: Base .env file path for auto-discovery of .env variants.
+                  Only variables with the configured prefix (default PLZ_) are exposed.
         tailwind_config: Path to tailwind.config.js. When set, CSS files with
                          @tailwind directives are compiled via the Tailwind CLI.
         visibility: Visibility specification.
@@ -185,6 +194,10 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
         flaky: True to mark the test as flaky, or an integer for reruns.
         size: Test size (enormous, large, medium, small).
     """
+    env_prefix = CONFIG.JS.ENV_PREFIX
+    env_srcs = glob(f"{env_file}*", hidden=True) if env_file else []
+    env_flags = f"--env-file $PKG_DIR/{env_file} --env-prefix {env_prefix}" if env_file else ""
+
     entry_point = entry_point or srcs[0]
     tsconfig_flag = f"--tsconfig $PKG_DIR/{tsconfig}" if tsconfig else ""
     define_flags = " ".join([f"--define '{k}={v}'" for k, v in sorted(define.items())])
@@ -197,7 +210,7 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
     else:
         test_cmd = "node $TEST"
 
-    all_srcs = srcs
+    all_srcs = srcs + env_srcs
     if tsconfig:
         all_srcs = all_srcs + [tsconfig]
     if tailwind_config:
@@ -213,7 +226,7 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
         no_test_output = True,
         cmd = " && ".join([
             _aggregate_moduleconfig_cmd(),
-            f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} --moduleconfig moduleconfig --out $OUT --format cjs --platform node {tsconfig_flag} {define_flags} {tailwind_flags}",
+            f"$TOOLS_PLEASE_JS bundle --entry $PKG_DIR/{entry_point} --moduleconfig moduleconfig --out $OUT --format cjs --platform node {tsconfig_flag} {define_flags} {env_flags} {tailwind_flags}",
         ]),
         test_cmd = test_cmd,
         tools = tools,
@@ -386,7 +399,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
                   dev_deps:list=[], servedir:str=".", port:int=8080,
                   format:str="esm", platform:str="browser",
                   tsconfig:str="", define:dict={}, proxy:dict={},
-                  tailwind_config:str="",
+                  env_file:str="", tailwind_config:str="",
                   visibility:list=None):
     """Creates a runnable dev server target with live reload.
 
@@ -408,6 +421,8 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
         tsconfig: Path to tsconfig.json for JSX settings, paths, etc.
         define: Dict of compile-time string replacements (e.g. {"import.meta.env.MODE": '"production"'}).
         proxy: Dict mapping URL prefixes to backend targets (e.g. {"/api": "http://localhost:3001"}).
+        env_file: Base .env file path for auto-discovery of .env variants.
+                  Only variables with the configured prefix (default PLZ_) are exposed.
         tailwind_config: Path to tailwind.config.js. When set, CSS files with
                          @tailwind directives are compiled via the Tailwind CLI.
         visibility: Visibility specification.
@@ -423,6 +438,9 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
     # plz-out/gen for .moduleconfig files. Each moduleconfig file's path minus
     # the .moduleconfig suffix IS the output directory path. This avoids needing
     # to resolve build-time sandbox paths to plz-out paths.
+    env_prefix = CONFIG.JS.ENV_PREFIX
+    env_arg = f" --env-file '$PKG_DIR'/{env_file} --env-prefix {env_prefix}" if env_file else ""
+
     tsconfig_arg = f' --tsconfig \'\"$PKG_DIR\"\'/{tsconfig}' if tsconfig else ""
     define_arg = "".join([f" --define '{k}={v}'" for k, v in sorted(define.items())])
     proxy_arg = "".join([f" --proxy '{prefix}={target}'" for prefix, target in sorted(proxy.items())])
@@ -444,7 +462,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
         "echo 'MODCONF=$(mktemp)' >> $OUT",
         "echo 'trap \"rm -f $MODCONF\" EXIT' >> $OUT",
         """echo 'find "$(pwd)/plz-out/gen" -name "*.moduleconfig" | while read f; do abs="${f%.moduleconfig}"; while IFS="=" read -r name _; do echo "$name=$abs"; done < "$f"; done > $MODCONF' >> $OUT""",
-        f"echo 'exec '\"$PLEASE_JS\"' dev --entry '\"$PKG_DIR\"'/{entry_point} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --port {port} --format {format} --platform {platform}{tsconfig_arg}{define_arg}{proxy_arg}{tailwind_arg}' >> $OUT",
+        f"echo 'exec '\"$PLEASE_JS\"' dev --entry '\"$PKG_DIR\"'/{entry_point} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --port {port} --format {format} --platform {platform}{tsconfig_arg}{define_arg}{proxy_arg}{env_arg}{tailwind_arg}' >> $OUT",
         "chmod +x $OUT",
     ])
 

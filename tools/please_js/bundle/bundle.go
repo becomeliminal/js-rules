@@ -21,6 +21,8 @@ type Args struct {
 	External       []string
 	Define         []string
 	Minify         bool
+	EnvFile        string
+	EnvPrefix      string
 	Tsconfig       string
 	TailwindBin    string
 	TailwindConfig string
@@ -53,6 +55,17 @@ func Run(args Args) error {
 	}
 
 	define := common.ParseDefines(args.Define)
+	if args.EnvFile != "" {
+		envDefines, err := common.LoadEnvFiles(args.EnvFile, "production", args.EnvPrefix)
+		if err != nil {
+			return fmt.Errorf("failed to load env files: %w", err)
+		}
+		for k, v := range envDefines {
+			if _, ok := define[k]; !ok {
+				define[k] = v
+			}
+		}
+	}
 	common.MergeEnvDefines(define, "production")
 
 	opts := api.BuildOptions{

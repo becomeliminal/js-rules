@@ -26,6 +26,8 @@ var opts = struct {
 		Tsconfig       string   `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
 		Define         []string `long:"define" description:"Define substitutions (key=value)"`
 		Minify         bool     `long:"minify" description:"Minify output (syntax, whitespace, identifiers)"`
+		EnvFile        string   `long:"env-file" description:"Base .env file path for auto-discovery"`
+		EnvPrefix      string   `long:"env-prefix" default:"PLZ_" description:"Prefix filter for .env variables"`
 		TailwindBin    string   `long:"tailwind-bin" description:"Path to Tailwind CSS binary"`
 		TailwindConfig string   `long:"tailwind-config" description:"Path to tailwind.config.js"`
 	} `command:"bundle" alias:"b" description:"Bundle JavaScript/TypeScript using esbuild"`
@@ -54,6 +56,8 @@ var opts = struct {
 		Tsconfig       string `long:"tsconfig" description:"Path to tsconfig.json (for JSX settings, paths, etc.)"`
 		Define         []string `long:"define" description:"Define substitutions (key=value)"`
 		Proxy          []string `long:"proxy" description:"Proxy rules (prefix=target)"`
+		EnvFile        string   `long:"env-file" description:"Base .env file path for auto-discovery"`
+		EnvPrefix      string   `long:"env-prefix" default:"PLZ_" description:"Prefix filter for .env variables"`
 		TailwindBin    string   `long:"tailwind-bin" description:"Path to Tailwind CSS binary"`
 		TailwindConfig string   `long:"tailwind-config" description:"Path to tailwind.config.js"`
 	} `command:"dev" alias:"d" description:"Start dev server with live reload using esbuild"`
@@ -81,6 +85,8 @@ var subCommands = map[string]func() int{
 			External:       opts.Bundle.External,
 			Define:         opts.Bundle.Define,
 			Minify:         opts.Bundle.Minify,
+			EnvFile:        opts.Bundle.EnvFile,
+			EnvPrefix:      opts.Bundle.EnvPrefix,
 			Tsconfig:       opts.Bundle.Tsconfig,
 			TailwindBin:    opts.Bundle.TailwindBin,
 			TailwindConfig: opts.Bundle.TailwindConfig,
@@ -119,6 +125,8 @@ var subCommands = map[string]func() int{
 			Platform:       opts.Dev.Platform,
 			Define:         opts.Dev.Define,
 			Proxy:          opts.Dev.Proxy,
+			EnvFile:        opts.Dev.EnvFile,
+			EnvPrefix:      opts.Dev.EnvPrefix,
 			Tsconfig:       opts.Dev.Tsconfig,
 			TailwindBin:    opts.Dev.TailwindBin,
 			TailwindConfig: opts.Dev.TailwindConfig,

@@ -25,6 +25,13 @@ Help = Build label for the Tailwind CSS standalone CLI (from tailwind_toolchain)
 Optional = true
 Inherit = true
 
+[PluginConfig "env_prefix"]
+ConfigKey = EnvPrefix
+DefaultValue = PLZ_
+Help = Prefix filter for .env variables exposed as import.meta.env.*.
+Optional = true
+Inherit = true
+
 [Plugin "js"]
 Target = //plugins:js
 PleaseJsTool = //tools/please_js
