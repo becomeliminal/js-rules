@@ -15,6 +15,33 @@ import (
 	"github.com/evanw/esbuild/pkg/api"
 )
 
+// NodeBuiltins lists Node.js built-in modules that should be externalized
+// in browser builds. Packages like pngjs import these for server-side code
+// paths that are dead code in the browser. Both bare and node:-prefixed
+// forms are listed because esbuild treats them as separate specifiers.
+var NodeBuiltins = []string{
+	"assert", "async_hooks", "buffer", "child_process", "cluster",
+	"console", "constants", "crypto", "dgram", "diagnostics_channel",
+	"dns", "domain", "events", "fs", "http", "http2", "https",
+	"inspector", "module", "net", "os", "path", "perf_hooks",
+	"process", "punycode", "querystring", "readline", "repl",
+	"stream", "string_decoder", "sys", "timers", "tls",
+	"trace_events", "tty", "url", "util", "v8", "vm", "wasi",
+	"worker_threads", "zlib",
+	"node:assert", "node:async_hooks", "node:buffer",
+	"node:child_process", "node:cluster", "node:console",
+	"node:constants", "node:crypto", "node:dgram",
+	"node:diagnostics_channel", "node:dns", "node:domain",
+	"node:events", "node:fs", "node:http", "node:http2", "node:https",
+	"node:inspector", "node:module", "node:net", "node:os", "node:path",
+	"node:perf_hooks", "node:process", "node:punycode",
+	"node:querystring", "node:readline", "node:repl", "node:stream",
+	"node:string_decoder", "node:sys", "node:test", "node:timers",
+	"node:trace_events", "node:tls", "node:tty", "node:url",
+	"node:util", "node:v8", "node:vm", "node:wasi",
+	"node:worker_threads", "node:zlib",
+}
+
 // Loaders maps file extensions to esbuild loaders.
 var Loaders = map[string]api.Loader{
 	".js":    api.LoaderJS,
