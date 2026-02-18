@@ -5,6 +5,7 @@ go_binary(
         "//third_party/go:go-flags",
         "//tools/please_js/bundle",
         "//tools/please_js/dev",
+        "//tools/please_js/esmdev",
         "//tools/please_js/resolve",
         "//tools/please_js/transpile",
     ],

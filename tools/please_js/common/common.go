@@ -194,7 +194,7 @@ func ModuleResolvePlugin(moduleMap map[string]string, platform string) api.Plugi
 					}
 
 					// Try exports-aware resolution first
-					if resolved := resolvePackageEntry(absBestPath, subpath, platform); resolved != "" {
+					if resolved := ResolvePackageEntry(absBestPath, subpath, platform); resolved != "" {
 						return api.OnResolveResult{Path: resolved}, nil
 					}
 

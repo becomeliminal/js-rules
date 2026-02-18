@@ -93,10 +93,10 @@ type packageJSON struct {
 	Main    string        `json:"main"`
 }
 
-// resolvePackageEntry reads a package's package.json and resolves the entry
+// ResolvePackageEntry reads a package's package.json and resolves the entry
 // point for the given subpath (e.g. "." or "./react"). It tries the exports
 // field first, then falls back to module/main fields for the root subpath.
-func resolvePackageEntry(pkgDir, subpath, platform string) string {
+func ResolvePackageEntry(pkgDir, subpath, platform string) string {
 	data, err := os.ReadFile(filepath.Join(pkgDir, "package.json"))
 	if err != nil {
 		return ""

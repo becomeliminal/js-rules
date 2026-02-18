@@ -8,6 +8,7 @@ import (
 
 	"tools/please_js/bundle"
 	"tools/please_js/dev"
+	"tools/please_js/esmdev"
 	"tools/please_js/resolve"
 	"tools/please_js/transpile"
 )
@@ -64,15 +65,28 @@ var opts = struct {
 		TailwindBin    string   `long:"tailwind-bin" description:"Path to Tailwind CSS binary"`
 		TailwindConfig string   `long:"tailwind-config" description:"Path to tailwind.config.js"`
 	} `command:"dev" alias:"d" description:"Start dev server with live reload using esbuild"`
+
+	EsmDev struct {
+		Entry        string   `short:"e" long:"entry" required:"true" description:"Entry point file"`
+		ModuleConfig string   `short:"m" long:"moduleconfig" description:"Aggregated moduleconfig file"`
+		Servedir     string   `short:"s" long:"servedir" default:"." description:"Directory to serve static files from"`
+		Port         int      `short:"p" long:"port" default:"3000" description:"HTTP port"`
+		Tsconfig     string   `long:"tsconfig" description:"Path to tsconfig.json"`
+		Define       []string `long:"define" description:"Define substitutions (key=value)"`
+		Proxy        []string `long:"proxy" description:"Proxy rules (prefix=target)"`
+		EnvFile      string   `long:"env-file" description:"Base .env file path for auto-discovery"`
+		EnvPrefix    string   `long:"env-prefix" default:"PLZ_" description:"Prefix filter for .env variables"`
+	} `command:"esm-dev" description:"Start ESM dev server with native import maps"`
 }{
 	Usage: `
 please_js is the companion tool for the JavaScript/TypeScript Please build rules.
 
-It provides four main operations:
+It provides five main operations:
   - bundle:    Bundle JS/TS files using esbuild with moduleconfig-based dependency resolution
   - transpile: Transpile individual TS/JSX files to JS without bundling
   - resolve:   Generate npm_module BUILD files from package-lock.json
   - dev:       Start a dev server with live reload
+  - esm-dev:   Start ESM dev server with native import maps
 `,
 }
 
@@ -136,6 +150,22 @@ var subCommands = map[string]func() int{
 			Tsconfig:       opts.Dev.Tsconfig,
 			TailwindBin:    opts.Dev.TailwindBin,
 			TailwindConfig: opts.Dev.TailwindConfig,
+		}); err != nil {
+			log.Fatal(err)
+		}
+		return 0
+	},
+	"esm-dev": func() int {
+		if err := esmdev.Run(esmdev.Args{
+			Entry:        opts.EsmDev.Entry,
+			ModuleConfig: opts.EsmDev.ModuleConfig,
+			Servedir:     opts.EsmDev.Servedir,
+			Port:         opts.EsmDev.Port,
+			Tsconfig:     opts.EsmDev.Tsconfig,
+			Define:       opts.EsmDev.Define,
+			Proxy:        opts.EsmDev.Proxy,
+			EnvFile:      opts.EsmDev.EnvFile,
+			EnvPrefix:    opts.EsmDev.EnvPrefix,
 		}); err != nil {
 			log.Fatal(err)
 		}
