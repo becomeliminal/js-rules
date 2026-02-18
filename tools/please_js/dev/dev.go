@@ -45,7 +45,12 @@ type Args struct {
 // liveReloadBanner is injected into the bundle to enable live reload via SSE.
 // Parses the SSE event data and only reloads when output files actually changed.
 // Debounced to collapse rapid rebuilds into a single reload.
-const liveReloadBanner = `(() => { let t; new EventSource("/esbuild").addEventListener("change", (e) => { try { const d = JSON.parse(e.data); if (!d.added.length && !d.removed.length && !d.updated.length) return; } catch {} clearTimeout(t); t = setTimeout(() => window.location.reload(), 200); }); })();`
+const liveReloadBanner = `(() => { const es = new EventSource("/esbuild"); let t; es.addEventListener("change", (e) => { try { const d = JSON.parse(e.data); if (!d.added.length && !d.removed.length && !d.updated.length) return; } catch {} clearTimeout(t); t = setTimeout(() => window.location.reload(), 200); }); es.addEventListener("css-update", () => { document.querySelectorAll('link[rel="stylesheet"]').forEach(link => { const url = new URL(link.href); url.searchParams.set('t', Date.now()); link.href = url.toString(); }); }); })();`
+
+// isCSSFile returns true for .css and .css.map files.
+func isCSSFile(path string) bool {
+	return strings.HasSuffix(path, ".css") || strings.HasSuffix(path, ".css.map")
+}
 
 // formatSize formats a byte count as a human-readable string.
 func formatSize(bytes int) string {
@@ -66,6 +71,7 @@ type sseEvent struct {
 	Added   []string `json:"added"`
 	Removed []string `json:"removed"`
 	Updated []string `json:"updated"`
+	CSSOnly bool     `json:"cssOnly"`
 }
 
 // devServer serves built output from memory and static files from disk,
@@ -238,7 +244,11 @@ func (s *devServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case evt := <-ch:
 			data, _ := json.Marshal(evt)
-			fmt.Fprintf(w, "event: change\ndata: %s\n\n", data)
+			eventType := "change"
+			if evt.CSSOnly {
+				eventType = "css-update"
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, data)
 			flusher.Flush()
 		case <-keepAlive.C:
 			fmt.Fprintf(w, ": keepalive\n\n")
@@ -299,6 +309,17 @@ func (s *devServer) onBuildComplete(result *api.BuildResult, newHashes map[strin
 	if len(evt.Added) == 0 && len(evt.Removed) == 0 && len(evt.Updated) == 0 {
 		return
 	}
+
+	// Classify as CSS-only if every changed file ends in .css
+	cssOnly := true
+	for _, files := range [][]string{evt.Added, evt.Updated, evt.Removed} {
+		for _, f := range files {
+			if !isCSSFile(f) {
+				cssOnly = false
+			}
+		}
+	}
+	evt.CSSOnly = cssOnly
 
 	// Broadcast to all SSE clients (non-blocking)
 	s.sseMu.Lock()
@@ -399,7 +420,27 @@ func buildTimerPlugin(info *serverInfo, server *devServer) api.Plugin {
 				} else {
 					// Watch rebuild
 					if len(result.Errors) == 0 && changed {
-						fmt.Printf("  \033[2m[rebuild]\033[0m \033[1m%d ms\033[0m \033[2m(%s, %d files)\033[0m\n", ms, formatSize(totalSize), numFiles)
+						// Check if all changed outputs are CSS-only
+						rebuildCSSOnly := true
+						for path, hash := range newHashes {
+							if prev, ok := prevHashes[path]; ok && prev != hash {
+								if !isCSSFile(path) {
+									rebuildCSSOnly = false
+								}
+							}
+						}
+						for path := range newHashes {
+							if _, ok := prevHashes[path]; !ok {
+								if !isCSSFile(path) {
+									rebuildCSSOnly = false
+								}
+							}
+						}
+						cssTag := ""
+						if rebuildCSSOnly {
+							cssTag = " (css only)"
+						}
+						fmt.Printf("  \033[2m[rebuild]\033[0m \033[1m%d ms\033[0m%s \033[2m(%s, %d files)\033[0m\n", ms, cssTag, formatSize(totalSize), numFiles)
 						for path, hash := range newHashes {
 							if prev, ok := prevHashes[path]; ok && prev != hash {
 								fmt.Printf("    \033[33m\u0394 %s\033[0m\n", path)

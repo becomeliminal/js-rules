@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
+import "./style.css";
 
 function Home() {
     return (
@@ -40,7 +41,7 @@ function App() {
 
     return (
         <div>
-            <nav style={{ display: "flex", gap: "1rem", padding: "1rem", borderBottom: "1px solid #ccc" }}>
+            <nav>
                 <button onClick={() => navigate("/")} style={{ fontWeight: path === "/" ? "bold" : "normal" }}>
                     Home
                 </button>
@@ -48,7 +49,7 @@ function App() {
                     About
                 </button>
             </nav>
-            <div style={{ padding: "1rem" }}>
+            <div className="content">
                 <Page />
             </div>
         </div>
