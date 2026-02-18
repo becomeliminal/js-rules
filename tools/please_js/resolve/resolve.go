@@ -65,6 +65,7 @@ func Run(args Args) error {
 
 	// Collect all top-level packages (skip root, nested, optional, dev)
 	packages := collectPackages(lock.Packages, args.NoDev)
+	breakCycles(packages)
 
 	// Generate output directory
 	if err := os.MkdirAll(args.Out, 0755); err != nil {
@@ -87,6 +88,43 @@ func Run(args Args) error {
 
 	fmt.Fprintf(os.Stderr, "Generated %d npm_module rules\n", len(packages))
 	return nil
+}
+
+// breakCycles detects and removes back-edges in the dependency graph via DFS,
+// ensuring the resulting graph is a DAG suitable for Please's build system.
+func breakCycles(packages []resolvedPackage) {
+	idx := make(map[string]int, len(packages))
+	for i, pkg := range packages {
+		idx[pkg.Name] = i
+	}
+
+	// DFS coloring: 0=white, 1=gray (in stack), 2=black (done)
+	color := make(map[string]int, len(packages))
+
+	var dfs func(name string)
+	dfs = func(name string) {
+		color[name] = 1
+		i := idx[name]
+		var kept []string
+		for _, dep := range packages[i].Deps {
+			if color[dep] == 1 {
+				log.Printf("warning: breaking circular dependency: %s -> %s", name, dep)
+				continue
+			}
+			kept = append(kept, dep)
+			if color[dep] == 0 {
+				dfs(dep)
+			}
+		}
+		packages[i].Deps = kept
+		color[name] = 2
+	}
+
+	for _, pkg := range packages {
+		if color[pkg.Name] == 0 {
+			dfs(pkg.Name)
+		}
+	}
 }
 
 // collectPackages extracts top-level packages from the lockfile.
