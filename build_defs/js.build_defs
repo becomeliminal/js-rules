@@ -94,7 +94,7 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
               format:str="esm", platform:str="browser", tsconfig:str="",
               define:dict={}, external:list=[], minify:bool=False,
               env_file:str="", css:bool=False, tailwind_config:str="",
-              visibility:list=None, labels:list=[]):
+              assets:list=[], visibility:list=None, labels:list=[]):
     """Bundles JavaScript/TypeScript into a single output file.
 
     Aggregates all .moduleconfig files from transitive dependencies,
@@ -117,6 +117,8 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
              When True, outputs both name.js and name.css.
         tailwind_config: Path to tailwind.config.js. When set, CSS files with
                          @tailwind directives are compiled via the Tailwind CLI.
+        assets: Static asset files (images, fonts, etc.) needed at bundle time.
+                esbuild copies these to the output directory and rewrites imports.
         visibility: Visibility specification.
         labels: Additional labels.
     """
@@ -138,7 +140,7 @@ def js_binary(name:str, entry_point:str="index.js", srcs:list=[], deps:list=[],
 
     tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]}
 
-    all_srcs = [entry_point] + srcs + env_srcs
+    all_srcs = [entry_point] + srcs + assets + env_srcs
     if tsconfig:
         all_srcs = all_srcs + [tsconfig]
 
@@ -418,7 +420,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
                   format:str="esm", platform:str="browser",
                   tsconfig:str="", define:dict={}, proxy:dict={},
                   env_file:str="", tailwind_config:str="",
-                  visibility:list=None):
+                  assets:list=[], visibility:list=None):
     """Creates a runnable dev server target with live reload.
 
     At build time, aggregates moduleconfigs from dependencies.
@@ -443,6 +445,8 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
                   Only variables with the configured prefix (default PLZ_) are exposed.
         tailwind_config: Path to tailwind.config.js. When set, CSS files with
                          @tailwind directives are compiled via the Tailwind CLI.
+        assets: Static asset files (images, fonts, etc.) needed at bundle time.
+                esbuild copies these to the output directory and rewrites imports.
         visibility: Visibility specification.
     """
     # Build step: aggregate moduleconfigs, base64-encode them, and produce a
@@ -484,7 +488,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
         "chmod +x $OUT",
     ])
 
-    all_srcs = [entry_point] + srcs
+    all_srcs = [entry_point] + srcs + assets
     if tsconfig:
         all_srcs = all_srcs + [tsconfig]
     if tailwind_config:
