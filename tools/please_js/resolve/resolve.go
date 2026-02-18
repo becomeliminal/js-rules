@@ -39,7 +39,8 @@ type packageInfo struct {
 
 // resolvedPackage is the processed form we use for BUILD file generation.
 type resolvedPackage struct {
-	Name     string   // npm package name (e.g., "react", "@types/react")
+	Name     string   // npm package name or alias (e.g., "react", "my-ms")
+	RealName string   // real npm package name if aliased (e.g., "ms"); empty if not aliased
 	Version  string
 	Resolved string   // tarball URL
 	Deps     []string // dependency package names (mapped to subrepo targets)
@@ -152,8 +153,15 @@ func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage 
 		}
 		sort.Strings(deps)
 
+		// Detect npm aliases: directory name differs from the real package in the tarball URL
+		var realName string
+		if rn := extractRealPackageName(info.Resolved); rn != "" && rn != name {
+			realName = rn
+		}
+
 		result = append(result, resolvedPackage{
 			Name:     name,
+			RealName: realName,
 			Version:  info.Version,
 			Resolved: info.Resolved,
 			Deps:     deps,
@@ -217,8 +225,14 @@ func writeBuildFile(outDir string, pkg resolvedPackage, subincludePath string) e
 	b.WriteString(fmt.Sprintf("subinclude(%q)\n\n", subincludePath))
 	b.WriteString(fmt.Sprintf("npm_module(\n"))
 	b.WriteString(fmt.Sprintf("    name = %q,\n", targetName))
-	if targetName != pkg.Name {
-		b.WriteString(fmt.Sprintf("    pkg_name = %q,\n", pkg.Name))
+	// Emit pkg_name for scoped packages (target name differs from package name)
+	// or for aliases (real npm name differs from alias name)
+	pkgName := pkg.Name
+	if pkg.RealName != "" {
+		pkgName = pkg.RealName
+	}
+	if targetName != pkgName || pkg.RealName != "" {
+		b.WriteString(fmt.Sprintf("    pkg_name = %q,\n", pkgName))
 	}
 	b.WriteString(fmt.Sprintf("    version = %q,\n", pkg.Version))
 
@@ -239,6 +253,22 @@ func writeBuildFile(outDir string, pkg resolvedPackage, subincludePath string) e
 	b.WriteString(")\n")
 
 	return os.WriteFile(filepath.Join(pkgDir, "BUILD"), []byte(b.String()), 0644)
+}
+
+// extractRealPackageName extracts the real npm package name from a registry URL.
+// "https://registry.npmjs.org/@coinbase/wallet-sdk/-/wallet-sdk-3.9.3.tgz" → "@coinbase/wallet-sdk"
+// "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz" → "ms"
+func extractRealPackageName(resolved string) string {
+	const prefix = "https://registry.npmjs.org/"
+	if !strings.HasPrefix(resolved, prefix) {
+		return ""
+	}
+	rest := resolved[len(prefix):]
+	sepIdx := strings.Index(rest, "/-/")
+	if sepIdx < 0 {
+		return ""
+	}
+	return rest[:sepIdx]
 }
 
 // depTarget converts a package name to a subrepo target reference.

@@ -268,6 +268,18 @@ def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
     if not version:
         fail("version is required for npm_module")
 
+    # Determine the import name for moduleconfig.
+    # For scoped packages (@scope/pkg), pkg_name is the full scoped name and
+    # name is the last segment — imports use the full scoped name.
+    # For aliases (my-ms → ms), pkg_name is the real package for download
+    # but imports use the alias name (name).
+    if pkg_name and "/" in pkg_name and pkg_name.split("/")[-1] == name:
+        # Scoped package: import as the full scoped name
+        import_key = pkg_name
+    else:
+        # Simple package or alias: import as the target name
+        import_key = name
+
     # npm tarball URL: scoped packages use @scope/pkg/-/pkg-ver.tgz
     pkg_basename = pkg.split("/")[-1] if "/" in pkg else pkg
     if pkg.startswith("@"):
@@ -294,7 +306,7 @@ def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
             "mkdir -p $OUTS_LIB",
             # npm tarballs extract to a package/ subdirectory
             "if [ -d $SRCS/package ]; then cp -r $SRCS/package/. $OUTS_LIB/; else cp -r $SRCS/. $OUTS_LIB/; fi",
-            f'echo "{pkg}=$PKG_DIR/{name}" > $OUTS_MODULECONFIG',
+            f'echo "{import_key}=$PKG_DIR/{name}" > $OUTS_MODULECONFIG',
         ]),
         exported_deps = deps,
         visibility = visibility,
