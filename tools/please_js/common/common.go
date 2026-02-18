@@ -373,10 +373,15 @@ func TailwindPlugin(tailwindBin, tailwindConfig string) api.Plugin {
 
 					cmdArgs := []string{"--input", args.Path}
 					if tailwindConfig != "" {
-						cmdArgs = append(cmdArgs, "--config", tailwindConfig)
+						// Pass just the filename — cmd.Dir is set to the config's
+						// directory so relative content globs resolve correctly.
+						cmdArgs = append(cmdArgs, "--config", filepath.Base(tailwindConfig))
 					}
 
 					cmd := exec.Command(tailwindBin, cmdArgs...)
+					if tailwindConfig != "" {
+						cmd.Dir = filepath.Dir(tailwindConfig)
+					}
 					var stdout, stderr bytes.Buffer
 					cmd.Stdout = &stdout
 					cmd.Stderr = &stderr
