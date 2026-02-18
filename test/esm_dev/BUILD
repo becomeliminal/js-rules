@@ -2,10 +2,11 @@ subinclude("//build_defs:js")
 
 js_dev_server(
     name = "dev",
-    entry_point = "app.jsx",
+    entry_point = "main.jsx",
     deps = [
         "//third_party/js:react",
         "//third_party/js:react-dom",
+        "//third_party/js:react-refresh",
     ],
     servedir = ".",
     port = 3000,

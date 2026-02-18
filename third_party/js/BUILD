@@ -26,3 +26,8 @@ npm_module(
     version = "18.3.1",
     deps = [":react", ":scheduler"],
 )
+
+npm_module(
+    name = "react-refresh",
+    version = "0.14.2",
+)
