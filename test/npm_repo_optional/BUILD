@@ -8,6 +8,10 @@ npm_repo(
 js_binary(
     name = "npm_repo_optional",
     entry_point = "index.js",
+    format = "cjs",
     platform = "node",
-    deps = ["///test/npm_repo_optional/optional_npm//ms"],
+    deps = [
+        "///test/npm_repo_optional/optional_npm//debug",
+        "///test/npm_repo_optional/optional_npm//ms",
+    ],
 )

@@ -10,6 +10,25 @@ import (
 	"tools/please_js/common"
 )
 
+// nodeBuiltins lists Node.js built-in modules that should be externalized
+// in browser builds. Packages like pngjs import these for server-side code
+// paths that are dead code in the browser. Both bare and node:-prefixed
+// forms are listed because esbuild treats them as separate specifiers.
+var nodeBuiltins = []string{
+	"assert", "buffer", "child_process", "cluster", "crypto", "dgram",
+	"dns", "events", "fs", "http", "http2", "https", "module", "net",
+	"os", "path", "perf_hooks", "process", "querystring", "readline",
+	"stream", "string_decoder", "tls", "tty", "url", "util", "v8",
+	"vm", "worker_threads", "zlib",
+	"node:assert", "node:buffer", "node:child_process", "node:cluster",
+	"node:crypto", "node:dgram", "node:dns", "node:events", "node:fs",
+	"node:http", "node:http2", "node:https", "node:module", "node:net",
+	"node:os", "node:path", "node:perf_hooks", "node:process",
+	"node:querystring", "node:readline", "node:stream",
+	"node:string_decoder", "node:tls", "node:tty", "node:url",
+	"node:util", "node:v8", "node:vm", "node:worker_threads", "node:zlib",
+}
+
 // Args holds the arguments for the bundle subcommand.
 type Args struct {
 	Entry          string
@@ -68,6 +87,14 @@ func Run(args Args) error {
 	}
 	common.MergeEnvDefines(define, "production")
 
+	// For browser builds, externalize Node.js built-in modules so packages
+	// with dead Node code paths (e.g. pngjs via qrcode.react) don't break
+	// the bundle. This matches Vite's behavior.
+	external := args.External
+	if args.Platform != "node" {
+		external = append(nodeBuiltins, external...)
+	}
+
 	opts := api.BuildOptions{
 		EntryPoints:       []string{args.Entry},
 		Outfile:           args.Out,
@@ -77,7 +104,7 @@ func Run(args Args) error {
 		Platform:          common.ParsePlatform(args.Platform),
 		Target:            api.ESNext,
 		LogLevel:          api.LogLevelInfo,
-		External:          args.External,
+		External:          external,
 		Loader:            common.Loaders,
 		Plugins:           plugins,
 		Define:            define,

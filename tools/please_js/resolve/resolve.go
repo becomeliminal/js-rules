@@ -24,17 +24,23 @@ type packageLock struct {
 	Packages        map[string]packageInfo `json:"packages"`
 }
 
+// peerDepMeta holds metadata for a single peer dependency entry.
+type peerDepMeta struct {
+	Optional bool `json:"optional"`
+}
+
 // packageInfo represents a single package entry in the lockfile.
 type packageInfo struct {
-	Version          string            `json:"version"`
-	Resolved         string            `json:"resolved"`
-	Integrity        string            `json:"integrity"`
-	Dependencies     map[string]string `json:"dependencies"`
-	PeerDependencies map[string]string `json:"peerDependencies"`
-	Dev              bool              `json:"dev"`
-	Optional         bool              `json:"optional"`
-	OS               []string          `json:"os"`
-	CPU              []string          `json:"cpu"`
+	Version              string                    `json:"version"`
+	Resolved             string                    `json:"resolved"`
+	Integrity            string                    `json:"integrity"`
+	Dependencies         map[string]string         `json:"dependencies"`
+	PeerDependencies     map[string]string         `json:"peerDependencies"`
+	PeerDependenciesMeta map[string]peerDepMeta    `json:"peerDependenciesMeta"`
+	Dev                  bool                      `json:"dev"`
+	Optional             bool                      `json:"optional"`
+	OS                   []string                  `json:"os"`
+	CPU                  []string                  `json:"cpu"`
 }
 
 // resolvedPackage is the processed form we use for BUILD file generation.
@@ -63,7 +69,7 @@ func Run(args Args) error {
 		return fmt.Errorf("unsupported lockfile version %d (expected 2 or 3)", lock.LockfileVersion)
 	}
 
-	// Collect all top-level packages (skip root, nested, optional, dev)
+	// Collect all top-level packages (skip root, nested, dev)
 	packages := collectPackages(lock.Packages, args.NoDev)
 	breakCycles(packages)
 
@@ -131,7 +137,7 @@ func breakCycles(packages []resolvedPackage) {
 func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage {
 	// Build set of known top-level package names for dep resolution
 	topLevel := make(map[string]bool)
-	for path, info := range pkgs {
+	for path := range pkgs {
 		if path == "" {
 			continue // skip root
 		}
@@ -141,10 +147,6 @@ func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage 
 		}
 		// Only consider top-level (not nested node_modules)
 		if isNestedPackage(path) {
-			continue
-		}
-		// Skip optional packages so they don't appear in other packages' deps
-		if info.Optional {
 			continue
 		}
 		topLevel[name] = true
@@ -167,11 +169,6 @@ func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage 
 			continue
 		}
 
-		// Skip optional packages
-		if info.Optional {
-			continue
-		}
-
 		// Skip dev packages if --no-dev
 		if noDev && info.Dev {
 			continue
@@ -190,6 +187,9 @@ func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage 
 			}
 		}
 		for dep := range info.PeerDependencies {
+			if meta, ok := info.PeerDependenciesMeta[dep]; ok && meta.Optional {
+				continue
+			}
 			if topLevel[dep] {
 				deps = append(deps, dep)
 			}
