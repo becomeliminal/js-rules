@@ -9,7 +9,7 @@ go_toolchain(
 go_mod_download(
     name = "esbuild_download",
     module = "github.com/evanw/esbuild",
-    version = "v0.24.0",
+    version = "v0.27.3",
 )
 
 go_module(
