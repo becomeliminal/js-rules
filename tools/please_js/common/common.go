@@ -97,10 +97,10 @@ func ParseModuleConfig(path string) (map[string]string, error) {
 }
 
 // ModuleResolvePlugin returns an esbuild plugin that resolves bare import
-// specifiers using the moduleconfig map. Unlike esbuild's Alias option,
-// this uses build.Resolve() to properly handle package.json "exports",
-// "main", "module" fields, and subpath imports.
-func ModuleResolvePlugin(moduleMap map[string]string) api.Plugin {
+// specifiers using the moduleconfig map. It first tries exports-aware
+// resolution by reading the package's package.json exports field, then
+// falls back to esbuild's build.Resolve() for packages without exports.
+func ModuleResolvePlugin(moduleMap map[string]string, platform string) api.Plugin {
 	return api.Plugin{
 		Name: "module-resolve",
 		Setup: func(build api.PluginBuild) {
@@ -123,12 +123,21 @@ func ModuleResolvePlugin(moduleMap map[string]string) api.Plugin {
 						return api.OnResolveResult{}, nil
 					}
 
-					// Re-resolve using esbuild's resolver from the package dir.
-					// This correctly handles exports maps, main/module fields, etc.
-					resolvePath := "."
+					absBestPath, _ := filepath.Abs(bestPath)
+
+					// Extract subpath: "react" → ".", "react/dom" → "./dom"
+					subpath := "."
 					if args.Path != bestMatch {
-						resolvePath = "./" + strings.TrimPrefix(args.Path, bestMatch+"/")
+						subpath = "./" + strings.TrimPrefix(args.Path, bestMatch+"/")
 					}
+
+					// Try exports-aware resolution first
+					if resolved := resolvePackageEntry(absBestPath, subpath, platform); resolved != "" {
+						return api.OnResolveResult{Path: resolved}, nil
+					}
+
+					// Fallback: use esbuild's resolver from the package dir
+					resolvePath := subpath
 					result := build.Resolve(resolvePath, api.ResolveOptions{
 						ResolveDir: bestPath,
 						Kind:       args.Kind,

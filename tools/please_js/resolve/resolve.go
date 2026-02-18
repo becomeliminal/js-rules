@@ -151,6 +151,11 @@ func collectPackages(pkgs map[string]packageInfo, noDev bool) []resolvedPackage 
 				deps = append(deps, dep)
 			}
 		}
+		for dep := range info.PeerDependencies {
+			if topLevel[dep] {
+				deps = append(deps, dep)
+			}
+		}
 		sort.Strings(deps)
 
 		// Detect npm aliases: directory name differs from the real package in the tarball URL

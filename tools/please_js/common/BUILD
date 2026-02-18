@@ -1,6 +1,6 @@
 go_library(
     name = "common",
-    srcs = ["common.go", "env.go"],
+    srcs = ["common.go", "env.go", "package_json.go"],
     deps = [
         "//third_party/go:esbuild_api",
     ],

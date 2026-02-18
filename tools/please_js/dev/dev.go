@@ -470,7 +470,7 @@ func Run(args Args) error {
 	}
 
 	plugins := []api.Plugin{
-		common.ModuleResolvePlugin(moduleMap),
+		common.ModuleResolvePlugin(moduleMap, args.Platform),
 		common.RawImportPlugin(),
 		buildTimerPlugin(info, server),
 	}

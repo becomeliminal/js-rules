@@ -47,7 +47,7 @@ func Run(args Args) error {
 
 	// Configure and run esbuild
 	plugins := []api.Plugin{
-		common.ModuleResolvePlugin(moduleMap),
+		common.ModuleResolvePlugin(moduleMap, args.Platform),
 		common.RawImportPlugin(),
 	}
 	if args.TailwindBin != "" {
