@@ -7,5 +7,5 @@ plugin_repo(
     name = "js",
     plugin = "js-rules",
     owner = "becomeliminal",
-    revision = "d9340ab",
+    revision = "e1cbd9d",
 )
