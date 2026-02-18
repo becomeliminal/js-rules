@@ -67,7 +67,7 @@ func NodeBuiltinEmptyPlugin() api.Plugin {
 			)
 			build.OnLoad(api.OnLoadOptions{Filter: ".*", Namespace: "node-builtin-empty"},
 				func(args api.OnLoadArgs) (api.OnLoadResult, error) {
-					contents := "export default {};"
+					contents := "module.exports = {};"
 					return api.OnLoadResult{
 						Contents: &contents,
 						Loader:   api.LoaderJS,

@@ -510,16 +510,17 @@ func Run(args Args) error {
 		ips:  getLocalIPs(),
 	}
 
-	var plugins []api.Plugin
-	// For browser builds, replace Node.js built-in imports with empty modules.
-	if args.Platform != "node" {
-		plugins = append(plugins, common.NodeBuiltinEmptyPlugin())
-	}
-	plugins = append(plugins,
+	plugins := []api.Plugin{
 		common.ModuleResolvePlugin(moduleMap, args.Platform),
 		common.RawImportPlugin(),
 		buildTimerPlugin(info, server),
-	)
+	}
+	// For browser builds, replace unresolved Node.js built-in imports with
+	// empty CJS modules. Registered AFTER ModuleResolvePlugin so npm polyfill
+	// packages (e.g. "events", "buffer") are resolved first.
+	if args.Platform != "node" {
+		plugins = append(plugins, common.NodeBuiltinEmptyPlugin())
+	}
 	if args.TailwindBin != "" {
 		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
 	}

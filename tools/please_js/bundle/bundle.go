@@ -46,17 +46,17 @@ func Run(args Args) error {
 	}
 
 	// Configure and run esbuild
-	var plugins []api.Plugin
-	// For browser builds, replace Node.js built-in imports with empty modules.
-	// Using a plugin instead of External avoids leaving bare import "stream"
-	// statements in the output that browsers can't resolve.
+	plugins := []api.Plugin{
+		common.ModuleResolvePlugin(moduleMap, args.Platform),
+		common.RawImportPlugin(),
+	}
+	// For browser builds, replace unresolved Node.js built-in imports with
+	// empty CJS modules. Registered AFTER ModuleResolvePlugin so that npm
+	// polyfill packages (e.g. "events", "buffer") are resolved first — only
+	// builtins with no npm counterpart get the empty stub.
 	if args.Platform != "node" {
 		plugins = append(plugins, common.NodeBuiltinEmptyPlugin())
 	}
-	plugins = append(plugins,
-		common.ModuleResolvePlugin(moduleMap, args.Platform),
-		common.RawImportPlugin(),
-	)
 	if args.TailwindBin != "" {
 		plugins = append(plugins, common.TailwindPlugin(args.TailwindBin, args.TailwindConfig))
 	}
