@@ -102,4 +102,15 @@ import { Console } from "console";
 import events from "events";
 import buffer from "buffer";
 
+// Subpath imports — packages import "node:fs/promises", "stream/web", etc.
+// These must match via the base module, not just exact strings.
+import "node:fs/promises";
+import "fs/promises";
+import "stream/web";
+import "util/types";
+import "node:path/posix";
+import "node:path/win32";
+import "node:stream/consumers";
+import "node:stream/promises";
+
 console.log("node_builtins browser bundle test passed");

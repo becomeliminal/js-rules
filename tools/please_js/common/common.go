@@ -55,11 +55,21 @@ func NodeBuiltinEmptyPlugin() api.Plugin {
 		Setup: func(build api.PluginBuild) {
 			build.OnResolve(api.OnResolveOptions{Filter: "^[^./]"},
 				func(args api.OnResolveArgs) (api.OnResolveResult, error) {
+					// Exact match
 					if builtinSet[args.Path] {
 						return api.OnResolveResult{
 							Path:      args.Path,
 							Namespace: "node-builtin-empty",
 						}, nil
+					}
+					// Subpath: "node:fs/promises" → base "node:fs", "fs/promises" → base "fs"
+					if i := strings.Index(args.Path, "/"); i > 0 {
+						if builtinSet[args.Path[:i]] {
+							return api.OnResolveResult{
+								Path:      args.Path,
+								Namespace: "node-builtin-empty",
+							}, nil
+						}
 					}
 					return api.OnResolveResult{}, nil
 				},
@@ -71,6 +81,41 @@ func NodeBuiltinEmptyPlugin() api.Plugin {
 						Contents: &contents,
 						Loader:   api.LoaderJS,
 					}, nil
+				},
+			)
+		},
+	}
+}
+
+// UnknownExternalPlugin returns an esbuild plugin that marks any bare import
+// whose base package isn't in moduleMap as external. This prevents uninstalled
+// framework dependencies (vue, react-native, etc.) from causing hard errors
+// during pre-bundling. Must be last in the plugin chain so ModuleResolvePlugin
+// and NodeBuiltinEmptyPlugin get first shot at resolving.
+func UnknownExternalPlugin(moduleMap map[string]string) api.Plugin {
+	return api.Plugin{
+		Name: "unknown-external",
+		Setup: func(build api.PluginBuild) {
+			build.OnResolve(api.OnResolveOptions{Filter: "^[^./]"},
+				func(args api.OnResolveArgs) (api.OnResolveResult, error) {
+					// Extract base package: "vue" → "vue", "@scope/pkg/sub" → "@scope/pkg"
+					name := args.Path
+					if strings.HasPrefix(name, "@") {
+						// Scoped: need at least @scope/pkg
+						if i := strings.Index(name[1:], "/"); i >= 0 {
+							rest := name[1+i+1:]
+							if j := strings.Index(rest, "/"); j >= 0 {
+								name = name[:1+i+1+j]
+							}
+						}
+					} else if i := strings.Index(name, "/"); i >= 0 {
+						name = name[:i]
+					}
+
+					if _, ok := moduleMap[name]; ok {
+						return api.OnResolveResult{}, nil // let ModuleResolvePlugin handle
+					}
+					return api.OnResolveResult{External: true}, nil
 				},
 			)
 		},
@@ -89,6 +134,8 @@ var Loaders = map[string]api.Loader{
 	".mjs":   api.LoaderJS,
 	".cjs":   api.LoaderJS,
 	".md":    api.LoaderText,
+	".map":   api.LoaderJSON,
+	".astro": api.LoaderText,
 	".woff":  api.LoaderFile,
 	".woff2": api.LoaderFile,
 	".ttf":   api.LoaderFile,

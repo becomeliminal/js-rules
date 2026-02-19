@@ -290,6 +290,7 @@ func prebundleDeps(moduleMap map[string]string) (map[string][]byte, []byte, erro
 		Plugins: []api.Plugin{
 			common.ModuleResolvePlugin(moduleMap, "browser"),
 			common.NodeBuiltinEmptyPlugin(),
+			common.UnknownExternalPlugin(moduleMap), // catch-all — must be last
 		},
 		Loader: depLoaders,
 	})

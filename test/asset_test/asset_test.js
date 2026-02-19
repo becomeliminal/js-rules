@@ -41,7 +41,17 @@ assert.ok(ttf.endsWith(".ttf"), `expected .ttf, got: ${ttf}`);
 assert.equal(typeof mp3, "string", "MP3 import should be a string");
 assert.ok(mp3.endsWith(".mp3"), `expected .mp3, got: ${mp3}`);
 
-// 4. All imports are distinct (no collisions)
+// 4. Source map imports (.map → JSON loader) return parsed objects
+const sourceMap = require("./fixtures/source.map");
+assert.equal(typeof sourceMap, "object", "source map import should be an object");
+assert.equal(sourceMap.version, 3, "source map should have version 3");
+
+// 5. Astro imports (.astro → text loader) return strings
+const astro = require("./fixtures/component.astro");
+assert.equal(typeof astro, "string", "astro import should be a string");
+assert.ok(astro.includes("<h1>"), "astro content should contain HTML");
+
+// 6. All file-loader imports are distinct (no collisions)
 const all = [png, svg, jpg, gif, webp, woff2, ttf, mp3];
 const unique = new Set(all);
 assert.equal(unique.size, all.length, "all asset paths should be unique");

@@ -12,5 +12,7 @@ js_test(
         "fixtures/font.woff2",
         "fixtures/font.ttf",
         "fixtures/audio.mp3",
+        "fixtures/source.map",
+        "fixtures/component.astro",
     ],
 )

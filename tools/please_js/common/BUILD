@@ -4,5 +4,5 @@ go_library(
     deps = [
         "//third_party/go:esbuild_api",
     ],
-    visibility = ["//tools/please_js/..."],
+    visibility = ["//tools/please_js/...", "//test/prebundle_plugins/..."],
 )
