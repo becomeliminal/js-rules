@@ -37,6 +37,7 @@ type Args struct {
 	EnvFile      string
 	EnvPrefix    string
 	PrebundleDir string // path to pre-bundled deps dir (skips runtime prebundle)
+	Root         string // package root for source file resolution
 }
 
 // transformEntry caches a transformed source file.
@@ -53,7 +54,8 @@ type sseEvent struct {
 
 // esmServer serves individual ES modules with on-demand transformation.
 type esmServer struct {
-	sourceRoot     string
+	sourceRoot     string // servedir — HTML and static files
+	packageRoot    string // package root — source files (JS/TS)
 	depCache       map[string][]byte // "/@deps/react.js" → pre-bundled ESM
 	transCache     sync.Map          // abs path → *transformEntry
 	importMapJSON  []byte
@@ -564,6 +566,16 @@ var (
 	cjsDelegateRe = regexp.MustCompile(`module\.exports\s*=\s*(require_\w+)\(\)`)
 	// Matches `export default require_xxx()` in entry files.
 	defaultRequireRe = regexp.MustCompile(`export default (require_\w+)\(\)`)
+)
+
+// HTML rewriting regexes for entry point resolution.
+var (
+	// Matches <script type="module" src="..."> to find module script tags.
+	scriptSrcRe = regexp.MustCompile(`(<script\s[^>]*type=["']module["'][^>]*\ssrc=["'])([^"']+)(["'][^>]*>)`)
+	// Matches <link rel="stylesheet" href="..."> to find CSS link tags.
+	cssLinkRe = regexp.MustCompile(`<link\s[^>]*rel=["']stylesheet["'][^>]*href=["'][^"']+["'][^>]*/?>`)
+	// Extracts href value from a link tag.
+	hrefRe = regexp.MustCompile(`href=["']([^"']+)["']`)
 )
 
 // Component detection regexes for React Fast Refresh.
@@ -1128,13 +1140,22 @@ func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 7. Static files from servedir
+	// 7. Static files from servedir or packageRoot
 	filePath := filepath.Join(s.sourceRoot, filepath.FromSlash(urlPath))
 	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
 		http.ServeFile(w, r, filePath)
 		fmt.Printf("  \033[2m[static] %s %s → 200 (%dms)\033[0m\n",
 			r.Method, urlPath, time.Since(start).Milliseconds())
 		return
+	}
+	if s.packageRoot != s.sourceRoot {
+		filePath = filepath.Join(s.packageRoot, filepath.FromSlash(urlPath))
+		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+			http.ServeFile(w, r, filePath)
+			fmt.Printf("  \033[2m[static] %s %s → 200 (%dms)\033[0m\n",
+				r.Method, urlPath, time.Since(start).Milliseconds())
+			return
+		}
 	}
 
 	// 8. SPA fallback → index.html with import map injection
@@ -1157,6 +1178,44 @@ func (s *esmServer) handleHTML(w http.ResponseWriter, r *http.Request, start tim
 	}
 
 	html := string(data)
+
+	// Rewrite HTML when packageRoot differs from sourceRoot.
+	// - Script src that doesn't resolve in either root → replace with entry URL path
+	// - CSS link href that doesn't resolve → remove (CSS is injected via JS modules)
+	if s.packageRoot != s.sourceRoot {
+		html = scriptSrcRe.ReplaceAllStringFunc(html, func(match string) string {
+			parts := scriptSrcRe.FindStringSubmatch(match)
+			if parts == nil {
+				return match
+			}
+			src := parts[2]
+			// Check if file exists in sourceRoot or packageRoot
+			if resolveSourceFile(s.sourceRoot, src) != "" || resolveSourceFile(s.packageRoot, src) != "" {
+				return match
+			}
+			// Replace with actual entry point path
+			return parts[1] + s.entryURLPath + parts[3]
+		})
+
+		html = cssLinkRe.ReplaceAllStringFunc(html, func(match string) string {
+			hrefMatch := hrefRe.FindStringSubmatch(match)
+			if hrefMatch == nil {
+				return match
+			}
+			href := hrefMatch[1]
+			// Check if CSS file exists in sourceRoot or packageRoot
+			cssPath := filepath.Join(s.sourceRoot, filepath.FromSlash(href))
+			if _, err := os.Stat(cssPath); err == nil {
+				return match
+			}
+			cssPath = filepath.Join(s.packageRoot, filepath.FromSlash(href))
+			if _, err := os.Stat(cssPath); err == nil {
+				return match
+			}
+			// Remove the tag — CSS is injected via JS modules in ESM dev mode
+			return ""
+		})
+	}
 
 	// Inject import map and live reload / HMR script before </head>
 	var clientScript string
@@ -1184,7 +1243,10 @@ func (s *esmServer) handleHTML(w http.ResponseWriter, r *http.Request, start tim
 }
 
 func (s *esmServer) handleSource(w http.ResponseWriter, r *http.Request, urlPath string, start time.Time) {
-	resolved := resolveSourceFile(s.sourceRoot, urlPath)
+	resolved := resolveSourceFile(s.packageRoot, urlPath)
+	if resolved == "" && s.packageRoot != s.sourceRoot {
+		resolved = resolveSourceFile(s.sourceRoot, urlPath)
+	}
 	if resolved == "" {
 		http.NotFound(w, r)
 		fmt.Printf("  \033[2m[req] %s %s → 404 (%dms)\033[0m\n",
@@ -1276,7 +1338,10 @@ func (s *esmServer) handleSource(w http.ResponseWriter, r *http.Request, urlPath
 }
 
 func (s *esmServer) handleCSSModule(w http.ResponseWriter, r *http.Request, urlPath string, start time.Time) {
-	filePath := filepath.Join(s.sourceRoot, filepath.FromSlash(urlPath))
+	filePath := filepath.Join(s.packageRoot, filepath.FromSlash(urlPath))
+	if _, err := os.Stat(filePath); err != nil && s.packageRoot != s.sourceRoot {
+		filePath = filepath.Join(s.sourceRoot, filepath.FromSlash(urlPath))
+	}
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		http.NotFound(w, r)
@@ -1406,7 +1471,7 @@ func (s *esmServer) watchFiles() {
 			if oldMt, ok := mtimes[path]; !ok || !oldMt.Equal(newMt) {
 				s.transCache.Delete(path)
 
-				rel, err := filepath.Rel(s.sourceRoot, path)
+				rel, err := filepath.Rel(s.packageRoot, path)
 				if err != nil {
 					needFullReload = true
 					continue
@@ -1455,8 +1520,9 @@ func (s *esmServer) watchFiles() {
 }
 
 // walkSourceTree collects file mtimes, skipping hidden dirs, node_modules, plz-out.
+// Walks packageRoot (which may be a parent of sourceRoot) to cover both source and static files.
 func (s *esmServer) walkSourceTree(mtimes map[string]time.Time) {
-	filepath.Walk(s.sourceRoot, func(path string, info os.FileInfo, err error) error {
+	filepath.Walk(s.packageRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -1510,6 +1576,12 @@ func Run(args Args) error {
 	}
 	absServedir, _ := filepath.Abs(servedir)
 
+	// Compute package root for source file resolution (defaults to servedir)
+	absPackageRoot := absServedir
+	if args.Root != "" {
+		absPackageRoot, _ = filepath.Abs(args.Root)
+	}
+
 	// Parse defines and env
 	define := common.ParseDefines(args.Define)
 	if args.EnvFile != "" {
@@ -1541,7 +1613,7 @@ func Run(args Args) error {
 			len(imData.Imports), time.Since(prebundleStart).Milliseconds())
 	} else {
 		// Runtime fallback: scan sources and pre-bundle on the fly.
-		usedImports := scanSourceImports(absServedir, moduleMap)
+		usedImports := scanSourceImports(absPackageRoot, moduleMap)
 		// Always include react-refresh if available (injected by HMR scripts).
 		if _, ok := moduleMap["react-refresh"]; ok {
 			usedImports["react-refresh"] = true
@@ -1585,13 +1657,14 @@ func Run(args Args) error {
 		}
 	}
 
-	// Normalize entry point to URL path relative to servedir
+	// Normalize entry point to URL path relative to packageRoot
 	absEntry, _ := filepath.Abs(args.Entry)
-	entryRel, _ := filepath.Rel(absServedir, absEntry)
+	entryRel, _ := filepath.Rel(absPackageRoot, absEntry)
 	entryURLPath := "/" + filepath.ToSlash(entryRel)
 
 	server := &esmServer{
 		sourceRoot:    absServedir,
+		packageRoot:   absPackageRoot,
 		depCache:      depCache,
 		importMapJSON: importMapJSON,
 		clients:       make(map[chan sseEvent]struct{}),

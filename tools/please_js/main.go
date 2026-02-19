@@ -77,6 +77,7 @@ var opts = struct {
 		EnvFile      string   `long:"env-file" description:"Base .env file path for auto-discovery"`
 		EnvPrefix    string   `long:"env-prefix" default:"PLZ_" description:"Prefix filter for .env variables"`
 		PrebundleDir string   `long:"prebundle-dir" description:"Path to pre-bundled deps directory (skips runtime prebundle)"`
+		Root         string   `long:"root" description:"Package root directory for source file resolution"`
 	} `command:"esm-dev" description:"Start ESM dev server with native import maps"`
 
 	Prebundle struct {
@@ -174,6 +175,7 @@ var subCommands = map[string]func() int{
 			EnvFile:      opts.EsmDev.EnvFile,
 			EnvPrefix:    opts.EsmDev.EnvPrefix,
 			PrebundleDir: opts.EsmDev.PrebundleDir,
+			Root:         opts.EsmDev.Root,
 		}); err != nil {
 			log.Fatal(err)
 		}

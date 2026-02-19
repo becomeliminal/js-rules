@@ -554,7 +554,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
             "echo 'MODCONF=$(mktemp)' >> $OUT",
             "echo 'trap \"rm -f $MODCONF\" EXIT' >> $OUT",
             """echo 'find "$(pwd)/plz-out/gen" -name "*.moduleconfig" | while read f; do abs="${f%.moduleconfig}"; while IFS="=" read -r name _; do echo "$name=$abs"; done < "$f"; done > $MODCONF' >> $OUT""",
-            f"echo 'exec '\"$PLEASE_JS\"' esm-dev --entry '\"$PKG_DIR\"'/{entry_point} --prebundle-dir $(pwd)/plz-out/gen/'\"$PKG\"'/{prebundle_name} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --port {port}{tsconfig_arg}{define_arg}{proxy_arg}{env_arg}' >> $OUT",
+            f"echo 'exec '\"$PLEASE_JS\"' esm-dev --entry '\"$PKG_DIR\"'/{entry_point} --prebundle-dir $(pwd)/plz-out/gen/'\"$PKG\"'/{prebundle_name} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --root '\"$PKG_DIR\"' --port {port}{tsconfig_arg}{define_arg}{proxy_arg}{env_arg}' >> $OUT",
             "chmod +x $OUT",
         ])
     else:
