@@ -87,6 +87,17 @@ func NodeBuiltinEmptyPlugin() api.Plugin {
 	}
 }
 
+// isNonPackageSpecifier reports whether a bare import specifier is not an
+// npm package name and should be passed through to esbuild's native resolver.
+// npm names cannot contain ":" (protocols like data:, https:, file:, node:),
+// cannot start with "#" (package.json subpath imports), and cannot contain
+// null bytes (virtual module IDs like "\0plugin:id").
+func isNonPackageSpecifier(path string) bool {
+	return path[0] == '#' ||
+		path[0] == '\x00' ||
+		strings.ContainsRune(path, ':')
+}
+
 // UnknownExternalPlugin returns an esbuild plugin that marks any bare import
 // whose base package isn't in moduleMap as external. This prevents uninstalled
 // framework dependencies (vue, react-native, etc.) from causing hard errors
@@ -98,6 +109,13 @@ func UnknownExternalPlugin(moduleMap map[string]string) api.Plugin {
 		Setup: func(build api.PluginBuild) {
 			build.OnResolve(api.OnResolveOptions{Filter: "^[^./]"},
 				func(args api.OnResolveArgs) (api.OnResolveResult, error) {
+					// Non-package specifiers (#imports, data: URIs, https://
+					// URLs, \0-prefixed virtual modules, etc.) — let esbuild
+					// resolve via its native handler.
+					if isNonPackageSpecifier(args.Path) {
+						return api.OnResolveResult{}, nil
+					}
+
 					// Extract base package: "vue" → "vue", "@scope/pkg/sub" → "@scope/pkg"
 					name := args.Path
 					if strings.HasPrefix(name, "@") {

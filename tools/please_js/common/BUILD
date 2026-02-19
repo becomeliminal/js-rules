@@ -6,3 +6,12 @@ go_library(
     ],
     visibility = ["//tools/please_js/...", "//test/prebundle_plugins/..."],
 )
+
+go_test(
+    name = "common_test",
+    srcs = ["common_test.go"],
+    deps = [
+        ":common",
+        "//third_party/go:esbuild_api",
+    ],
+)
