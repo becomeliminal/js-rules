@@ -76,17 +76,24 @@ var opts = struct {
 		Proxy        []string `long:"proxy" description:"Proxy rules (prefix=target)"`
 		EnvFile      string   `long:"env-file" description:"Base .env file path for auto-discovery"`
 		EnvPrefix    string   `long:"env-prefix" default:"PLZ_" description:"Prefix filter for .env variables"`
+		PrebundleDir string   `long:"prebundle-dir" description:"Path to pre-bundled deps directory (skips runtime prebundle)"`
 	} `command:"esm-dev" description:"Start ESM dev server with native import maps"`
+
+	Prebundle struct {
+		ModuleConfig string `short:"m" long:"moduleconfig" required:"true" description:"Aggregated moduleconfig file"`
+		Out          string `short:"o" long:"out" required:"true" description:"Output directory for pre-bundled deps"`
+	} `command:"prebundle" description:"Pre-bundle all npm dependencies for ESM dev server"`
 }{
 	Usage: `
 please_js is the companion tool for the JavaScript/TypeScript Please build rules.
 
-It provides five main operations:
+It provides six main operations:
   - bundle:    Bundle JS/TS files using esbuild with moduleconfig-based dependency resolution
   - transpile: Transpile individual TS/JSX files to JS without bundling
   - resolve:   Generate npm_module BUILD files from package-lock.json
   - dev:       Start a dev server with live reload
   - esm-dev:   Start ESM dev server with native import maps
+  - prebundle: Pre-bundle all npm dependencies for ESM dev server
 `,
 }
 
@@ -166,7 +173,14 @@ var subCommands = map[string]func() int{
 			Proxy:        opts.EsmDev.Proxy,
 			EnvFile:      opts.EsmDev.EnvFile,
 			EnvPrefix:    opts.EsmDev.EnvPrefix,
+			PrebundleDir: opts.EsmDev.PrebundleDir,
 		}); err != nil {
+			log.Fatal(err)
+		}
+		return 0
+	},
+	"prebundle": func() int {
+		if err := esmdev.PrebundleAll(opts.Prebundle.ModuleConfig, opts.Prebundle.Out); err != nil {
 			log.Fatal(err)
 		}
 		return 0

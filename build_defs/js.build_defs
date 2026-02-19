@@ -529,7 +529,24 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
     tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]}
 
     if esm:
-        # ESM mode: use esm-dev subcommand (no format/platform/tailwind flags)
+        # ESM mode: pre-bundle deps at build time (cached by Please), then
+        # generate a shell script that loads from the prebundle directory.
+        prebundle_name = f"_{name}_prebundle"
+        build_rule(
+            name = prebundle_name,
+            deps = deps + dev_deps,
+            outs = [prebundle_name],
+            cmd = " && ".join([
+                "PLEASE_JS=$(readlink -f $TOOLS_PLEASE_JS)",
+                _aggregate_moduleconfig_cmd(),
+                'mkdir -p "$OUT"',
+                '"$PLEASE_JS" prebundle --moduleconfig moduleconfig --out "$OUT"',
+            ]),
+            tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
+            needs_transitive_deps = True,
+            building_description = "Pre-bundling dependencies...",
+        )
+
         cmd = " && ".join([
             "PLEASE_JS=$(readlink -f $TOOLS_PLEASE_JS)",
             "echo '#!/bin/bash' > $OUT",
@@ -537,7 +554,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
             "echo 'MODCONF=$(mktemp)' >> $OUT",
             "echo 'trap \"rm -f $MODCONF\" EXIT' >> $OUT",
             """echo 'find "$(pwd)/plz-out/gen" -name "*.moduleconfig" | while read f; do abs="${f%.moduleconfig}"; while IFS="=" read -r name _; do echo "$name=$abs"; done < "$f"; done > $MODCONF' >> $OUT""",
-            f"echo 'exec '\"$PLEASE_JS\"' esm-dev --entry '\"$PKG_DIR\"'/{entry_point} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --port {port}{tsconfig_arg}{define_arg}{proxy_arg}{env_arg}' >> $OUT",
+            f"echo 'exec '\"$PLEASE_JS\"' esm-dev --entry '\"$PKG_DIR\"'/{entry_point} --prebundle-dir $(pwd)/plz-out/gen/'\"$PKG\"'/{prebundle_name} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --port {port}{tsconfig_arg}{define_arg}{proxy_arg}{env_arg}' >> $OUT",
             "chmod +x $OUT",
         ])
     else:
@@ -567,10 +584,12 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
         tools["tailwind"] = [CONFIG.JS.TAILWIND_TOOL]
         all_srcs = all_srcs + [tailwind_config]
 
+    extra_deps = [f":_{name}_prebundle"] if esm else []
+
     return build_rule(
         name = name,
         srcs = all_srcs,
-        deps = deps + dev_deps,
+        deps = deps + dev_deps + extra_deps,
         outs = [f"{name}.sh"],
         cmd = cmd,
         tools = tools,

@@ -36,6 +36,7 @@ type Args struct {
 	Proxy        []string
 	EnvFile      string
 	EnvPrefix    string
+	PrebundleDir string // path to pre-bundled deps dir (skips runtime prebundle)
 }
 
 // transformEntry caches a transformed source file.
@@ -313,6 +314,10 @@ func collectEntryPoints(moduleMap map[string]string, exclude map[string]bool, us
 		subpath := "."
 		if spec != pkgName {
 			subpath = "./" + strings.TrimPrefix(spec, pkgName+"/")
+		}
+		// Skip trailing-slash specifiers (e.g. "tslib/") — browsers reject them
+		if strings.HasSuffix(spec, "/") {
+			continue
 		}
 
 		// Resolve entry point
@@ -782,6 +787,224 @@ func findSubpathExports(pkgDir string) []string {
 		}
 	}
 	return subpaths
+}
+
+// collectAllEntryPoints builds esbuild entry points and an import map from ALL
+// packages in the moduleMap (not filtered by source scanning). Used for build-time
+// pre-bundling where we don't have access to source files.
+func collectAllEntryPoints(moduleMap map[string]string, exclude map[string]bool) ([]api.EntryPoint, map[string]string) {
+	var entryPoints []api.EntryPoint
+	importMap := make(map[string]string)
+	seen := make(map[string]bool)
+
+	for pkgName, pkgDir := range moduleMap {
+		if exclude[pkgName] {
+			continue
+		}
+
+		absPkgDir, _ := filepath.Abs(pkgDir)
+
+		// Only pre-bundle npm packages (those with package.json).
+		if _, err := os.Stat(filepath.Join(absPkgDir, "package.json")); err != nil {
+			continue
+		}
+
+		// Add main entry point (subpath ".")
+		entryPoint := common.ResolvePackageEntry(absPkgDir, ".", "browser")
+		if entryPoint == "" {
+			candidate := filepath.Join(absPkgDir, "index.js")
+			if _, err := os.Stat(candidate); err == nil {
+				entryPoint = candidate
+			}
+		}
+		if entryPoint != "" && !seen[pkgName] {
+			seen[pkgName] = true
+			entryPoints = append(entryPoints, api.EntryPoint{
+				InputPath:  entryPoint,
+				OutputPath: pkgName,
+			})
+			importMap[pkgName] = "/@deps/" + pkgName + ".js"
+		}
+
+		// Enumerate subpath exports
+		for _, subpath := range findSubpathExports(absPkgDir) {
+			trimmed := strings.TrimPrefix(subpath, "./")
+			if trimmed == "" {
+				continue // root export already handled above
+			}
+			spec := pkgName + "/" + trimmed
+			if seen[spec] || strings.HasSuffix(spec, "/") {
+				continue
+			}
+			ep := common.ResolvePackageEntry(absPkgDir, subpath, "browser")
+			if ep == "" {
+				continue
+			}
+			seen[spec] = true
+			entryPoints = append(entryPoints, api.EntryPoint{
+				InputPath:  ep,
+				OutputPath: spec,
+			})
+			importMap[spec] = "/@deps/" + spec + ".js"
+		}
+	}
+	return entryPoints, importMap
+}
+
+// PrebundleAll runs the full pre-bundle pipeline for all npm dependencies
+// and writes the output to outDir. This is used by the "prebundle" subcommand
+// at build time so Please can cache the result.
+func PrebundleAll(moduleConfigPath, outDir string) error {
+	moduleMap, err := common.ParseModuleConfig(moduleConfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to parse moduleconfig: %w", err)
+	}
+
+	exclude := make(map[string]bool)
+	absOutdir, _ := filepath.Abs(".esm-prebundle-tmp")
+	var result api.BuildResult
+	var importMap map[string]string
+
+	for attempt := 0; attempt <= maxPrebundleRetries; attempt++ {
+		var entryPoints []api.EntryPoint
+		entryPoints, importMap = collectAllEntryPoints(moduleMap, exclude)
+		if len(entryPoints) == 0 {
+			break
+		}
+
+		var externals []string
+		for name := range exclude {
+			externals = append(externals, name)
+		}
+
+		result = api.Build(api.BuildOptions{
+			EntryPointsAdvanced: entryPoints,
+			Bundle:              true,
+			Write:               false,
+			Format:              api.FormatESModule,
+			Platform:            api.PlatformBrowser,
+			Target:              api.ESNext,
+			Splitting:           true,
+			ChunkNames:          "chunk-[hash]",
+			Outdir:              absOutdir,
+			LogLevel:            api.LogLevelSilent,
+			IgnoreAnnotations:   true,
+			External:            externals,
+			Plugins: []api.Plugin{
+				common.ModuleResolvePlugin(moduleMap, "browser"),
+				common.NodeBuiltinEmptyPlugin(),
+				common.UnknownExternalPlugin(moduleMap),
+			},
+			Loader: depLoaders,
+		})
+
+		if len(result.Errors) == 0 {
+			break
+		}
+
+		newFailing := identifyFailingPackages(result.Errors, moduleMap)
+		if len(newFailing) == 0 {
+			for _, e := range result.Errors {
+				fmt.Fprintf(os.Stderr, "  warning: pre-bundle error: %s\n", e.Text)
+			}
+			break
+		}
+
+		addedNew := false
+		var names []string
+		for n := range newFailing {
+			if !exclude[n] {
+				exclude[n] = true
+				addedNew = true
+				names = append(names, n)
+			}
+		}
+		if !addedNew {
+			break
+		}
+		sort.Strings(names)
+		fmt.Fprintf(os.Stderr, "  excluding broken deps: %s\n", strings.Join(names, ", "))
+	}
+
+	// Build depCache from output
+	depCache := make(map[string][]byte)
+	for _, f := range result.OutputFiles {
+		rel, err := filepath.Rel(absOutdir, f.Path)
+		if err != nil {
+			rel = filepath.Base(f.Path)
+		}
+		depCache["/@deps/"+filepath.ToSlash(rel)] = f.Contents
+	}
+
+	// Remove excluded packages from import map
+	if importMap == nil {
+		importMap = make(map[string]string)
+	}
+	for name := range exclude {
+		delete(importMap, name)
+		for key := range importMap {
+			if strings.HasPrefix(key, name+"/") {
+				delete(importMap, key)
+			}
+		}
+	}
+
+	addCJSNamedExportsToCache(depCache)
+
+	imJSON, err := json.Marshal(map[string]interface{}{
+		"imports": importMap,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal import map: %w", err)
+	}
+
+	return SavePrebundleDir(outDir, depCache, imJSON)
+}
+
+// SavePrebundleDir writes pre-bundled deps and import map to a directory.
+func SavePrebundleDir(dir string, depCache map[string][]byte, importMapJSON []byte) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "importmap.json"), importMapJSON, 0644); err != nil {
+		return err
+	}
+	for urlPath, data := range depCache {
+		rel := strings.TrimPrefix(urlPath, "/@deps/")
+		filePath := filepath.Join(dir, "deps", rel)
+		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filePath, data, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// LoadPrebundleDir reads pre-bundled deps and import map from a directory.
+func LoadPrebundleDir(dir string) (map[string][]byte, []byte, error) {
+	importMapJSON, err := os.ReadFile(filepath.Join(dir, "importmap.json"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	depCache := make(map[string][]byte)
+	depsDir := filepath.Join(dir, "deps")
+	filepath.Walk(depsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(depsDir, path)
+		urlPath := "/@deps/" + filepath.ToSlash(rel)
+		data, err := os.ReadFile(path)
+		if err == nil {
+			depCache[urlPath] = data
+		}
+		return nil
+	})
+
+	return depCache, importMapJSON, nil
 }
 
 // resolveSourceFile finds the actual file for a URL path, trying various extensions.
@@ -1302,41 +1525,52 @@ func Run(args Args) error {
 	}
 	common.MergeEnvDefines(define, "development")
 
-	// Scan source files for import specifiers to only pre-bundle what's needed.
-	usedImports := scanSourceImports(absServedir, moduleMap)
-	// Always include react-refresh if available (injected by HMR scripts).
-	if _, ok := moduleMap["react-refresh"]; ok {
-		usedImports["react-refresh"] = true
-	}
-
-	// Pre-bundle dependencies (with disk cache for fast subsequent starts).
 	prebundleStart := time.Now()
-	cacheKey := prebundleCacheKey(args.ModuleConfig, usedImports)
-	cacheDir := filepath.Join(".esm-dev-cache", cacheKey)
-
 	var depCache map[string][]byte
 	var importMapJSON []byte
 
-	if dc, im, loadErr := loadPrebundleCache(cacheDir); loadErr == nil {
-		depCache = dc
-		importMapJSON = im
+	if args.PrebundleDir != "" {
+		// Build-time pre-bundled: load from directory (instant).
+		depCache, importMapJSON, err = LoadPrebundleDir(args.PrebundleDir)
+		if err != nil {
+			return fmt.Errorf("failed to load prebundle dir %s: %w", args.PrebundleDir, err)
+		}
 		var imData struct{ Imports map[string]string }
 		json.Unmarshal(importMapJSON, &imData)
-		fmt.Printf("  \033[2mLoaded %d deps from cache in %dms\033[0m\n",
+		fmt.Printf("  \033[2mLoaded %d deps from prebundle dir in %dms\033[0m\n",
 			len(imData.Imports), time.Since(prebundleStart).Milliseconds())
 	} else {
-		fmt.Printf("  \033[2mPre-bundling dependencies...\033[0m\n")
-		depCache, importMapJSON, err = prebundleDeps(moduleMap, usedImports)
-		if err != nil {
-			return fmt.Errorf("failed to pre-bundle dependencies: %w", err)
+		// Runtime fallback: scan sources and pre-bundle on the fly.
+		usedImports := scanSourceImports(absServedir, moduleMap)
+		// Always include react-refresh if available (injected by HMR scripts).
+		if _, ok := moduleMap["react-refresh"]; ok {
+			usedImports["react-refresh"] = true
 		}
-		// Save cache (clean old entries first)
-		os.RemoveAll(".esm-dev-cache")
-		savePrebundleCache(cacheDir, depCache, importMapJSON)
-		var imData struct{ Imports map[string]string }
-		json.Unmarshal(importMapJSON, &imData)
-		fmt.Printf("  \033[2mPre-bundled %d deps in %dms\033[0m\n",
-			len(imData.Imports), time.Since(prebundleStart).Milliseconds())
+
+		cacheKey := prebundleCacheKey(args.ModuleConfig, usedImports)
+		cacheDir := filepath.Join(".esm-dev-cache", cacheKey)
+
+		if dc, im, loadErr := loadPrebundleCache(cacheDir); loadErr == nil {
+			depCache = dc
+			importMapJSON = im
+			var imData struct{ Imports map[string]string }
+			json.Unmarshal(importMapJSON, &imData)
+			fmt.Printf("  \033[2mLoaded %d deps from cache in %dms\033[0m\n",
+				len(imData.Imports), time.Since(prebundleStart).Milliseconds())
+		} else {
+			fmt.Printf("  \033[2mPre-bundling dependencies...\033[0m\n")
+			depCache, importMapJSON, err = prebundleDeps(moduleMap, usedImports)
+			if err != nil {
+				return fmt.Errorf("failed to pre-bundle dependencies: %w", err)
+			}
+			// Save cache (clean old entries first)
+			os.RemoveAll(".esm-dev-cache")
+			savePrebundleCache(cacheDir, depCache, importMapJSON)
+			var imData struct{ Imports map[string]string }
+			json.Unmarshal(importMapJSON, &imData)
+			fmt.Printf("  \033[2mPre-bundled %d deps in %dms\033[0m\n",
+				len(imData.Imports), time.Since(prebundleStart).Milliseconds())
+		}
 	}
 
 	// Parse proxies
