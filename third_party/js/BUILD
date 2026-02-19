@@ -31,3 +31,9 @@ npm_module(
     name = "react-refresh",
     version = "0.14.2",
 )
+
+npm_module(
+    name = "use-sync-external-store",
+    version = "1.6.0",
+    deps = [":react"],
+)

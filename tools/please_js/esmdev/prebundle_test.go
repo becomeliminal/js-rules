@@ -144,6 +144,82 @@ func TestPrebundlePackage_NestedScopedPackage(t *testing.T) {
 	}
 }
 
+// TestBundleSubpathViaStdin_CJSFixup verifies that bundleSubpathViaStdin
+// applies CJS-to-ESM fixups (named exports, dynamic require replacement)
+// and resolves process.env.NODE_ENV via Define. Without these fixups,
+// CJS packages like use-sync-external-store produce only a default export,
+// causing "does not provide an export named X" errors in the browser.
+func TestBundleSubpathViaStdin_CJSFixup(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a CJS package with a conditional require (like use-sync-external-store).
+	// The index.js delegates to dev/prod via process.env.NODE_ENV, and the
+	// development module exports a named function.
+	pkgDir := filepath.Join(dir, "cjs-pkg")
+	os.MkdirAll(filepath.Join(pkgDir, "cjs"), 0755)
+	os.MkdirAll(filepath.Join(pkgDir, "shim"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "cjs-pkg",
+  "version": "1.0.0",
+  "exports": {
+    ".": "./index.js",
+    "./shim": "./shim/index.js"
+  }
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte(`'use strict';
+if (process.env.NODE_ENV === 'production') {
+  module.exports = require('./cjs/prod.js');
+} else {
+  module.exports = require('./cjs/dev.js');
+}
+`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "cjs", "dev.js"), []byte(`'use strict';
+exports.myNamedExport = function() { return "dev"; };
+`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "cjs", "prod.js"), []byte(`'use strict';
+exports.myNamedExport = function() { return "prod"; };
+`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "shim", "index.js"), []byte(`'use strict';
+if (process.env.NODE_ENV === 'production') {
+  module.exports = require('../cjs/prod.js');
+} else {
+  module.exports = require('../cjs/dev.js');
+}
+`), 0644)
+
+	moduleMap := map[string]string{"cjs-pkg": pkgDir}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	code, err := bundleSubpathViaStdin("cjs-pkg/shim", "cjs-pkg", pkgDir, moduleMap, define)
+	if err != nil {
+		t.Fatalf("bundleSubpathViaStdin failed: %v", err)
+	}
+
+	text := string(code)
+
+	// Named export should be present (CJS fixup worked)
+	if !strings.Contains(text, "myNamedExport") {
+		t.Errorf("expected named export 'myNamedExport' in output, got:\n%s", text)
+	}
+
+	// Should have export const { ... } destructuring (CJS fixup adds this)
+	if !strings.Contains(text, "export const {") {
+		t.Errorf("expected 'export const {' destructuring in output, got:\n%s", text)
+	}
+
+	// Should NOT have __require("specifier") calls (fixDynamicRequires should replace them).
+	// Note: __require() in the __commonJS helper definition is fine — we only care
+	// about __require("some-specifier") calls that represent external dependencies.
+	if dynamicRequireRe.MatchString(text) {
+		t.Errorf("expected no __require(\"...\") calls in output, got:\n%s", text)
+	}
+
+	// Should reference "dev" not "prod" (Define resolved process.env.NODE_ENV)
+	if strings.Contains(text, `"prod"`) {
+		t.Errorf("expected development path (not production), got:\n%s", text)
+	}
+}
+
 // TestPrebundlePackage_NoNestedNodeModules verifies that packages without
 // nested node_modules still work correctly (no regression).
 func TestPrebundlePackage_NoNestedNodeModules(t *testing.T) {

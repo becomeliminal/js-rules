@@ -65,6 +65,9 @@ var (
 	cjsDelegateRe = regexp.MustCompile(`module\.exports\s*=\s*(require_\w+)\(\)`)
 	// Matches `export default require_xxx()` in entry files.
 	defaultRequireRe = regexp.MustCompile(`export default (require_\w+)\(\)`)
+	// Matches `__reExport(varName, __toESM(require_xxx()))` in stdin-bundled files.
+	// esbuild produces this when `export * from "cjs-pkg"` is bundled via stdin.
+	reExportRe = regexp.MustCompile(`__reExport\(\w+,\s*__toESM\((require_\w+)\(\)\)\);?`)
 )
 
 // cjsModuleInfo holds parsed info about a single __commonJS wrapper.
@@ -122,46 +125,72 @@ func addCJSNamedExportsToCache(depCache map[string][]byte) {
 		}
 	}
 
-	// Pass 2: for each entry with `export default require_xxx()`, resolve
-	// the delegation chain and add named re-exports.
+	// Pass 2: for each entry with `export default require_xxx()` or
+	// `__reExport(varName, __toESM(require_xxx()))`, resolve the delegation
+	// chain and add named re-exports.
 	for urlPath, code := range depCache {
 		codeStr := string(code)
-		match := defaultRequireRe.FindStringSubmatch(codeStr)
-		if match == nil {
+
+		// Try pattern A: `export default require_xxx()`
+		if match := defaultRequireRe.FindStringSubmatch(codeStr); match != nil {
+			funcName := match[1]
+			names := resolveCJSExports(cjsInfo, funcName)
+			if len(names) == 0 {
+				continue
+			}
+			sort.Strings(names)
+
+			// Replace `export default require_xxx();` with named exports
+			idx := strings.LastIndex(codeStr, "export default ")
+			if idx < 0 {
+				continue
+			}
+			rest := codeStr[idx+len("export default "):]
+			semiIdx := strings.Index(rest, ";")
+			if semiIdx < 0 {
+				continue
+			}
+			expr := rest[:semiIdx]
+			trailing := rest[semiIdx+1:]
+
+			var sb strings.Builder
+			sb.WriteString(codeStr[:idx])
+			sb.WriteString("var __cjs_exports = ")
+			sb.WriteString(expr)
+			sb.WriteString(";\nexport default __cjs_exports;\n")
+			sb.WriteString("export const { ")
+			sb.WriteString(strings.Join(names, ", "))
+			sb.WriteString(" } = __cjs_exports;\n")
+			sb.WriteString(trailing)
+
+			depCache[urlPath] = []byte(sb.String())
 			continue
 		}
 
-		funcName := match[1]
-		names := resolveCJSExports(cjsInfo, funcName)
-		if len(names) == 0 {
-			continue
-		}
-		sort.Strings(names)
+		// Try pattern B: `__reExport(varName, __toESM(require_xxx()))`
+		// Produced by esbuild when `export * from "cjs-pkg"` is bundled via stdin.
+		if match := reExportRe.FindStringSubmatch(codeStr); match != nil {
+			funcName := match[1]
+			names := resolveCJSExports(cjsInfo, funcName)
+			if len(names) == 0 {
+				continue
+			}
+			sort.Strings(names)
 
-		// Replace `export default require_xxx();` with named exports
-		idx := strings.LastIndex(codeStr, "export default ")
-		if idx < 0 {
-			continue
-		}
-		rest := codeStr[idx+len("export default "):]
-		semiIdx := strings.Index(rest, ";")
-		if semiIdx < 0 {
-			continue
-		}
-		expr := rest[:semiIdx]
-		trailing := rest[semiIdx+1:]
+			// Replace the __reExport line with proper ESM exports
+			loc := reExportRe.FindStringIndex(codeStr)
+			var sb strings.Builder
+			sb.WriteString(codeStr[:loc[0]])
+			sb.WriteString("var __cjs_exports = ")
+			sb.WriteString(funcName)
+			sb.WriteString("();\nexport default __cjs_exports;\n")
+			sb.WriteString("export const { ")
+			sb.WriteString(strings.Join(names, ", "))
+			sb.WriteString(" } = __cjs_exports;\n")
+			sb.WriteString(codeStr[loc[1]:])
 
-		var sb strings.Builder
-		sb.WriteString(codeStr[:idx])
-		sb.WriteString("var __cjs_exports = ")
-		sb.WriteString(expr)
-		sb.WriteString(";\nexport default __cjs_exports;\n")
-		sb.WriteString("export const { ")
-		sb.WriteString(strings.Join(names, ", "))
-		sb.WriteString(" } = __cjs_exports;\n")
-		sb.WriteString(trailing)
-
-		depCache[urlPath] = []byte(sb.String())
+			depCache[urlPath] = []byte(sb.String())
+		}
 	}
 }
 

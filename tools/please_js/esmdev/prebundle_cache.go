@@ -355,7 +355,7 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 		for _, spec := range missingSubpaths {
 			pkgName := resolveModuleName(spec, moduleMap)
 			pkgDir := moduleMap[pkgName]
-			code, err := bundleSubpathViaStdin(spec, pkgName, pkgDir, moduleMap)
+			code, err := bundleSubpathViaStdin(spec, pkgName, pkgDir, moduleMap, define)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  warning: skipping missing subpath %s: %v\n", spec, err)
 				continue
@@ -374,7 +374,7 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 
 // bundleSubpathViaStdin bundles a bare specifier using esbuild's stdin API.
 // Uses the full moduleMap for cross-package resolution within the bundle.
-func bundleSubpathViaStdin(spec, pkgName, pkgDir string, moduleMap map[string]string) ([]byte, error) {
+func bundleSubpathViaStdin(spec, pkgName, pkgDir string, moduleMap map[string]string, define map[string]string) ([]byte, error) {
 	contents := fmt.Sprintf("export * from %q;\n", spec)
 	// Use single-package map for externalization: only the current package
 	// is resolved, all others are externalized.
@@ -391,6 +391,7 @@ func bundleSubpathViaStdin(spec, pkgName, pkgDir string, moduleMap map[string]st
 		Platform: api.PlatformBrowser,
 		Target:   api.ESNext,
 		LogLevel: api.LogLevelSilent,
+		Define:   define,
 		Plugins: []api.Plugin{
 			common.ModuleResolvePlugin(singlePkgMap, "browser"),
 			common.NodeBuiltinEmptyPlugin(),
@@ -404,5 +405,5 @@ func bundleSubpathViaStdin(spec, pkgName, pkgDir string, moduleMap map[string]st
 		}
 		return nil, fmt.Errorf("esbuild stdin failed for %s: %s", spec, errMsg)
 	}
-	return result.OutputFiles[0].Contents, nil
+	return fixupOnDemandDep(result.OutputFiles[0].Contents), nil
 }
