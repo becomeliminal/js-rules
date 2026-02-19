@@ -341,3 +341,75 @@ func TestAddCJSNamedExportsToCache(t *testing.T) {
 		}
 	})
 }
+
+func TestFixupOnDemandDep(t *testing.T) {
+	t.Run("CJS with named exports", func(t *testing.T) {
+		input := "var require_foo = __commonJS({\n" +
+			"  \"node_modules/foo/index.js\"(exports) {\n" +
+			"    exports.bar = function() {};\n" +
+			"    exports.baz = 42;\n" +
+			"  }\n" +
+			"});\n" +
+			"export default require_foo();\n"
+
+		result := string(fixupOnDemandDep([]byte(input)))
+
+		if !strings.Contains(result, "__cjs_exports") {
+			t.Errorf("expected __cjs_exports variable, got:\n%s", result)
+		}
+		if !strings.Contains(result, "export default __cjs_exports") {
+			t.Errorf("expected default export of __cjs_exports, got:\n%s", result)
+		}
+		if !strings.Contains(result, "export const { bar, baz } = __cjs_exports") {
+			t.Errorf("expected named re-exports, got:\n%s", result)
+		}
+	})
+
+	t.Run("CJS with __require", func(t *testing.T) {
+		input := `var x = __require("react");
+export default x;`
+
+		result := string(fixupOnDemandDep([]byte(input)))
+
+		if !strings.Contains(result, `import __ext_0 from "react"`) {
+			t.Errorf("expected static import for react, got:\n%s", result)
+		}
+		if strings.Contains(result, `__require("react")`) {
+			t.Errorf("expected __require to be replaced, got:\n%s", result)
+		}
+	})
+
+	t.Run("ESM passthrough", func(t *testing.T) {
+		input := `export const foo = 42;
+export default foo;`
+
+		result := string(fixupOnDemandDep([]byte(input)))
+
+		if result != input {
+			t.Errorf("expected ESM code unchanged, got:\n%s", result)
+		}
+	})
+
+	t.Run("combined CJS wrapper and __require", func(t *testing.T) {
+		input := "var require_foo = __commonJS({\n" +
+			"  \"node_modules/foo/index.js\"(exports) {\n" +
+			"    exports.bar = __require(\"react\");\n" +
+			"  }\n" +
+			"});\n" +
+			"export default require_foo();\n"
+
+		result := string(fixupOnDemandDep([]byte(input)))
+
+		// Named exports from CJS wrapper
+		if !strings.Contains(result, "export const { bar } = __cjs_exports") {
+			t.Errorf("expected named re-exports, got:\n%s", result)
+		}
+		// Dynamic require replaced with static import
+		if !strings.Contains(result, `import __ext_0 from "react"`) {
+			t.Errorf("expected static import for react, got:\n%s", result)
+		}
+		if strings.Contains(result, `__require("react")`) {
+			t.Errorf("expected __require to be replaced, got:\n%s", result)
+		}
+	})
+}

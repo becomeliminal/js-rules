@@ -53,7 +53,7 @@ func TestPrebundlePackage_NestedNodeModules(t *testing.T) {
 	), 0644)
 
 	// --- Run prebundlePackage ---
-	result := prebundlePackage("parent-pkg", parentDir, nil, outdir)
+	result := prebundlePackage("parent-pkg", parentDir, nil, outdir, nil)
 
 	if result.err != nil {
 		t.Fatalf("prebundlePackage failed: %v", result.err)
@@ -117,7 +117,7 @@ func TestPrebundlePackage_NestedScopedPackage(t *testing.T) {
 		"export const helper = \"scoped-v2\";\n",
 	), 0644)
 
-	result := prebundlePackage("parent-pkg", parentDir, nil, outdir)
+	result := prebundlePackage("parent-pkg", parentDir, nil, outdir, nil)
 
 	if result.err != nil {
 		t.Fatalf("prebundlePackage failed: %v", result.err)
@@ -161,7 +161,7 @@ func TestPrebundlePackage_NoNestedNodeModules(t *testing.T) {
 		"export const x = 42;\n",
 	), 0644)
 
-	result := prebundlePackage("simple-pkg", pkgDir, nil, outdir)
+	result := prebundlePackage("simple-pkg", pkgDir, nil, outdir, nil)
 
 	if result.err != nil {
 		t.Fatalf("prebundlePackage failed: %v", result.err)

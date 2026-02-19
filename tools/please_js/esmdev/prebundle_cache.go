@@ -127,7 +127,9 @@ func PrebundleAll(moduleConfigPath, outDir string) error {
 		return fmt.Errorf("failed to parse moduleconfig: %w", err)
 	}
 
-	depCache, importMap, failedPkgs := prebundleAllPackages(context.Background(), moduleMap, nil)
+	define := make(map[string]string)
+	common.MergeEnvDefines(define, "development")
+	depCache, importMap, failedPkgs := prebundleAllPackages(context.Background(), moduleMap, nil, define)
 
 	if len(failedPkgs) > 0 {
 		sort.Strings(failedPkgs)
@@ -161,12 +163,14 @@ func PrebundlePkg(moduleConfigPath, outDir string) error {
 	outdir, _ := filepath.Abs(".esm-prebundle-tmp")
 	mergedDepCache := make(map[string][]byte)
 	mergedImportMap := make(map[string]string)
+	define := make(map[string]string)
+	common.MergeEnvDefines(define, "development")
 
 	for pkgName, pkgDir := range moduleMap {
 		if isLocalLibrary(pkgDir) {
 			continue // local js_library targets are not pre-bundled
 		}
-		result := prebundlePackage(pkgName, pkgDir, nil, outdir)
+		result := prebundlePackage(pkgName, pkgDir, nil, outdir, define)
 		if result.err != nil {
 			fmt.Fprintf(os.Stderr, "  warning: skipping %s: %v\n", pkgName, result.err)
 			continue
@@ -249,6 +253,8 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 	if len(moduleMap) == 0 {
 		return nil
 	}
+	define := make(map[string]string)
+	common.MergeEnvDefines(define, "development")
 
 	// Scan all .js files in depsDir for bare import specifiers
 	bareSpecs := make(map[string]bool)
@@ -325,7 +331,7 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 		outdir, _ := filepath.Abs(".esm-prebundle-tmp")
 		for _, pkgName := range missingPkgs {
 			pkgDir := moduleMap[pkgName]
-			result := prebundlePackage(pkgName, pkgDir, nil, outdir)
+			result := prebundlePackage(pkgName, pkgDir, nil, outdir, define)
 			if result.err != nil {
 				fmt.Fprintf(os.Stderr, "  warning: skipping missing dep %s: %v\n", pkgName, result.err)
 				continue

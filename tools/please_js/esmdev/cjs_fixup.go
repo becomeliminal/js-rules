@@ -165,6 +165,16 @@ func addCJSNamedExportsToCache(depCache map[string][]byte) {
 	}
 }
 
+// fixupOnDemandDep applies CJS-to-ESM fixups to a single bundled output.
+// Reuses addCJSNamedExportsToCache and fixDynamicRequires via a throwaway
+// single-entry depCache — the same logic used for prebundled packages.
+func fixupOnDemandDep(code []byte) []byte {
+	depCache := map[string][]byte{"entry": code}
+	addCJSNamedExportsToCache(depCache)
+	fixDynamicRequires(depCache)
+	return depCache["entry"]
+}
+
 // resolveCJSExports follows the delegation chain to find the actual
 // CJS export names. e.g. require_react → require_react_development
 // where the development module has the real exports.

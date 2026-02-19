@@ -222,7 +222,7 @@ func Run(args Args) error {
 				len(imData.Imports), time.Since(prebundleStart).Milliseconds())
 		} else {
 			fmt.Printf("  \033[2mPre-bundling dependencies...\033[0m\n")
-			depCache, importMapJSON, err = prebundleDeps(moduleMap, usedImports)
+			depCache, importMapJSON, err = prebundleDeps(moduleMap, usedImports, define)
 			if err != nil {
 				return fmt.Errorf("failed to pre-bundle dependencies: %w", err)
 			}

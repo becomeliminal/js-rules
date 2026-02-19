@@ -371,6 +371,7 @@ func (s *esmServer) handleDepOnDemand(w http.ResponseWriter, r *http.Request, ur
 		Platform:          api.PlatformBrowser,
 		Target:            api.ESNext,
 		LogLevel:          api.LogLevelSilent,
+		Define:            s.define,
 		IgnoreAnnotations: true,
 		Plugins: []api.Plugin{
 			common.ModuleResolvePlugin(singlePkgMap, "browser"),
@@ -390,7 +391,7 @@ func (s *esmServer) handleDepOnDemand(w http.ResponseWriter, r *http.Request, ur
 		return
 	}
 
-	code := result.OutputFiles[0].Contents
+	code := fixupOnDemandDep(result.OutputFiles[0].Contents)
 	s.onDemandDeps.Store(urlPath, code)
 
 	w.Header().Set("Content-Type", "application/javascript")
@@ -418,6 +419,7 @@ func (s *esmServer) bundleViaStdin(spec, pkgName, pkgDir string) ([]byte, error)
 		Platform: api.PlatformBrowser,
 		Target:   api.ESNext,
 		LogLevel: api.LogLevelSilent,
+		Define:   s.define,
 		Plugins: []api.Plugin{
 			common.ModuleResolvePlugin(singlePkgMap, "browser"),
 			common.NodeBuiltinEmptyPlugin(),
@@ -427,5 +429,5 @@ func (s *esmServer) bundleViaStdin(spec, pkgName, pkgDir string) ([]byte, error)
 	if len(result.Errors) > 0 || len(result.OutputFiles) == 0 {
 		return nil, fmt.Errorf("esbuild failed")
 	}
-	return result.OutputFiles[0].Contents, nil
+	return fixupOnDemandDep(result.OutputFiles[0].Contents), nil
 }
