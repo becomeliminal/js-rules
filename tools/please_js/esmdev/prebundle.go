@@ -1,0 +1,232 @@
+package esmdev
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/evanw/esbuild/pkg/api"
+	"golang.org/x/sync/errgroup"
+
+	"tools/please_js/common"
+)
+
+// depLoaders is a filtered version of common.Loaders that excludes the file
+// loader. The file loader requires an output path on disk, but pre-bundling
+// writes to memory (Write: false). Assets like images and fonts are not needed
+// in pre-bundled dependency ESM output.
+var depLoaders = func() map[string]api.Loader {
+	m := make(map[string]api.Loader, len(common.Loaders))
+	for ext, loader := range common.Loaders {
+		if loader != api.LoaderFile {
+			m[ext] = loader
+		}
+	}
+	return m
+}()
+
+// packageBuildResult holds the output of a single per-package esbuild Build.
+type packageBuildResult struct {
+	pkgName   string
+	depCache  map[string][]byte
+	importMap map[string]string
+	err       error
+}
+
+// entryPointsForPackage collects esbuild entry points for a single package.
+// When usedImports is nil ("all" mode), enumerates main entry + all subpath exports.
+// When usedImports is non-nil ("filtered" mode), only includes specifiers found in source.
+func entryPointsForPackage(pkgName, pkgDir string, usedImports map[string]bool) ([]api.EntryPoint, map[string]string) {
+	absPkgDir, _ := filepath.Abs(pkgDir)
+
+	// Only pre-bundle npm packages (those with package.json).
+	if _, err := os.Stat(filepath.Join(absPkgDir, "package.json")); err != nil {
+		return nil, nil
+	}
+
+	var entryPoints []api.EntryPoint
+	importMap := make(map[string]string)
+	seen := make(map[string]bool)
+
+	addSpec := func(spec, subpath string) {
+		if seen[spec] || strings.HasSuffix(spec, "/") {
+			return
+		}
+		ep := common.ResolvePackageEntry(absPkgDir, subpath, "browser")
+		if ep == "" && subpath == "." {
+			candidate := filepath.Join(absPkgDir, "index.js")
+			if _, err := os.Stat(candidate); err == nil {
+				ep = candidate
+			}
+		}
+		if ep == "" {
+			return
+		}
+		seen[spec] = true
+		entryPoints = append(entryPoints, api.EntryPoint{
+			InputPath:  ep,
+			OutputPath: spec,
+		})
+		importMap[spec] = "/@deps/" + spec + ".js"
+	}
+
+	if usedImports == nil {
+		// "all" mode: main entry + all subpath exports
+		addSpec(pkgName, ".")
+		for _, subpath := range findSubpathExports(absPkgDir) {
+			trimmed := strings.TrimPrefix(subpath, "./")
+			if trimmed == "" {
+				continue
+			}
+			addSpec(pkgName+"/"+trimmed, subpath)
+		}
+	} else {
+		// "filtered" mode: only specifiers found in source code
+		for spec := range usedImports {
+			if packageNameFromSpec(spec) != pkgName {
+				continue
+			}
+			subpath := "."
+			if spec != pkgName {
+				subpath = "./" + strings.TrimPrefix(spec, pkgName+"/")
+			}
+			addSpec(spec, subpath)
+		}
+	}
+
+	return entryPoints, importMap
+}
+
+// prebundlePackage bundles a single npm package with all other packages externalized.
+// Uses splitting within the package for shared internal state between subpath exports.
+func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdir string) packageBuildResult {
+	entryPoints, importMap := entryPointsForPackage(pkgName, pkgDir, usedImports)
+	if len(entryPoints) == 0 {
+		return packageBuildResult{pkgName: pkgName}
+	}
+
+	// Single-package moduleMap: only the current package.
+	// ModuleResolvePlugin uses this to resolve self-references.
+	// UnknownExternalPlugin uses this to externalize all OTHER packages
+	// (CJS require() calls get ESM shims, ESM imports get External:true).
+	singlePkgMap := map[string]string{pkgName: pkgDir}
+
+	result := api.Build(api.BuildOptions{
+		EntryPointsAdvanced: entryPoints,
+		Bundle:              true,
+		Write:               false,
+		Format:              api.FormatESModule,
+		Splitting:           true,
+		ChunkNames:          pkgName + "/chunk-[hash]",
+		Platform:            api.PlatformBrowser,
+		Target:              api.ESNext,
+		Outdir:              outdir,
+		LogLevel:            api.LogLevelSilent,
+		IgnoreAnnotations:   true,
+		Plugins: []api.Plugin{
+			common.ModuleResolvePlugin(singlePkgMap, "browser"),
+			common.NodeBuiltinEmptyPlugin(),
+			common.UnknownExternalPlugin(singlePkgMap),
+		},
+		Loader: depLoaders,
+	})
+
+	if len(result.Errors) > 0 {
+		var msgs []string
+		for _, e := range result.Errors {
+			msgs = append(msgs, e.Text)
+		}
+		return packageBuildResult{
+			pkgName: pkgName,
+			err:     fmt.Errorf("%s", strings.Join(msgs, "; ")),
+		}
+	}
+
+	depCache := make(map[string][]byte)
+	for _, f := range result.OutputFiles {
+		rel, err := filepath.Rel(outdir, f.Path)
+		if err != nil {
+			rel = filepath.Base(f.Path)
+		}
+		depCache["/@deps/"+filepath.ToSlash(rel)] = f.Contents
+	}
+
+	addCJSNamedExportsToCache(depCache)
+	fixDynamicRequires(depCache)
+
+	return packageBuildResult{
+		pkgName:   pkgName,
+		depCache:  depCache,
+		importMap: importMap,
+	}
+}
+
+// prebundleAllPackages orchestrates parallel per-package prebundling.
+// Each package is bundled independently with all other packages externalized.
+// Cross-package references are resolved by the browser import map at runtime.
+func prebundleAllPackages(ctx context.Context, moduleMap map[string]string, usedImports map[string]bool) (map[string][]byte, map[string]string, []string) {
+	outdir, _ := filepath.Abs(".esm-prebundle-tmp")
+
+	g, _ := errgroup.WithContext(ctx)
+	g.SetLimit(runtime.NumCPU())
+
+	var mu sync.Mutex
+	mergedDepCache := make(map[string][]byte)
+	mergedImportMap := make(map[string]string)
+	var failedPkgs []string
+
+	for pkgName, pkgDir := range moduleMap {
+		name, dir := pkgName, pkgDir
+		g.Go(func() error {
+			result := prebundlePackage(name, dir, usedImports, outdir)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if result.err != nil {
+				failedPkgs = append(failedPkgs, name)
+				fmt.Fprintf(os.Stderr, "  warning: skipping %s: %v\n", name, result.err)
+				return nil
+			}
+
+			for k, v := range result.depCache {
+				mergedDepCache[k] = v
+			}
+			for k, v := range result.importMap {
+				mergedImportMap[k] = v
+			}
+			return nil
+		})
+	}
+
+	g.Wait()
+	return mergedDepCache, mergedImportMap, failedPkgs
+}
+
+// prebundleDeps pre-bundles npm dependencies using per-package parallel builds.
+// Each package is built independently with cross-package imports externalized.
+// The browser import map resolves cross-package references at runtime.
+func prebundleDeps(moduleMap map[string]string, usedImports map[string]bool) (map[string][]byte, []byte, error) {
+	depCache, importMap, failedPkgs := prebundleAllPackages(context.Background(), moduleMap, usedImports)
+
+	if len(failedPkgs) > 0 {
+		sort.Strings(failedPkgs)
+		fmt.Fprintf(os.Stderr, "  \033[33m!\033[0m skipped %d broken deps: %s\n",
+			len(failedPkgs), strings.Join(failedPkgs, ", "))
+	}
+
+	imJSON, err := json.Marshal(map[string]interface{}{
+		"imports": importMap,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to marshal import map: %w", err)
+	}
+
+	return depCache, imJSON, nil
+}
