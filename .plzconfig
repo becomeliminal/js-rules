@@ -32,10 +32,18 @@ Help = Prefix filter for .env variables exposed as import.meta.env.*.
 Optional = true
 Inherit = true
 
+[PluginConfig "react_refresh_dep"]
+ConfigKey = ReactRefreshDep
+DefaultValue = ///js//third_party/js:react-refresh
+Help = Build label for react-refresh, used for React Fast Refresh HMR in ESM dev servers.
+Optional = true
+Inherit = true
+
 [Plugin "js"]
 Target = //plugins:js
 PleaseJsTool = //tools/please_js
 TailwindTool = //third_party/js:tailwind
+ReactRefreshDep = //third_party/js:react-refresh
 
 [Plugin "go"]
 Target = //plugins:go

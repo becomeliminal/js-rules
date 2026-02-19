@@ -7,7 +7,6 @@ js_dev_server(
     deps = [
         "//third_party/js:react",
         "//third_party/js:react-dom",
-        "//third_party/js:react-refresh",
     ],
     servedir = "public",
     port = 3001,

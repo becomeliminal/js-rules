@@ -528,6 +528,10 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
 
     tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]}
 
+    # Auto-include react-refresh for HMR in ESM mode
+    if esm and CONFIG.JS.REACT_REFRESH_DEP:
+        dev_deps = dev_deps + [CONFIG.JS.REACT_REFRESH_DEP]
+
     if esm:
         # ESM mode: pre-bundle deps at build time (cached by Please), then
         # generate a shell script that loads from the prebundle directory.
