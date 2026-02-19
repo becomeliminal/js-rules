@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/evanw/esbuild/pkg/api"
+
+	"tools/please_js/common"
 )
 
 // Args holds the arguments for the transpile subcommand.
@@ -28,7 +30,19 @@ func Run(args Args) error {
 		}
 
 		ext := filepath.Ext(src)
-		loader := loaderForExt(ext)
+		loader, ok := common.Loaders[ext]
+		if !ok {
+			loader = api.LoaderJS
+		}
+
+		// Asset files (images, fonts, media) and CSS are just copied
+		if loader == api.LoaderFile || loader == api.LoaderLocalCSS {
+			outPath := filepath.Join(args.OutDir, filepath.Base(src))
+			if err := os.WriteFile(outPath, data, 0644); err != nil {
+				return fmt.Errorf("failed to write %s: %w", outPath, err)
+			}
+			continue
+		}
 
 		// Plain JS, JSON, and CSS files are just copied
 		if loader == api.LoaderJS || loader == api.LoaderJSON || loader == api.LoaderCSS {
@@ -70,19 +84,3 @@ func Run(args Args) error {
 	return nil
 }
 
-func loaderForExt(ext string) api.Loader {
-	switch ext {
-	case ".ts":
-		return api.LoaderTS
-	case ".tsx":
-		return api.LoaderTSX
-	case ".jsx":
-		return api.LoaderJSX
-	case ".json":
-		return api.LoaderJSON
-	case ".css":
-		return api.LoaderCSS
-	default:
-		return api.LoaderJS
-	}
-}

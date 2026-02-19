@@ -98,6 +98,7 @@ func Run(args Args) error {
 		opts.Splitting = true
 		opts.Format = api.FormatESModule
 		opts.ChunkNames = "chunk-[hash]"
+		opts.AssetNames = "assets/[name]-[hash]"
 		opts.Metafile = true
 	} else {
 		// Single-file output: ensure parent directory exists

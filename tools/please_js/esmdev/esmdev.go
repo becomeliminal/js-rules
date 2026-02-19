@@ -147,6 +147,26 @@ s.textContent = %s;
 `
 
 
+// assetModuleTemplate wraps an asset URL in a JS module for ESM imports.
+const assetModuleTemplate = `export default %q;
+`
+
+// assetExts is the set of file extensions treated as static assets.
+var assetExts = func() map[string]bool {
+	m := make(map[string]bool)
+	for ext, loader := range common.Loaders {
+		if loader == api.LoaderFile {
+			m[ext] = true
+		}
+	}
+	return m
+}()
+
+// isAssetExt reports whether the extension is a known asset type.
+func isAssetExt(ext string) bool {
+	return assetExts[ext]
+}
+
 // parseProxies converts "prefix=target" strings into reverse proxy instances.
 func parseProxies(specs []string) (map[string]*httputil.ReverseProxy, []string) {
 	proxies := make(map[string]*httputil.ReverseProxy, len(specs))
@@ -640,6 +660,15 @@ func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 6b. Asset files — serve as JS module when imported as ES module.
+	if isAssetExt(ext) {
+		fetchDest := r.Header.Get("Sec-Fetch-Dest")
+		if fetchDest == "script" || r.URL.Query().Get("module") != "" {
+			s.handleAssetModule(w, r, urlPath, start)
+			return
+		}
+	}
+
 	// 7. Static files from servedir
 	filePath := filepath.Join(s.sourceRoot, filepath.FromSlash(urlPath))
 	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
@@ -807,6 +836,15 @@ func (s *esmServer) handleCSSModule(w http.ResponseWriter, r *http.Request, urlP
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write([]byte(js))
 	fmt.Printf("  \033[2m[css-module] %s %s → 200 (%dms)\033[0m\n",
+		r.Method, urlPath, time.Since(start).Milliseconds())
+}
+
+func (s *esmServer) handleAssetModule(w http.ResponseWriter, r *http.Request, urlPath string, start time.Time) {
+	js := fmt.Sprintf(assetModuleTemplate, urlPath)
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write([]byte(js))
+	fmt.Printf("  \033[2m[asset-module] %s %s → 200 (%dms)\033[0m\n",
 		r.Method, urlPath, time.Since(start).Milliseconds())
 }
 
