@@ -25,3 +25,13 @@ js_binary(
     format = "iife",
     platform = "browser",
 )
+
+gentest(
+    name = "react_test",
+    test_cmd = " && ".join([
+        "node test/react/react.js",
+        "test -f test/react/app.js",
+    ]),
+    data = [":react", ":app"],
+    no_test_output = True,
+)

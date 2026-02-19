@@ -9,3 +9,10 @@ js_binary(
     platform = "node",
     format = "cjs",
 )
+
+gentest(
+    name = "basic_test",
+    test_cmd = "node test/basic/basic.js",
+    data = [":basic"],
+    no_test_output = True,
+)

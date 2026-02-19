@@ -8,3 +8,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "tsconfig_paths_test",
+    test_cmd = "node test/tsconfig_paths/tsconfig_paths.js",
+    data = [":tsconfig_paths"],
+    no_test_output = True,
+)

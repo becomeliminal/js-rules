@@ -15,3 +15,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "npm_repo_cycle_test",
+    test_cmd = "node test/npm_repo_cycle/npm_repo_cycle.js",
+    data = [":npm_repo_cycle"],
+    no_test_output = True,
+)

@@ -10,3 +10,10 @@ js_binary(
         "import.meta.env.MODE": '"testing"',
     },
 )
+
+gentest(
+    name = "define_test",
+    test_cmd = "node test/define/define.js",
+    data = [":define"],
+    no_test_output = True,
+)

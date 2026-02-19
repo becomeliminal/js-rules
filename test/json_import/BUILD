@@ -7,3 +7,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "json_import_test",
+    test_cmd = "node test/json_import/json_import.js",
+    data = [":json_import"],
+    no_test_output = True,
+)

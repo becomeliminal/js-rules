@@ -7,3 +7,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "typescript_test",
+    test_cmd = "node test/typescript/typescript.js",
+    data = [":typescript"],
+    no_test_output = True,
+)

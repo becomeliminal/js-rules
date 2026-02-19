@@ -15,3 +15,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "npm_repo_peerdep_test",
+    test_cmd = "node test/npm_repo_peerdep/npm_repo_peerdep.js",
+    data = [":npm_repo_peerdep"],
+    no_test_output = True,
+)

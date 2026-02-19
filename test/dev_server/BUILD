@@ -12,3 +12,10 @@ js_dev_server(
     format = "esm",
     platform = "browser",
 )
+
+gentest(
+    name = "dev_server_test",
+    test_cmd = "test -x test/dev_server/dev.sh",
+    data = [":dev"],
+    no_test_output = True,
+)

@@ -13,3 +13,10 @@ js_binary(
     },
     minify = True,
 )
+
+gentest(
+    name = "integration_test",
+    test_cmd = "node test/integration/integration.js",
+    data = [":integration"],
+    no_test_output = True,
+)

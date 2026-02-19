@@ -8,3 +8,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "asset_dir_test",
+    test_cmd = "node test/asset_dir/asset_dir.js",
+    data = [":asset_dir"],
+    no_test_output = True,
+)

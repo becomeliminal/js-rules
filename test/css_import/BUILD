@@ -7,3 +7,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "css_import_test",
+    test_cmd = "node test/css_import/css_import.js",
+    data = [":css_import"],
+    no_test_output = True,
+)

@@ -17,3 +17,13 @@ js_binary(
     format = "cjs",
     deps = ["//test/browser_field/fake_pkg"],
 )
+
+gentest(
+    name = "browser_field_test",
+    test_cmd = " && ".join([
+        "test -f test/browser_field/browser_field.js",
+        "node test/browser_field/browser_field_node.js",
+    ]),
+    data = [":browser_field", ":browser_field_node"],
+    no_test_output = True,
+)

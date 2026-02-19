@@ -7,3 +7,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "npm_simple_test",
+    test_cmd = "node test/npm_simple/npm_simple.js",
+    data = [":npm_simple"],
+    no_test_output = True,
+)

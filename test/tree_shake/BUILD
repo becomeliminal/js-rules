@@ -7,3 +7,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "tree_shake_test",
+    test_cmd = "node test/tree_shake/tree_shake.js",
+    data = [":tree_shake"],
+    no_test_output = True,
+)

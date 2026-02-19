@@ -14,3 +14,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "npm_exports_test",
+    test_cmd = "node test/npm_exports/npm_exports.js",
+    data = [":npm_exports"],
+    no_test_output = True,
+)

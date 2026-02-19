@@ -16,3 +16,10 @@ js_binary(
     format = "cjs",
     platform = "node",
 )
+
+gentest(
+    name = "npm_repo_nested_test",
+    test_cmd = "node test/npm_repo_nested/npm_repo_nested.js",
+    data = [":npm_repo_nested"],
+    no_test_output = True,
+)

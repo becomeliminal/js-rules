@@ -15,3 +15,10 @@ js_binary(
         "///test/npm_repo_optional/optional_npm//ms",
     ],
 )
+
+gentest(
+    name = "npm_repo_optional_test",
+    test_cmd = "node test/npm_repo_optional/npm_repo_optional.js",
+    data = [":npm_repo_optional"],
+    no_test_output = True,
+)

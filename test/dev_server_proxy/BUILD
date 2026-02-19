@@ -8,3 +8,10 @@ js_dev_server(
         "/api": "http://localhost:3001",
     },
 )
+
+gentest(
+    name = "dev_server_proxy_test",
+    test_cmd = "test -x test/dev_server_proxy/dev_server_proxy.sh",
+    data = [":dev_server_proxy"],
+    no_test_output = True,
+)
