@@ -63,8 +63,6 @@ func (s *esmServer) handleSource(w http.ResponseWriter, r *http.Request, urlPath
 			w.Header().Set("Content-Type", "application/javascript")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Write(entry.code)
-			fmt.Printf("  \033[2m[cached] %s %s → 200 (%dms)\033[0m\n",
-				r.Method, urlPath, time.Since(start).Milliseconds())
 			return
 		}
 	}
@@ -227,8 +225,20 @@ func (s *esmServer) handleDepOnDemand(w http.ResponseWriter, r *http.Request, ur
 		}
 	}
 	if ep == "" {
-		http.NotFound(w, r)
-		fmt.Printf("  \033[2m[dep-lazy] %s %s → 404 unresolvable (%dms)\033[0m\n",
+		// ResolvePackageEntry doesn't handle wildcard exports (e.g. "./*").
+		// Fall back to esbuild's resolver via a virtual stdin entry.
+		code, err := s.bundleViaStdin(spec, pkgName, pkgDir)
+		if err != nil {
+			http.NotFound(w, r)
+			fmt.Printf("  \033[1;31m[dep-lazy] %s %s → 404 unresolvable (%dms)\033[0m\n",
+				r.Method, urlPath, time.Since(start).Milliseconds())
+			return
+		}
+		s.onDemandDeps.Store(urlPath, code)
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write(code)
+		fmt.Printf("  \033[2m[dep-lazy] %s %s → 200 stdin (%dms)\033[0m\n",
 			r.Method, urlPath, time.Since(start).Milliseconds())
 		return
 	}
@@ -257,7 +267,7 @@ func (s *esmServer) handleDepOnDemand(w http.ResponseWriter, r *http.Request, ur
 			errMsg = result.Errors[0].Text
 		}
 		http.Error(w, errMsg, http.StatusInternalServerError)
-		fmt.Printf("  \033[31m[dep-lazy] %s %s → 500 %s (%dms)\033[0m\n",
+		fmt.Printf("  \033[1;31m[dep-lazy] %s %s → 500 %s (%dms)\033[0m\n",
 			r.Method, urlPath, errMsg, time.Since(start).Milliseconds())
 		return
 	}
@@ -270,4 +280,34 @@ func (s *esmServer) handleDepOnDemand(w http.ResponseWriter, r *http.Request, ur
 	w.Write(code)
 	fmt.Printf("  \033[2m[dep-lazy] %s %s → 200 (%dms)\033[0m\n",
 		r.Method, urlPath, time.Since(start).Milliseconds())
+}
+
+// bundleViaStdin bundles a bare specifier using esbuild's stdin API.
+// This lets esbuild's native resolver handle wildcard exports, conditional
+// exports, and other resolution edge cases that ResolvePackageEntry misses.
+func (s *esmServer) bundleViaStdin(spec, pkgName, pkgDir string) ([]byte, error) {
+	contents := fmt.Sprintf("export * from %q;\n", spec)
+	singlePkgMap := map[string]string{pkgName: pkgDir}
+	result := api.Build(api.BuildOptions{
+		Stdin: &api.StdinOptions{
+			Contents:   contents,
+			ResolveDir: pkgDir,
+			Loader:     api.LoaderJS,
+		},
+		Bundle:   true,
+		Write:    false,
+		Format:   api.FormatESModule,
+		Platform: api.PlatformBrowser,
+		Target:   api.ESNext,
+		LogLevel: api.LogLevelSilent,
+		Plugins: []api.Plugin{
+			common.ModuleResolvePlugin(singlePkgMap, "browser"),
+			common.NodeBuiltinEmptyPlugin(),
+			common.UnknownExternalPlugin(singlePkgMap),
+		},
+	})
+	if len(result.Errors) > 0 || len(result.OutputFiles) == 0 {
+		return nil, fmt.Errorf("esbuild failed")
+	}
+	return result.OutputFiles[0].Contents, nil
 }

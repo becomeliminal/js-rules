@@ -91,8 +91,10 @@ var opts = struct {
 	} `command:"prebundle-pkg" description:"Pre-bundle a single npm package for ESM dev server"`
 
 	MergeImportmaps struct {
-		Out  string `short:"o" long:"out" required:"true" description:"Output importmap.json path"`
-		Args struct {
+		Out          string `short:"o" long:"out" required:"true" description:"Output importmap.json path"`
+		ModuleConfig string `short:"m" long:"moduleconfig" description:"Moduleconfig for resolving missing transitive deps"`
+		DepsDir      string `short:"d" long:"deps-dir" description:"Combined deps directory to scan for missing imports"`
+		Args         struct {
 			Files []string `positional-arg-name:"files" description:"importmap.json files to merge"`
 		} `positional-args:"true"`
 	} `command:"merge-importmaps" description:"Merge multiple importmap.json files into one"`
@@ -208,7 +210,8 @@ var subCommands = map[string]func() int{
 		return 0
 	},
 	"merge-importmaps": func() int {
-		if err := esmdev.MergeImportmaps(opts.MergeImportmaps.Args.Files, opts.MergeImportmaps.Out); err != nil {
+		if err := esmdev.MergeImportmaps(opts.MergeImportmaps.Args.Files, opts.MergeImportmaps.Out,
+			opts.MergeImportmaps.ModuleConfig, opts.MergeImportmaps.DepsDir); err != nil {
 			log.Fatal(err)
 		}
 		return 0

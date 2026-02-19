@@ -26,6 +26,8 @@ gentest(
         """grep -o '"/@deps/[^"]*"' importmap.json | sed 's/"//g;s|/@deps/||' | grep -v '/$' | while read f; do test -f "deps/$f" || { echo "FAIL: importmap target missing: deps/$f"; exit 1; }; done""",
         # E: Prefix import map entries exist for each package
         """for pkg in react react-dom scheduler; do grep -q "\\"$pkg/\\"" importmap.json || { echo "FAIL: missing prefix entry: $pkg/"; exit 1; }; done""",
+        # F: No bare imports in bundled deps are missing from the import map (re-check after merge)
+        """grep -roh 'from "[a-zA-Z@][^"]*"' deps/ --include='*.js' | sort -u | sed 's/from "//;s/"$//' | while read spec; do grep -q "\\"$spec\\"" importmap.json || { echo "FAIL: bare import '$spec' not in importmap (post-merge)"; exit 1; }; done""",
     ]),
     data = [":_dev_prebundle"],
     no_test_output = True,

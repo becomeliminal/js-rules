@@ -76,8 +76,6 @@ func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/javascript")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Write(data)
-			fmt.Printf("  \033[2m[dep] %s %s → 200 (%dms)\033[0m\n",
-				r.Method, urlPath, time.Since(start).Milliseconds())
 			return
 		}
 		// On-demand bundling for subpath imports resolved via prefix import map entries

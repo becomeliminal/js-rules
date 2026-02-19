@@ -81,7 +81,7 @@ func TestMergeImportmaps(t *testing.T) {
 
 	outPath := filepath.Join(dir, "out", "merged.json")
 
-	if err := MergeImportmaps([]string{file1, file2}, outPath); err != nil {
+	if err := MergeImportmaps([]string{file1, file2}, outPath, "", ""); err != nil {
 		t.Fatalf("MergeImportmaps() error: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestMergeImportmaps(t *testing.T) {
 		}
 
 		outPath2 := filepath.Join(dir, "out", "merged2.json")
-		if err := MergeImportmaps([]string{file1, file3}, outPath2); err != nil {
+		if err := MergeImportmaps([]string{file1, file3}, outPath2, "", ""); err != nil {
 			t.Fatalf("MergeImportmaps() error: %v", err)
 		}
 
@@ -142,6 +142,59 @@ func TestMergeImportmaps(t *testing.T) {
 			t.Errorf("expected later file to win: imports[react] = %q, want %q", got, want)
 		}
 	})
+}
+
+func TestMergeImportmaps_FillsMissingDeps(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a fake npm package "fake-pkg" with a simple index.js
+	pkgDir := filepath.Join(dir, "fake-pkg")
+	os.MkdirAll(pkgDir, 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{"name":"fake-pkg","main":"index.js"}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte(`export const x = 1;`), 0644)
+
+	// Create moduleconfig pointing to the package
+	mcPath := filepath.Join(dir, "moduleconfig")
+	os.WriteFile(mcPath, []byte("fake-pkg="+pkgDir+"\n"), 0644)
+
+	// Create an importmap that does NOT include "fake-pkg"
+	imFile := filepath.Join(dir, "importmap1.json")
+	imData, _ := json.Marshal(map[string]interface{}{
+		"imports": map[string]string{"other-pkg": "/@deps/other-pkg.js"},
+	})
+	os.WriteFile(imFile, imData, 0644)
+
+	// Create a deps dir with a .js file that imports "fake-pkg"
+	depsDir := filepath.Join(dir, "deps")
+	os.MkdirAll(depsDir, 0755)
+	os.WriteFile(filepath.Join(depsDir, "other-pkg.js"), []byte(`import { x } from "fake-pkg";\nexport { x };\n`), 0644)
+
+	outPath := filepath.Join(dir, "out", "merged.json")
+	if err := MergeImportmaps([]string{imFile}, outPath, mcPath, depsDir); err != nil {
+		t.Fatalf("MergeImportmaps() error: %v", err)
+	}
+
+	raw, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("failed to read output: %v", err)
+	}
+
+	var result struct {
+		Imports map[string]string `json:"imports"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+
+	// fake-pkg should now be in the import map
+	if _, ok := result.Imports["fake-pkg"]; !ok {
+		t.Errorf("expected fake-pkg in merged import map, got: %v", result.Imports)
+	}
+
+	// The bundled file should exist on disk in depsDir
+	if _, err := os.Stat(filepath.Join(depsDir, "fake-pkg.js")); err != nil {
+		t.Errorf("expected fake-pkg.js to be written to deps dir: %v", err)
+	}
 }
 
 func TestAddPrefixImportMapEntries(t *testing.T) {

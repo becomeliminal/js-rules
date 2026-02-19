@@ -556,19 +556,25 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
             )
             prebundle_rules.append(f":{pname}")
 
-        # Aggregation rule: merge all per-package prebundles into one directory
+        # Aggregation rule: merge all per-package prebundles into one directory.
+        # Passes moduleconfig + deps-dir so merge-importmaps can detect bare
+        # imports in bundled output that are missing from the import map and
+        # bundle them (handles wildcard exports and transitive deps).
         prebundle_name = f"_{name}_prebundle"
         build_rule(
             name = prebundle_name,
             srcs = prebundle_rules,
+            deps = deps + dev_deps,
             outs = [prebundle_name],
             cmd = " && ".join([
                 "PLEASE_JS=$(readlink -f $TOOLS_PLEASE_JS)",
                 'mkdir -p "$OUT/deps"',
                 'for dir in $SRCS; do [ -d "$dir/deps" ] && cp -r "$dir/deps/"* "$OUT/deps/" 2>/dev/null; done',
-                '"$PLEASE_JS" merge-importmaps --out "$OUT/importmap.json" $(find . -name "importmap.json" -not -path "./$OUT/*" | sort)',
+                _aggregate_moduleconfig_cmd(),
+                '"$PLEASE_JS" merge-importmaps --moduleconfig moduleconfig --deps-dir "$OUT/deps" --out "$OUT/importmap.json" $(find . -name "importmap.json" -not -path "./$OUT/*" | sort)',
             ]),
             tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
+            needs_transitive_deps = True,
             building_description = "Merging pre-bundled dependencies...",
         )
 
