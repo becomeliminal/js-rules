@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
+
+	"tools/please_js/common"
 )
 
 func (s *esmServer) handleHTML(w http.ResponseWriter, r *http.Request, start time.Time) {
@@ -163,5 +165,109 @@ func (s *esmServer) handleAssetModule(w http.ResponseWriter, r *http.Request, ur
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write([]byte(js))
 	fmt.Printf("  \033[2m[asset-module] %s %s → 200 (%dms)\033[0m\n",
+		r.Method, urlPath, time.Since(start).Milliseconds())
+}
+
+// handleDepOnDemand lazily bundles a dependency subpath that wasn't pre-bundled.
+// This handles requests resolved via prefix import map entries (e.g.,
+// "use-sync-external-store/shim/with-selector.js" → "/@deps/use-sync-external-store/shim/with-selector.js").
+func (s *esmServer) handleDepOnDemand(w http.ResponseWriter, r *http.Request, urlPath string, start time.Time) {
+	// Check on-demand cache first
+	if data, ok := s.onDemandDeps.Load(urlPath); ok {
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write(data.([]byte))
+		fmt.Printf("  \033[2m[dep-lazy] %s %s → 200 cached (%dms)\033[0m\n",
+			r.Method, urlPath, time.Since(start).Milliseconds())
+		return
+	}
+
+	// Extract bare specifier from URL: "/@deps/pkg/sub/path.js" → "pkg/sub/path.js"
+	spec := strings.TrimPrefix(urlPath, "/@deps/")
+	// Strip .js suffix if the specifier without it resolves (import map may add .js)
+	specNoJS := strings.TrimSuffix(spec, ".js")
+
+	pkgName := packageNameFromSpec(spec)
+	pkgDir, ok := s.moduleMap[pkgName]
+	if !ok {
+		http.NotFound(w, r)
+		fmt.Printf("  \033[2m[dep-lazy] %s %s → 404 unknown package (%dms)\033[0m\n",
+			r.Method, urlPath, time.Since(start).Milliseconds())
+		return
+	}
+
+	absPkgDir, _ := filepath.Abs(pkgDir)
+
+	// Compute subpath: "pkg/sub/path.js" → "./sub/path.js"
+	subpath := "."
+	if spec != pkgName {
+		subpath = "./" + strings.TrimPrefix(spec, pkgName+"/")
+	}
+	subpathNoJS := "."
+	if specNoJS != pkgName {
+		subpathNoJS = "./" + strings.TrimPrefix(specNoJS, pkgName+"/")
+	}
+
+	// Try to resolve the entry point
+	ep := common.ResolvePackageEntry(absPkgDir, subpath, "browser")
+	if ep == "" {
+		ep = common.ResolvePackageEntry(absPkgDir, subpathNoJS, "browser")
+	}
+	if ep == "" {
+		// Direct file path fallback
+		candidate := filepath.Join(absPkgDir, strings.TrimPrefix(spec, pkgName+"/"))
+		if _, err := os.Stat(candidate); err == nil {
+			ep = candidate
+		}
+	}
+	if ep == "" {
+		candidate := filepath.Join(absPkgDir, strings.TrimPrefix(specNoJS, pkgName+"/"))
+		if _, err := os.Stat(candidate); err == nil {
+			ep = candidate
+		}
+	}
+	if ep == "" {
+		http.NotFound(w, r)
+		fmt.Printf("  \033[2m[dep-lazy] %s %s → 404 unresolvable (%dms)\033[0m\n",
+			r.Method, urlPath, time.Since(start).Milliseconds())
+		return
+	}
+
+	// Bundle the single entry point with esbuild
+	singlePkgMap := map[string]string{pkgName: pkgDir}
+	result := api.Build(api.BuildOptions{
+		EntryPoints:       []string{ep},
+		Bundle:            true,
+		Write:             false,
+		Format:            api.FormatESModule,
+		Platform:          api.PlatformBrowser,
+		Target:            api.ESNext,
+		LogLevel:          api.LogLevelSilent,
+		IgnoreAnnotations: true,
+		Plugins: []api.Plugin{
+			common.ModuleResolvePlugin(singlePkgMap, "browser"),
+			common.NodeBuiltinEmptyPlugin(),
+			common.UnknownExternalPlugin(singlePkgMap),
+		},
+	})
+
+	if len(result.Errors) > 0 || len(result.OutputFiles) == 0 {
+		errMsg := "no output"
+		if len(result.Errors) > 0 {
+			errMsg = result.Errors[0].Text
+		}
+		http.Error(w, errMsg, http.StatusInternalServerError)
+		fmt.Printf("  \033[31m[dep-lazy] %s %s → 500 %s (%dms)\033[0m\n",
+			r.Method, urlPath, errMsg, time.Since(start).Milliseconds())
+		return
+	}
+
+	code := result.OutputFiles[0].Contents
+	s.onDemandDeps.Store(urlPath, code)
+
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(code)
+	fmt.Printf("  \033[2m[dep-lazy] %s %s → 200 (%dms)\033[0m\n",
 		r.Method, urlPath, time.Since(start).Milliseconds())
 }

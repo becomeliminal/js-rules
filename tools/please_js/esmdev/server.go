@@ -36,6 +36,8 @@ type esmServer struct {
 	sourceRoot     string // servedir — HTML and static files
 	packageRoot    string // package root — source files (JS/TS)
 	depCache       map[string][]byte // "/@deps/react.js" → pre-bundled ESM
+	onDemandDeps   sync.Map          // lazily-bundled subpath deps (/@deps/... → []byte)
+	moduleMap      map[string]string // package name → dir (for on-demand bundling)
 	transCache     sync.Map          // abs path → *transformEntry
 	importMapJSON  []byte
 	clients        map[chan sseEvent]struct{}
@@ -78,7 +80,8 @@ func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				r.Method, urlPath, time.Since(start).Milliseconds())
 			return
 		}
-		http.NotFound(w, r)
+		// On-demand bundling for subpath imports resolved via prefix import map entries
+		s.handleDepOnDemand(w, r, urlPath, start)
 		return
 	}
 
@@ -266,6 +269,7 @@ func Run(args Args) error {
 		sourceRoot:    absServedir,
 		packageRoot:   absPackageRoot,
 		depCache:      depCache,
+		moduleMap:     moduleMap,
 		importMapJSON: importMapJSON,
 		clients:       make(map[chan sseEvent]struct{}),
 		proxies:       proxies,

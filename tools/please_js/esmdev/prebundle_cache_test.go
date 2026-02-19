@@ -103,8 +103,12 @@ func TestMergeImportmaps(t *testing.T) {
 	if got, want := result.Imports["lodash"], "/@deps/lodash.js"; got != want {
 		t.Errorf("imports[lodash] = %q, want %q", got, want)
 	}
-	if len(result.Imports) != 2 {
-		t.Errorf("expected 2 imports, got %d", len(result.Imports))
+	// MergeImportmaps now adds prefix entries: "react/" and "lodash/"
+	if got, want := result.Imports["react/"], "/@deps/react/"; got != want {
+		t.Errorf("imports[react/] = %q, want %q", got, want)
+	}
+	if got, want := result.Imports["lodash/"], "/@deps/lodash/"; got != want {
+		t.Errorf("imports[lodash/] = %q, want %q", got, want)
 	}
 
 	t.Run("later file wins on conflicts", func(t *testing.T) {
@@ -136,6 +140,71 @@ func TestMergeImportmaps(t *testing.T) {
 
 		if got, want := result2.Imports["react"], "/@deps/react-v2.js"; got != want {
 			t.Errorf("expected later file to win: imports[react] = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestAddPrefixImportMapEntries(t *testing.T) {
+	t.Run("adds prefix entries for each package", func(t *testing.T) {
+		importMap := map[string]string{
+			"react":            "/@deps/react.js",
+			"react-dom":        "/@deps/react-dom.js",
+			"react-dom/client": "/@deps/react-dom/client.js",
+		}
+		addPrefixImportMapEntries(importMap)
+
+		if got, want := importMap["react/"], "/@deps/react/"; got != want {
+			t.Errorf("importMap[\"react/\"] = %q, want %q", got, want)
+		}
+		if got, want := importMap["react-dom/"], "/@deps/react-dom/"; got != want {
+			t.Errorf("importMap[\"react-dom/\"] = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("does not overwrite existing prefix entries", func(t *testing.T) {
+		importMap := map[string]string{
+			"react":  "/@deps/react.js",
+			"react/": "/@deps/custom-react/",
+		}
+		addPrefixImportMapEntries(importMap)
+
+		if got, want := importMap["react/"], "/@deps/custom-react/"; got != want {
+			t.Errorf("existing prefix overwritten: importMap[\"react/\"] = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("does not overwrite exact entries", func(t *testing.T) {
+		importMap := map[string]string{
+			"react":            "/@deps/react.js",
+			"react-dom/client": "/@deps/react-dom/client.js",
+		}
+		addPrefixImportMapEntries(importMap)
+
+		if got, want := importMap["react"], "/@deps/react.js"; got != want {
+			t.Errorf("exact entry modified: importMap[\"react\"] = %q, want %q", got, want)
+		}
+		if got, want := importMap["react-dom/client"], "/@deps/react-dom/client.js"; got != want {
+			t.Errorf("exact entry modified: importMap[\"react-dom/client\"] = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("handles scoped packages", func(t *testing.T) {
+		importMap := map[string]string{
+			"@scope/pkg":      "/@deps/@scope/pkg.js",
+			"@scope/pkg/util": "/@deps/@scope/pkg/util.js",
+		}
+		addPrefixImportMapEntries(importMap)
+
+		if got, want := importMap["@scope/pkg/"], "/@deps/@scope/pkg/"; got != want {
+			t.Errorf("importMap[\"@scope/pkg/\"] = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("empty import map is no-op", func(t *testing.T) {
+		importMap := map[string]string{}
+		addPrefixImportMapEntries(importMap)
+		if len(importMap) != 0 {
+			t.Errorf("expected empty map, got %d entries", len(importMap))
 		}
 	})
 }

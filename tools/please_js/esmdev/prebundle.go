@@ -206,7 +206,30 @@ func prebundleAllPackages(ctx context.Context, moduleMap map[string]string, used
 	}
 
 	g.Wait()
+	addPrefixImportMapEntries(mergedImportMap)
 	return mergedDepCache, mergedImportMap, failedPkgs
+}
+
+// addPrefixImportMapEntries adds trailing-slash prefix entries to the import map
+// for each package. This allows the browser to resolve deep subpath imports
+// (e.g., "use-sync-external-store/shim/with-selector.js") via prefix matching
+// when the exact specifier isn't pre-bundled. Per the import map spec, exact
+// entries always win over prefix entries, so already-prebundled subpaths are
+// unaffected.
+func addPrefixImportMapEntries(importMap map[string]string) {
+	pkgs := make(map[string]bool)
+	for spec := range importMap {
+		if strings.HasSuffix(spec, "/") {
+			continue // already a prefix entry
+		}
+		pkgs[packageNameFromSpec(spec)] = true
+	}
+	for pkg := range pkgs {
+		prefixKey := pkg + "/"
+		if _, exists := importMap[prefixKey]; !exists {
+			importMap[prefixKey] = "/@deps/" + pkg + "/"
+		}
+	}
 }
 
 // prebundleDeps pre-bundles npm dependencies using per-package parallel builds.

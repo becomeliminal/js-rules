@@ -174,6 +174,8 @@ func PrebundlePkg(moduleConfigPath, outDir string) error {
 		}
 	}
 
+	addPrefixImportMapEntries(mergedImportMap)
+
 	imJSON, err := json.Marshal(map[string]interface{}{
 		"imports": mergedImportMap,
 	})
@@ -204,6 +206,8 @@ func MergeImportmaps(files []string, outPath string) error {
 			merged[k] = v
 		}
 	}
+
+	addPrefixImportMapEntries(merged)
 
 	result, err := json.Marshal(map[string]interface{}{
 		"imports": merged,
