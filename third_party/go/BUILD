@@ -49,3 +49,10 @@ go_module(
     module = "golang.org/x/sync",
     version = "v0.10.0",
 )
+
+go_module(
+    name = "buildtools",
+    install = ["build", "tables"],
+    module = "github.com/please-build/buildtools",
+    version = "v0.0.0-20240111140234-77ffe55926d9",
+)
