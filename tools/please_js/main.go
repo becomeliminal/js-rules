@@ -84,17 +84,31 @@ var opts = struct {
 		ModuleConfig string `short:"m" long:"moduleconfig" required:"true" description:"Aggregated moduleconfig file"`
 		Out          string `short:"o" long:"out" required:"true" description:"Output directory for pre-bundled deps"`
 	} `command:"prebundle" description:"Pre-bundle all npm dependencies for ESM dev server"`
+
+	PrebundlePkg struct {
+		ModuleConfig string `short:"m" long:"moduleconfig" required:"true" description:"Moduleconfig for a single package"`
+		Out          string `short:"o" long:"out" required:"true" description:"Output directory for pre-bundled package"`
+	} `command:"prebundle-pkg" description:"Pre-bundle a single npm package for ESM dev server"`
+
+	MergeImportmaps struct {
+		Out  string `short:"o" long:"out" required:"true" description:"Output importmap.json path"`
+		Args struct {
+			Files []string `positional-arg-name:"files" description:"importmap.json files to merge"`
+		} `positional-args:"true"`
+	} `command:"merge-importmaps" description:"Merge multiple importmap.json files into one"`
 }{
 	Usage: `
 please_js is the companion tool for the JavaScript/TypeScript Please build rules.
 
-It provides six main operations:
-  - bundle:    Bundle JS/TS files using esbuild with moduleconfig-based dependency resolution
-  - transpile: Transpile individual TS/JSX files to JS without bundling
-  - resolve:   Generate npm_module BUILD files from package-lock.json
-  - dev:       Start a dev server with live reload
-  - esm-dev:   Start ESM dev server with native import maps
-  - prebundle: Pre-bundle all npm dependencies for ESM dev server
+It provides these main operations:
+  - bundle:           Bundle JS/TS files using esbuild with moduleconfig-based dependency resolution
+  - transpile:        Transpile individual TS/JSX files to JS without bundling
+  - resolve:          Generate npm_module BUILD files from package-lock.json
+  - dev:              Start a dev server with live reload
+  - esm-dev:          Start ESM dev server with native import maps
+  - prebundle:        Pre-bundle all npm dependencies for ESM dev server
+  - prebundle-pkg:    Pre-bundle a single npm package for ESM dev server
+  - merge-importmaps: Merge multiple importmap.json files into one
 `,
 }
 
@@ -183,6 +197,18 @@ var subCommands = map[string]func() int{
 	},
 	"prebundle": func() int {
 		if err := esmdev.PrebundleAll(opts.Prebundle.ModuleConfig, opts.Prebundle.Out); err != nil {
+			log.Fatal(err)
+		}
+		return 0
+	},
+	"prebundle-pkg": func() int {
+		if err := esmdev.PrebundlePkg(opts.PrebundlePkg.ModuleConfig, opts.PrebundlePkg.Out); err != nil {
+			log.Fatal(err)
+		}
+		return 0
+	},
+	"merge-importmaps": func() int {
+		if err := esmdev.MergeImportmaps(opts.MergeImportmaps.Args.Files, opts.MergeImportmaps.Out); err != nil {
 			log.Fatal(err)
 		}
 		return 0

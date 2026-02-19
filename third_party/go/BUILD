@@ -42,3 +42,10 @@ go_module(
     version = "v1.5.0",
     deps = [":x_sys"],
 )
+
+go_module(
+    name = "x_sync",
+    install = ["errgroup"],
+    module = "golang.org/x/sync",
+    version = "v0.10.0",
+)
