@@ -215,18 +215,17 @@ var depLoaders = func() map[string]api.Loader {
 	return m
 }()
 
-// prebundleDeps pre-bundles all npm dependencies in a single esbuild Build
-// with code splitting enabled. This allows CJS cross-dep require() calls
-// (e.g. react-dom requiring react) to be resolved at bundle time, while
-// sharing code across deps via split chunks to avoid duplication.
-func prebundleDeps(moduleMap map[string]string) (map[string][]byte, []byte, error) {
-	depCache := make(map[string][]byte)
+// collectEntryPoints builds esbuild entry points and an import map from the
+// module map, skipping any packages in the exclude set.
+func collectEntryPoints(moduleMap map[string]string, exclude map[string]bool) ([]api.EntryPoint, map[string]string) {
+	var entryPoints []api.EntryPoint
 	importMap := make(map[string]string)
 
-	// Collect entry points for all npm packages
-	var entryPoints []api.EntryPoint
-
 	for name, pkgDir := range moduleMap {
+		if exclude[name] {
+			continue
+		}
+
 		absPkgDir, _ := filepath.Abs(pkgDir)
 
 		// Only pre-bundle npm packages (those with package.json).
@@ -266,49 +265,141 @@ func prebundleDeps(moduleMap map[string]string) (map[string][]byte, []byte, erro
 			importMap[subImport] = "/@deps/" + subImport + ".js"
 		}
 	}
+	return entryPoints, importMap
+}
 
-	if len(entryPoints) == 0 {
-		imJSON, _ := json.Marshal(map[string]interface{}{"imports": importMap})
-		return depCache, imJSON, nil
+// identifyFailingPackages maps esbuild errors to package names by matching
+// error file locations against moduleMap directories.
+func identifyFailingPackages(errors []api.Message, moduleMap map[string]string) map[string]bool {
+	// Build abs-dir → package-name lookup
+	dirToName := make(map[string]string, len(moduleMap))
+	for name, pkgDir := range moduleMap {
+		absDir, _ := filepath.Abs(pkgDir)
+		dirToName[absDir] = name
 	}
 
-	// Single esbuild Build with all entry points and splitting.
-	// No externals — cross-dep require() calls (react-dom → react) are
-	// resolved at bundle time. Splitting shares code via chunks.
-	outdir, _ := filepath.Abs(".esm-dev-deps")
-	result := api.Build(api.BuildOptions{
-		EntryPointsAdvanced: entryPoints,
-		Bundle:              true,
-		Write:               false,
-		Format:              api.FormatESModule,
-		Platform:            api.PlatformBrowser,
-		Target:              api.ESNext,
-		Splitting:           true,
-		ChunkNames:          "chunk-[hash]",
-		Outdir:              outdir,
-		LogLevel:            api.LogLevelWarning,
-		Plugins: []api.Plugin{
-			common.ModuleResolvePlugin(moduleMap, "browser"),
-			common.NodeBuiltinEmptyPlugin(),
-			common.UnknownExternalPlugin(moduleMap), // catch-all — must be last
-		},
-		Loader: depLoaders,
-	})
+	failing := make(map[string]bool)
+	for _, e := range errors {
+		if e.Location == nil || e.Location.File == "" {
+			continue
+		}
+		absFile, _ := filepath.Abs(e.Location.File)
+		for dir, name := range dirToName {
+			if strings.HasPrefix(absFile, dir+"/") {
+				failing[name] = true
+				break
+			}
+		}
+	}
+	return failing
+}
 
-	if len(result.Errors) > 0 {
-		for _, e := range result.Errors {
-			fmt.Fprintf(os.Stderr, "warning: pre-bundle error: %s\n", e.Text)
+const maxPrebundleRetries = 3
+
+// prebundleDeps pre-bundles all npm dependencies in a single esbuild Build
+// with code splitting enabled. This allows CJS cross-dep require() calls
+// (e.g. react-dom requiring react) to be resolved at bundle time, while
+// sharing code across deps via split chunks to avoid duplication.
+//
+// If some packages cause build errors (e.g. version conflicts in transitive
+// deps), the failing packages are identified and excluded, and the build is
+// retried. This ensures the majority of deps are still pre-bundled.
+func prebundleDeps(moduleMap map[string]string) (map[string][]byte, []byte, error) {
+	exclude := make(map[string]bool)
+	outdir, _ := filepath.Abs(".esm-dev-deps")
+	var result api.BuildResult
+	var importMap map[string]string
+
+	for attempt := 0; attempt <= maxPrebundleRetries; attempt++ {
+		var entryPoints []api.EntryPoint
+		entryPoints, importMap = collectEntryPoints(moduleMap, exclude)
+		if len(entryPoints) == 0 {
+			break
+		}
+
+		// Single esbuild Build with all entry points and splitting.
+		// No externals — cross-dep require() calls (react-dom → react) are
+		// resolved at bundle time. Splitting shares code via chunks.
+		// LogLevelSilent suppresses stderr warnings from third-party packages
+		// (tsconfig, export conditions, etc.) while result.Errors is still populated.
+		// IgnoreAnnotations skips @__PURE__/sideEffects issues (matches Vite).
+		result = api.Build(api.BuildOptions{
+			EntryPointsAdvanced: entryPoints,
+			Bundle:              true,
+			Write:               false,
+			Format:              api.FormatESModule,
+			Platform:            api.PlatformBrowser,
+			Target:              api.ESNext,
+			Splitting:           true,
+			ChunkNames:          "chunk-[hash]",
+			Outdir:              outdir,
+			LogLevel:            api.LogLevelSilent,
+			IgnoreAnnotations:   true,
+			Plugins: []api.Plugin{
+				common.ModuleResolvePlugin(moduleMap, "browser"),
+				common.NodeBuiltinEmptyPlugin(),
+				common.UnknownExternalPlugin(moduleMap), // catch-all — must be last
+			},
+			Loader: depLoaders,
+		})
+
+		if len(result.Errors) == 0 {
+			break // success
+		}
+
+		// Identify which packages caused errors
+		newFailing := identifyFailingPackages(result.Errors, moduleMap)
+		if len(newFailing) == 0 {
+			// Can't map errors to packages — log and stop retrying
+			for _, e := range result.Errors {
+				fmt.Fprintf(os.Stderr, "  warning: pre-bundle error: %s\n", e.Text)
+			}
+			break
+		}
+
+		// Log what's being excluded
+		var names []string
+		for n := range newFailing {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		fmt.Fprintf(os.Stderr, "  \033[33m!\033[0m excluding broken deps: %s\n",
+			strings.Join(names, ", "))
+
+		// Add to exclusion set; break if nothing new
+		addedNew := false
+		for n := range newFailing {
+			if !exclude[n] {
+				exclude[n] = true
+				addedNew = true
+			}
+		}
+		if !addedNew {
+			break
 		}
 	}
 
-	// Map all output files (entries + shared chunks) to /@deps/ paths
+	// Build depCache from output
+	depCache := make(map[string][]byte)
 	for _, f := range result.OutputFiles {
 		rel, err := filepath.Rel(outdir, f.Path)
 		if err != nil {
 			rel = filepath.Base(f.Path)
 		}
-		urlPath := "/@deps/" + filepath.ToSlash(rel)
-		depCache[urlPath] = f.Contents
+		depCache["/@deps/"+filepath.ToSlash(rel)] = f.Contents
+	}
+
+	// Remove excluded packages from import map
+	if importMap == nil {
+		importMap = make(map[string]string)
+	}
+	for name := range exclude {
+		delete(importMap, name)
+		for key := range importMap {
+			if strings.HasPrefix(key, name+"/") {
+				delete(importMap, key)
+			}
+		}
 	}
 
 	// Post-process: add named re-exports for CJS modules.
@@ -1074,8 +1165,10 @@ func Run(args Args) error {
 	if err != nil {
 		return fmt.Errorf("failed to pre-bundle dependencies: %w", err)
 	}
+	var imData struct{ Imports map[string]string }
+	json.Unmarshal(importMapJSON, &imData)
 	fmt.Printf("  \033[2mPre-bundled %d deps in %dms\033[0m\n",
-		len(depCache), time.Since(prebundleStart).Milliseconds())
+		len(imData.Imports), time.Since(prebundleStart).Milliseconds())
 
 	// Parse proxies
 	proxies, proxyPrefixes := parseProxies(args.Proxy)

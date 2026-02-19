@@ -223,5 +223,125 @@ console.log("ok");
 	}
 	fmt.Println("  PASS: test 3 — scoped package name extraction")
 
+	// --- Test 4: Partial failure + retry (simulates @scure/bip32 scenario) ---
+	// bad-pkg imports { nonExistent } from ./lib.js (which doesn't export it).
+	// Building both good-pkg and bad-pkg together should produce errors.
+	// We identify bad-pkg from error locations, retry without it, and verify
+	// that good-pkg is successfully bundled.
+
+	badPkgDir := "test/prebundle_plugins/fixtures/bad-pkg"
+	absBadPkg, _ := filepath.Abs(badPkgDir)
+
+	moduleMap4 := map[string]string{
+		"good-pkg": absKnownPkg,
+		"bad-pkg":  absBadPkg,
+	}
+
+	entryPoints4 := []api.EntryPoint{
+		{InputPath: filepath.Join(absKnownPkg, "index.js"), OutputPath: "good-pkg"},
+		{InputPath: filepath.Join(absBadPkg, "index.js"), OutputPath: "bad-pkg"},
+	}
+
+	outdir4, _ := filepath.Abs(filepath.Join(tmpDir, "out4"))
+	result4 := api.Build(api.BuildOptions{
+		EntryPointsAdvanced: entryPoints4,
+		Bundle:              true,
+		Write:               false,
+		Format:              api.FormatESModule,
+		Platform:            api.PlatformBrowser,
+		Target:              api.ESNext,
+		Splitting:           true,
+		ChunkNames:          "chunk-[hash]",
+		Outdir:              outdir4,
+		LogLevel:            api.LogLevelSilent,
+		IgnoreAnnotations:   true,
+		Plugins: []api.Plugin{
+			common.ModuleResolvePlugin(moduleMap4, "browser"),
+			common.NodeBuiltinEmptyPlugin(),
+			common.UnknownExternalPlugin(moduleMap4),
+		},
+	})
+
+	if len(result4.Errors) == 0 {
+		fmt.Fprintln(os.Stderr, "FAIL: test 4 — expected errors from bad-pkg, got none")
+		os.Exit(1)
+	}
+
+	// Identify failing packages by matching error locations to package dirs
+	dirToName := make(map[string]string)
+	for name, pkgDir := range moduleMap4 {
+		absDir, _ := filepath.Abs(pkgDir)
+		dirToName[absDir] = name
+	}
+	failing := make(map[string]bool)
+	for _, e := range result4.Errors {
+		if e.Location == nil || e.Location.File == "" {
+			continue
+		}
+		absFile, _ := filepath.Abs(e.Location.File)
+		for dir, name := range dirToName {
+			if strings.HasPrefix(absFile, dir+"/") {
+				failing[name] = true
+				break
+			}
+		}
+	}
+
+	if !failing["bad-pkg"] {
+		fmt.Fprintln(os.Stderr, "FAIL: test 4 — expected bad-pkg to be identified as failing")
+		os.Exit(1)
+	}
+	if failing["good-pkg"] {
+		fmt.Fprintln(os.Stderr, "FAIL: test 4 — good-pkg should NOT be identified as failing")
+		os.Exit(1)
+	}
+
+	// Retry without bad-pkg — only good-pkg entry point
+	entryPoints4retry := []api.EntryPoint{
+		{InputPath: filepath.Join(absKnownPkg, "index.js"), OutputPath: "good-pkg"},
+	}
+
+	result4retry := api.Build(api.BuildOptions{
+		EntryPointsAdvanced: entryPoints4retry,
+		Bundle:              true,
+		Write:               false,
+		Format:              api.FormatESModule,
+		Platform:            api.PlatformBrowser,
+		Target:              api.ESNext,
+		Splitting:           true,
+		ChunkNames:          "chunk-[hash]",
+		Outdir:              outdir4,
+		LogLevel:            api.LogLevelSilent,
+		IgnoreAnnotations:   true,
+		Plugins: []api.Plugin{
+			common.ModuleResolvePlugin(moduleMap4, "browser"),
+			common.NodeBuiltinEmptyPlugin(),
+			common.UnknownExternalPlugin(moduleMap4),
+		},
+	})
+
+	if len(result4retry.Errors) > 0 {
+		for _, e := range result4retry.Errors {
+			fmt.Fprintf(os.Stderr, "  error: %s\n", e.Text)
+		}
+		fmt.Fprintln(os.Stderr, "FAIL: test 4 — retry without bad-pkg should succeed")
+		os.Exit(1)
+	}
+
+	// Verify good-pkg is in the output
+	foundGood := false
+	for _, f := range result4retry.OutputFiles {
+		rel, _ := filepath.Rel(outdir4, f.Path)
+		if strings.Contains(rel, "good-pkg") {
+			foundGood = true
+			break
+		}
+	}
+	if !foundGood {
+		fmt.Fprintln(os.Stderr, "FAIL: test 4 — good-pkg should be in retry output")
+		os.Exit(1)
+	}
+	fmt.Println("  PASS: test 4 — partial failure + retry excludes bad-pkg, keeps good-pkg")
+
 	fmt.Println("prebundle_plugins: all tests passed")
 }

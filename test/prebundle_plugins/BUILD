@@ -15,6 +15,9 @@ gentest(
         "fixtures/known-pkg/package.json",
         "fixtures/known-pkg/index.js",
         "fixtures/known-pkg/subpath.js",
+        "fixtures/bad-pkg/package.json",
+        "fixtures/bad-pkg/index.js",
+        "fixtures/bad-pkg/lib.js",
     ],
     no_test_output = True,
 )
