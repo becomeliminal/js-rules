@@ -367,3 +367,52 @@ func TestParseTsconfigPaths_WildcardTrailingSlash(t *testing.T) {
 			got, "/lib/wagmi", got+"lib/wagmi")
 	}
 }
+
+// TestParseTsconfigPaths_RelativeTsconfigAbsoluteRoot is a regression test for
+// the actual root cause of the "@/lib/wagmi" browser error.
+//
+// The dev server passes a relative --tsconfig path (e.g. "myapp/tsconfig.json")
+// but computes packageRoot via filepath.Abs (e.g. "/home/user/myapp").
+// Without filepath.Abs on tsconfigDir, filepath.Rel(absolute, relative) silently
+// errors and every path alias is dropped — producing an empty import map.
+func TestParseTsconfigPaths_RelativeTsconfigAbsoluteRoot(t *testing.T) {
+	dir := t.TempDir()
+	appDir := filepath.Join(dir, "myapp")
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	tsconfigAbs := filepath.Join(appDir, "tsconfig.json")
+	if err := os.WriteFile(tsconfigAbs, []byte(`{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the dev server: cd into dir, relative tsconfig, absolute packageRoot
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origDir)
+
+	relativeTsconfig := "myapp/tsconfig.json"    // relative (as passed by --tsconfig)
+	absoluteRoot, _ := filepath.Abs("myapp")      // absolute (as computed by Run())
+
+	entries := parseTsconfigPaths(relativeTsconfig, absoluteRoot)
+	if entries == nil {
+		t.Fatal("parseTsconfigPaths returned nil — relative/absolute path mismatch bug")
+	}
+	want := "/src/"
+	if got := entries["@/"]; got != want {
+		t.Errorf(`entries["@/"] = %q, want %q`, got, want)
+	}
+}

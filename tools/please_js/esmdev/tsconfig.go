@@ -105,7 +105,7 @@ func parseTsconfigPaths(tsconfigPath, packageRoot string) map[string]string {
 		baseUrl = "."
 	}
 	// Resolve baseUrl relative to tsconfig directory
-	tsconfigDir := filepath.Dir(tsconfigPath)
+	tsconfigDir, _ := filepath.Abs(filepath.Dir(tsconfigPath))
 	absBaseUrl := filepath.Join(tsconfigDir, baseUrl)
 
 	entries := make(map[string]string)
