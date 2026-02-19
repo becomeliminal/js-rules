@@ -117,6 +117,30 @@ func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdi
 	// (CJS require() calls get ESM shims, ESM imports get External:true).
 	singlePkgMap := map[string]string{pkgName: pkgDir}
 
+	// Include nested node_modules — npm installs packages here only for
+	// version conflicts with the hoisted copy. These must be bundled into
+	// the parent, not externalized (which would resolve to the wrong version).
+	absPkgDir, _ := filepath.Abs(pkgDir)
+	nestedNM := filepath.Join(absPkgDir, "node_modules")
+	if entries, err := os.ReadDir(nestedNM); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			name := entry.Name()
+			if strings.HasPrefix(name, "@") {
+				scopeEntries, _ := os.ReadDir(filepath.Join(nestedNM, name))
+				for _, se := range scopeEntries {
+					if se.IsDir() {
+						singlePkgMap[name+"/"+se.Name()] = filepath.Join(nestedNM, name, se.Name())
+					}
+				}
+			} else {
+				singlePkgMap[name] = filepath.Join(nestedNM, name)
+			}
+		}
+	}
+
 	result := api.Build(api.BuildOptions{
 		EntryPointsAdvanced: entryPoints,
 		Bundle:              true,
