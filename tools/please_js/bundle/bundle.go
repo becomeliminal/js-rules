@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/evanw/esbuild/pkg/api"
@@ -84,6 +85,7 @@ func Run(args Args) error {
 		Loader:            common.Loaders,
 		Plugins:           plugins,
 		Define:            define,
+		JSX:               api.JSXAutomatic,
 		MinifySyntax:      args.Minify,
 		MinifyWhitespace:  args.Minify,
 		MinifyIdentifiers: args.Minify,
@@ -131,13 +133,17 @@ func Run(args Args) error {
 
 // metafileData represents the relevant parts of esbuild's metafile JSON.
 type metafileData struct {
-	Outputs map[string]struct {
-		Imports []struct {
-			Path string `json:"path"`
-			Kind string `json:"kind"`
-		} `json:"imports"`
-		EntryPoint string `json:"entryPoint"`
-	} `json:"outputs"`
+	Outputs map[string]metafileOutput `json:"outputs"`
+}
+
+type metafileOutput struct {
+	Imports    []metafileImport `json:"imports"`
+	EntryPoint string           `json:"entryPoint"`
+}
+
+type metafileImport struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 // generateHTML parses the esbuild metafile and writes an index.html with
@@ -180,6 +186,11 @@ func generateHTML(outDir string, entry string, metafile string) error {
 			}
 		}
 	}
+
+	// Sort for deterministic output — map iteration order is random, which
+	// would break Please's reproducibility (same inputs must produce same hash).
+	sort.Strings(cssFiles)
+	sort.Strings(preloadChunks)
 
 	// Build the HTML
 	var b strings.Builder
