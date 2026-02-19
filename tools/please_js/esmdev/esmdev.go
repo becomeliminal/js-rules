@@ -1,7 +1,9 @@
 package esmdev
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -215,14 +217,88 @@ var depLoaders = func() map[string]api.Loader {
 	return m
 }()
 
+// importSpecRe matches bare import specifiers in JS/TS source code.
+// Catches: import X from "pkg", import "pkg", import("pkg"), require("pkg"),
+// export { X } from "pkg", export * from "pkg".
+var importSpecRe = regexp.MustCompile(`(?:from\s+|import\s*\(\s*|import\s+|require\s*\(\s*)["']([^"']+)["']`)
+
+// packageNameFromSpec extracts the npm package name from an import specifier.
+// "react" → "react", "react-dom/client" → "react-dom",
+// "@scope/pkg" → "@scope/pkg", "@scope/pkg/sub" → "@scope/pkg".
+func packageNameFromSpec(spec string) string {
+	if strings.HasPrefix(spec, "@") {
+		// Scoped: @scope/name or @scope/name/subpath
+		parts := strings.SplitN(spec, "/", 3)
+		if len(parts) >= 2 {
+			return parts[0] + "/" + parts[1]
+		}
+		return spec
+	}
+	// Unscoped: name or name/subpath
+	parts := strings.SplitN(spec, "/", 2)
+	return parts[0]
+}
+
+// scanSourceImports walks source files and extracts bare import specifiers.
+// Only returns specifiers that match packages in the moduleMap.
+func scanSourceImports(sourceRoot string, moduleMap map[string]string) map[string]bool {
+	used := make(map[string]bool)
+
+	filepath.Walk(sourceRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "plz-out" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !isSourceFileExt(filepath.Ext(path)) {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		for _, m := range importSpecRe.FindAllStringSubmatch(string(data), -1) {
+			spec := m[1]
+			// Skip relative and absolute imports
+			if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") {
+				continue
+			}
+			// Only include if the package exists in moduleMap
+			pkgName := packageNameFromSpec(spec)
+			if _, ok := moduleMap[pkgName]; ok {
+				used[spec] = true
+			}
+		}
+		return nil
+	})
+
+	return used
+}
+
 // collectEntryPoints builds esbuild entry points and an import map from the
-// module map, skipping any packages in the exclude set.
-func collectEntryPoints(moduleMap map[string]string, exclude map[string]bool) ([]api.EntryPoint, map[string]string) {
+// used import specifiers, skipping any packages in the exclude set.
+// Only specifiers found in source code are pre-bundled (not all subpath exports).
+func collectEntryPoints(moduleMap map[string]string, exclude map[string]bool, usedImports map[string]bool) ([]api.EntryPoint, map[string]string) {
 	var entryPoints []api.EntryPoint
 	importMap := make(map[string]string)
+	seen := make(map[string]bool)
 
-	for name, pkgDir := range moduleMap {
-		if exclude[name] {
+	for spec := range usedImports {
+		if seen[spec] {
+			continue
+		}
+		seen[spec] = true
+
+		pkgName := packageNameFromSpec(spec)
+		pkgDir, ok := moduleMap[pkgName]
+		if !ok || exclude[pkgName] {
 			continue
 		}
 
@@ -233,37 +309,31 @@ func collectEntryPoints(moduleMap map[string]string, exclude map[string]bool) ([
 			continue
 		}
 
-		// Main entry
-		entryPoint := common.ResolvePackageEntry(absPkgDir, ".", "browser")
+		// Determine the subpath (if any)
+		subpath := "."
+		if spec != pkgName {
+			subpath = "./" + strings.TrimPrefix(spec, pkgName+"/")
+		}
+
+		// Resolve entry point
+		entryPoint := common.ResolvePackageEntry(absPkgDir, subpath, "browser")
 		if entryPoint == "" {
-			candidate := filepath.Join(absPkgDir, "index.js")
-			if _, err := os.Stat(candidate); err == nil {
-				entryPoint = candidate
-			} else {
+			if subpath == "." {
+				candidate := filepath.Join(absPkgDir, "index.js")
+				if _, err := os.Stat(candidate); err == nil {
+					entryPoint = candidate
+				}
+			}
+			if entryPoint == "" {
 				continue
 			}
 		}
 
 		entryPoints = append(entryPoints, api.EntryPoint{
 			InputPath:  entryPoint,
-			OutputPath: name,
+			OutputPath: spec,
 		})
-		importMap[name] = "/@deps/" + name + ".js"
-
-		// Subpath exports (e.g., react-dom/client)
-		subpaths := findSubpathExports(absPkgDir)
-		for _, sub := range subpaths {
-			subEntry := common.ResolvePackageEntry(absPkgDir, sub, "browser")
-			if subEntry == "" {
-				continue
-			}
-			subImport := name + "/" + strings.TrimPrefix(sub, "./")
-			entryPoints = append(entryPoints, api.EntryPoint{
-				InputPath:  subEntry,
-				OutputPath: subImport,
-			})
-			importMap[subImport] = "/@deps/" + subImport + ".js"
-		}
+		importMap[spec] = "/@deps/" + spec + ".js"
 	}
 	return entryPoints, importMap
 }
@@ -294,6 +364,62 @@ func identifyFailingPackages(errors []api.Message, moduleMap map[string]string) 
 	return failing
 }
 
+// prebundleCacheKey computes a hash key based on the moduleconfig content
+// and the set of used imports. The cache is invalidated when either changes.
+func prebundleCacheKey(moduleConfigPath string, usedImports map[string]bool) string {
+	h := sha256.New()
+	// Hash moduleconfig content — changes when any dep is added/removed/updated
+	if data, err := os.ReadFile(moduleConfigPath); err == nil {
+		h.Write(data)
+	}
+	// Hash used imports — changes when source code adds/removes an import
+	var specs []string
+	for spec := range usedImports {
+		specs = append(specs, spec)
+	}
+	sort.Strings(specs)
+	for _, spec := range specs {
+		h.Write([]byte(spec + "\n"))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// loadPrebundleCache loads a cached pre-bundle result from disk.
+func loadPrebundleCache(cacheDir string) (map[string][]byte, []byte, error) {
+	importMapJSON, err := os.ReadFile(filepath.Join(cacheDir, "_importmap.json"))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	depCache := make(map[string][]byte)
+	filepath.Walk(cacheDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || info.Name() == "_importmap.json" {
+			return nil
+		}
+		rel, _ := filepath.Rel(cacheDir, path)
+		urlPath := "/@deps/" + filepath.ToSlash(rel)
+		data, err := os.ReadFile(path)
+		if err == nil {
+			depCache[urlPath] = data
+		}
+		return nil
+	})
+
+	return depCache, importMapJSON, nil
+}
+
+// savePrebundleCache writes the pre-bundle result to disk for fast loading.
+func savePrebundleCache(cacheDir string, depCache map[string][]byte, importMapJSON []byte) {
+	os.MkdirAll(cacheDir, 0755)
+	os.WriteFile(filepath.Join(cacheDir, "_importmap.json"), importMapJSON, 0644)
+	for urlPath, data := range depCache {
+		rel := strings.TrimPrefix(urlPath, "/@deps/")
+		filePath := filepath.Join(cacheDir, rel)
+		os.MkdirAll(filepath.Dir(filePath), 0755)
+		os.WriteFile(filePath, data, 0644)
+	}
+}
+
 const maxPrebundleRetries = 3
 
 // prebundleDeps pre-bundles all npm dependencies in a single esbuild Build
@@ -304,7 +430,7 @@ const maxPrebundleRetries = 3
 // If some packages cause build errors (e.g. version conflicts in transitive
 // deps), the failing packages are identified and excluded, and the build is
 // retried. This ensures the majority of deps are still pre-bundled.
-func prebundleDeps(moduleMap map[string]string) (map[string][]byte, []byte, error) {
+func prebundleDeps(moduleMap map[string]string, usedImports map[string]bool) (map[string][]byte, []byte, error) {
 	exclude := make(map[string]bool)
 	outdir, _ := filepath.Abs(".esm-dev-deps")
 	var result api.BuildResult
@@ -312,14 +438,19 @@ func prebundleDeps(moduleMap map[string]string) (map[string][]byte, []byte, erro
 
 	for attempt := 0; attempt <= maxPrebundleRetries; attempt++ {
 		var entryPoints []api.EntryPoint
-		entryPoints, importMap = collectEntryPoints(moduleMap, exclude)
+		entryPoints, importMap = collectEntryPoints(moduleMap, exclude, usedImports)
 		if len(entryPoints) == 0 {
 			break
 		}
 
+		// Build external list from excluded packages so other packages
+		// that import from them don't cause cascading build failures.
+		var externals []string
+		for name := range exclude {
+			externals = append(externals, name)
+		}
+
 		// Single esbuild Build with all entry points and splitting.
-		// No externals — cross-dep require() calls (react-dom → react) are
-		// resolved at bundle time. Splitting shares code via chunks.
 		// LogLevelSilent suppresses stderr warnings from third-party packages
 		// (tsconfig, export conditions, etc.) while result.Errors is still populated.
 		// IgnoreAnnotations skips @__PURE__/sideEffects issues (matches Vite).
@@ -335,6 +466,7 @@ func prebundleDeps(moduleMap map[string]string) (map[string][]byte, []byte, erro
 			Outdir:              outdir,
 			LogLevel:            api.LogLevelSilent,
 			IgnoreAnnotations:   true,
+			External:            externals,
 			Plugins: []api.Plugin{
 				common.ModuleResolvePlugin(moduleMap, "browser"),
 				common.NodeBuiltinEmptyPlugin(),
@@ -357,26 +489,24 @@ func prebundleDeps(moduleMap map[string]string) (map[string][]byte, []byte, erro
 			break
 		}
 
-		// Log what's being excluded
-		var names []string
-		for n := range newFailing {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		fmt.Fprintf(os.Stderr, "  \033[33m!\033[0m excluding broken deps: %s\n",
-			strings.Join(names, ", "))
-
-		// Add to exclusion set; break if nothing new
+		// Add to exclusion set; break if nothing new was added
 		addedNew := false
+		var names []string
 		for n := range newFailing {
 			if !exclude[n] {
 				exclude[n] = true
 				addedNew = true
+				names = append(names, n)
 			}
 		}
 		if !addedNew {
 			break
 		}
+
+		// Log only newly excluded packages
+		sort.Strings(names)
+		fmt.Fprintf(os.Stderr, "  \033[33m!\033[0m excluding broken deps: %s\n",
+			strings.Join(names, ", "))
 	}
 
 	// Build depCache from output
@@ -644,8 +774,8 @@ func findSubpathExports(pkgDir string) []string {
 	for key := range m {
 		// Only subpath exports start with "./" and are not the root "."
 		if strings.HasPrefix(key, "./") {
-			// Skip wildcard patterns
-			if strings.Contains(key, "*") {
+			// Skip wildcard patterns and directory mappings (trailing slash)
+			if strings.Contains(key, "*") || strings.HasSuffix(key, "/") {
 				continue
 			}
 			subpaths = append(subpaths, key)
@@ -662,10 +792,24 @@ func resolveSourceFile(sourceRoot, urlPath string) string {
 		return full
 	}
 
-	// Strip extension and try alternatives
 	exts := []string{".ts", ".tsx", ".js", ".jsx"}
 
-	// Try adding extensions to the path as-is
+	// If the path has an extension like .js, try replacing it with .ts/.tsx/.jsx
+	// This handles <script src="/main.js"> when the actual file is main.tsx
+	if curExt := filepath.Ext(full); curExt != "" {
+		base := strings.TrimSuffix(full, curExt)
+		for _, ext := range exts {
+			if ext == curExt {
+				continue
+			}
+			candidate := base + ext
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
+		}
+	}
+
+	// Try adding extensions to the path as-is (for extensionless paths)
 	for _, ext := range exts {
 		candidate := full + ext
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
@@ -1158,17 +1302,42 @@ func Run(args Args) error {
 	}
 	common.MergeEnvDefines(define, "development")
 
-	// Pre-bundle dependencies
-	fmt.Printf("  \033[2mPre-bundling dependencies...\033[0m\n")
-	prebundleStart := time.Now()
-	depCache, importMapJSON, err := prebundleDeps(moduleMap)
-	if err != nil {
-		return fmt.Errorf("failed to pre-bundle dependencies: %w", err)
+	// Scan source files for import specifiers to only pre-bundle what's needed.
+	usedImports := scanSourceImports(absServedir, moduleMap)
+	// Always include react-refresh if available (injected by HMR scripts).
+	if _, ok := moduleMap["react-refresh"]; ok {
+		usedImports["react-refresh"] = true
 	}
-	var imData struct{ Imports map[string]string }
-	json.Unmarshal(importMapJSON, &imData)
-	fmt.Printf("  \033[2mPre-bundled %d deps in %dms\033[0m\n",
-		len(imData.Imports), time.Since(prebundleStart).Milliseconds())
+
+	// Pre-bundle dependencies (with disk cache for fast subsequent starts).
+	prebundleStart := time.Now()
+	cacheKey := prebundleCacheKey(args.ModuleConfig, usedImports)
+	cacheDir := filepath.Join(".esm-dev-cache", cacheKey)
+
+	var depCache map[string][]byte
+	var importMapJSON []byte
+
+	if dc, im, loadErr := loadPrebundleCache(cacheDir); loadErr == nil {
+		depCache = dc
+		importMapJSON = im
+		var imData struct{ Imports map[string]string }
+		json.Unmarshal(importMapJSON, &imData)
+		fmt.Printf("  \033[2mLoaded %d deps from cache in %dms\033[0m\n",
+			len(imData.Imports), time.Since(prebundleStart).Milliseconds())
+	} else {
+		fmt.Printf("  \033[2mPre-bundling dependencies...\033[0m\n")
+		depCache, importMapJSON, err = prebundleDeps(moduleMap, usedImports)
+		if err != nil {
+			return fmt.Errorf("failed to pre-bundle dependencies: %w", err)
+		}
+		// Save cache (clean old entries first)
+		os.RemoveAll(".esm-dev-cache")
+		savePrebundleCache(cacheDir, depCache, importMapJSON)
+		var imData struct{ Imports map[string]string }
+		json.Unmarshal(importMapJSON, &imData)
+		fmt.Printf("  \033[2mPre-bundled %d deps in %dms\033[0m\n",
+			len(imData.Imports), time.Since(prebundleStart).Milliseconds())
+	}
 
 	// Parse proxies
 	proxies, proxyPrefixes := parseProxies(args.Proxy)
