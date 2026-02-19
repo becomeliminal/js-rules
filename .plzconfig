@@ -40,9 +40,10 @@ Optional = true
 Inherit = true
 
 [Plugin "js"]
-Target = @//build_defs:js
+Target = //plugins:js
 PleaseJsTool = //tools/please_js
 TailwindTool = //third_party/js:tailwind
+ReactRefreshDep = //third_party/js:react-refresh
 
 [Plugin "go"]
 Target = //plugins:go
