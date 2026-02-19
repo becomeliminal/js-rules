@@ -133,11 +133,17 @@ func (s *esmServer) watchFiles() {
 				s.transCache.Delete(path)
 
 				rel, err := filepath.Rel(s.packageRoot, path)
-				if err != nil {
+				var relPath string
+				if err == nil && !strings.HasPrefix(rel, "..") {
+					relPath = "/" + filepath.ToSlash(rel)
+				} else {
+					// Check if this file is in a local library directory
+					relPath = s.libURLPath(path)
+				}
+				if relPath == "" {
 					needFullReload = true
 					continue
 				}
-				relPath := "/" + filepath.ToSlash(rel)
 				ext := filepath.Ext(path)
 
 				switch {
@@ -181,27 +187,50 @@ func (s *esmServer) watchFiles() {
 }
 
 // walkSourceTree collects file mtimes, skipping hidden dirs, node_modules, plz-out.
-// Walks packageRoot (which may be a parent of sourceRoot) to cover both source and static files.
+// Walks packageRoot (which may be a parent of sourceRoot) and local library directories.
 func (s *esmServer) walkSourceTree(mtimes map[string]time.Time) {
-	filepath.Walk(s.packageRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			name := info.Name()
-			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "plz-out" {
-				return filepath.SkipDir
+	walkDir := func(root string) {
+		filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			if info.IsDir() {
+				name := info.Name()
+				if strings.HasPrefix(name, ".") || name == "node_modules" || name == "plz-out" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			ext := filepath.Ext(path)
+			switch ext {
+			case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".css", ".html", ".json":
+				mtimes[path] = info.ModTime()
 			}
 			return nil
-		}
+		})
+	}
 
-		ext := filepath.Ext(path)
-		switch ext {
-		case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".css", ".html", ".json":
-			mtimes[path] = info.ModTime()
+	walkDir(s.packageRoot)
+	for _, libDir := range s.localLibs {
+		// Skip if libDir is already under packageRoot (would be walked already)
+		if strings.HasPrefix(libDir, s.packageRoot+"/") {
+			continue
 		}
-		return nil
-	})
+		walkDir(libDir)
+	}
+}
+
+// libURLPath returns the /@lib/ URL path for a file in a local library dir,
+// or "" if the file doesn't belong to any library.
+func (s *esmServer) libURLPath(absPath string) string {
+	for name, dir := range s.localLibs {
+		if strings.HasPrefix(absPath, dir+"/") {
+			rel, _ := filepath.Rel(dir, absPath)
+			return "/@lib/" + name + "/" + filepath.ToSlash(rel)
+		}
+	}
+	return ""
 }
 
 // handleSSE handles Server-Sent Events connections for live reload and HMR.

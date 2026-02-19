@@ -131,6 +131,124 @@ func (s *esmServer) handleSource(w http.ResponseWriter, r *http.Request, urlPath
 		r.Method, urlPath, time.Since(start).Milliseconds())
 }
 
+// handleLibSource serves local js_library source files via /@lib/ URLs.
+// Strips the /@lib/ prefix, finds the matching library by longest-prefix match,
+// resolves the file, and on-demand transforms it (same as handleSource).
+func (s *esmServer) handleLibSource(w http.ResponseWriter, r *http.Request, urlPath string, start time.Time) {
+	// Strip /@lib/ prefix: "/@lib/common/js/ui/Spinner.tsx" → "common/js/ui/Spinner.tsx"
+	specPath := strings.TrimPrefix(urlPath, "/@lib/")
+
+	// Find matching library by longest-prefix match
+	bestLib := ""
+	bestDir := ""
+	for name, dir := range s.localLibs {
+		if specPath == name || strings.HasPrefix(specPath, name+"/") {
+			if len(name) > len(bestLib) {
+				bestLib = name
+				bestDir = dir
+			}
+		}
+	}
+	if bestLib == "" {
+		http.NotFound(w, r)
+		fmt.Printf("  \033[2m[lib] %s %s → 404 no matching lib (%dms)\033[0m\n",
+			r.Method, urlPath, time.Since(start).Milliseconds())
+		return
+	}
+
+	// Extract subpath: "common/js/ui/Spinner.tsx" with lib "common/js/ui" → "/Spinner.tsx"
+	subpath := "/"
+	if specPath != bestLib {
+		subpath = "/" + strings.TrimPrefix(specPath, bestLib+"/")
+	}
+
+	resolved := resolveSourceFile(bestDir, subpath)
+	if resolved == "" {
+		http.NotFound(w, r)
+		fmt.Printf("  \033[2m[lib] %s %s → 404 (%dms)\033[0m\n",
+			r.Method, urlPath, time.Since(start).Milliseconds())
+		return
+	}
+
+	// Check cache
+	info, err := os.Stat(resolved)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if cached, ok := s.transCache.Load(resolved); ok {
+		entry := cached.(*transformEntry)
+		if entry.modTime.Equal(info.ModTime()) {
+			w.Header().Set("Content-Type", "application/javascript")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Write(entry.code)
+			return
+		}
+	}
+
+	// Read and transform
+	src, err := os.ReadFile(resolved)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	loader := loaderForFile(resolved)
+
+	transformOpts := api.TransformOptions{
+		Loader:         loader,
+		Format:         api.FormatESModule,
+		Target:         api.ESNext,
+		JSX:            api.JSXAutomatic,
+		Sourcemap:      api.SourceMapInline,
+		SourcesContent: api.SourcesContentInclude,
+		Sourcefile:     urlPath,
+		Define:         s.define,
+		LogLevel:       api.LogLevelWarning,
+	}
+	if s.tsconfig != "" {
+		tsconfigData, err := os.ReadFile(s.tsconfig)
+		if err == nil {
+			transformOpts.TsconfigRaw = string(tsconfigData)
+		}
+	}
+
+	result := api.Transform(string(src), transformOpts)
+	if len(result.Errors) > 0 {
+		errMsg := result.Errors[0].Text
+		errJS := fmt.Sprintf(`console.error("[esm-dev] Transform error in %s:\\n%s");`, urlPath, strings.ReplaceAll(errMsg, `"`, `\"`))
+		w.Header().Set("Content-Type", "application/javascript")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(errJS))
+		fmt.Printf("  \033[31m[error] %s %s: %s\033[0m\n", r.Method, urlPath, errMsg)
+		return
+	}
+
+	code := result.Code
+
+	// Inject React Fast Refresh registration if enabled.
+	if s.hasRefresh {
+		components := detectComponents(string(code))
+		s.componentFiles.Store(resolved, len(components) > 0)
+		if len(components) > 0 {
+			code = injectRefreshRegistration(code, urlPath, components)
+		}
+	}
+
+	// Cache the result
+	s.transCache.Store(resolved, &transformEntry{
+		code:    code,
+		modTime: info.ModTime(),
+	})
+
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(code)
+	fmt.Printf("  \033[2m[lib] %s %s → 200 (%dms)\033[0m\n",
+		r.Method, urlPath, time.Since(start).Milliseconds())
+}
+
 func (s *esmServer) handleCSSModule(w http.ResponseWriter, r *http.Request, urlPath string, start time.Time) {
 	filePath := filepath.Join(s.packageRoot, filepath.FromSlash(urlPath))
 	if _, err := os.Stat(filePath); err != nil && s.packageRoot != s.sourceRoot {

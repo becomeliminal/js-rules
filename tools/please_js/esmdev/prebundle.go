@@ -206,6 +206,9 @@ func prebundleAllPackages(ctx context.Context, moduleMap map[string]string, used
 	var failedPkgs []string
 
 	for pkgName, pkgDir := range moduleMap {
+		if isLocalLibrary(pkgDir) {
+			continue // local js_library targets are served via /@lib/, not pre-bundled
+		}
 		name, dir := pkgName, pkgDir
 		g.Go(func() error {
 			result := prebundlePackage(name, dir, usedImports, outdir)
@@ -242,9 +245,14 @@ func prebundleAllPackages(ctx context.Context, moduleMap map[string]string, used
 // unaffected.
 func addPrefixImportMapEntries(importMap map[string]string) {
 	pkgs := make(map[string]bool)
-	for spec := range importMap {
+	for spec, target := range importMap {
 		if strings.HasSuffix(spec, "/") {
 			continue // already a prefix entry
+		}
+		// Skip local library entries — their multi-segment names (e.g. "common/js/ui")
+		// would be corrupted by packageNameFromSpec into "common".
+		if strings.HasPrefix(target, "/@lib/") {
+			continue
 		}
 		pkgs[packageNameFromSpec(spec)] = true
 	}

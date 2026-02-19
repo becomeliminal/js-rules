@@ -38,6 +38,7 @@ type esmServer struct {
 	depCache       map[string][]byte // "/@deps/react.js" → pre-bundled ESM
 	onDemandDeps   sync.Map          // lazily-bundled subpath deps (/@deps/... → []byte)
 	moduleMap      map[string]string // package name → dir (for on-demand bundling)
+	localLibs      map[string]string // module name → abs dir (for /@lib/ serving)
 	transCache     sync.Map          // abs path → *transformEntry
 	importMapJSON  []byte
 	clients        map[chan sseEvent]struct{}
@@ -83,13 +84,19 @@ func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. HTML files — inject import map + live reload
+	// 4. Local library source files (js_library with module_name)
+	if strings.HasPrefix(urlPath, "/@lib/") {
+		s.handleLibSource(w, r, urlPath, start)
+		return
+	}
+
+	// 5. HTML files — inject import map + live reload
 	if strings.HasSuffix(urlPath, ".html") || urlPath == "/" {
 		s.handleHTML(w, r, start)
 		return
 	}
 
-	// 5. JS/TS/JSX/TSX source files — on-demand transform
+	// 6. JS/TS/JSX/TSX source files — on-demand transform
 	ext := filepath.Ext(urlPath)
 	isSourceExt := ext == ".js" || ext == ".jsx" || ext == ".ts" || ext == ".tsx" || ext == ".mjs"
 	if isSourceExt || ext == "" {
@@ -97,7 +104,7 @@ func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. CSS files — serve as JS style injector when imported as ES module.
+	// 7. CSS files — serve as JS style injector when imported as ES module.
 	// Browsers send Sec-Fetch-Dest: script for `import "./style.css"` and
 	// Sec-Fetch-Dest: style for `<link rel="stylesheet">`. The ?module query
 	// param serves as a fallback for non-browser clients.
@@ -109,7 +116,7 @@ func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 6b. Asset files — serve as JS module when imported as ES module.
+	// 7b. Asset files — serve as JS module when imported as ES module.
 	if isAssetExt(ext) {
 		fetchDest := r.Header.Get("Sec-Fetch-Dest")
 		if fetchDest == "script" || r.URL.Query().Get("module") != "" {
@@ -118,7 +125,7 @@ func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 7. Static files from servedir or packageRoot
+	// 8. Static files from servedir or packageRoot
 	filePath := filepath.Join(s.sourceRoot, filepath.FromSlash(urlPath))
 	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
 		http.ServeFile(w, r, filePath)
@@ -136,7 +143,7 @@ func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 8. SPA fallback → index.html with import map injection
+	// 9. SPA fallback → index.html with import map injection
 	s.handleHTML(w, r, start)
 }
 
@@ -246,6 +253,37 @@ func Run(args Args) error {
 		}
 	}
 
+	// Build local library map and merge import map entries for js_library targets.
+	// These are moduleMap entries without package.json — local source that should
+	// be served via /@lib/ and on-demand transformed, not pre-bundled.
+	localLibs := make(map[string]string)
+	{
+		var imData struct {
+			Imports map[string]string `json:"imports"`
+		}
+		json.Unmarshal(importMapJSON, &imData)
+		if imData.Imports == nil {
+			imData.Imports = make(map[string]string)
+		}
+		for name, dir := range moduleMap {
+			if !isLocalLibrary(dir) {
+				continue
+			}
+			absDir, _ := filepath.Abs(dir)
+			localLibs[name] = absDir
+			// Prefix entry: "common/js/ui/" → "/@lib/common/js/ui/"
+			imData.Imports[name+"/"] = "/@lib/" + name + "/"
+			// Exact entry: "common/js/ui" → "/@lib/common/js/ui/index.ts" (resolved)
+			if resolved := resolveSourceFile(absDir, "/"); resolved != "" {
+				rel, _ := filepath.Rel(absDir, resolved)
+				imData.Imports[name] = "/@lib/" + name + "/" + filepath.ToSlash(rel)
+			}
+		}
+		if len(localLibs) > 0 {
+			importMapJSON, _ = json.Marshal(imData)
+		}
+	}
+
 	// Parse proxies
 	proxies, proxyPrefixes := parseProxies(args.Proxy)
 
@@ -268,6 +306,7 @@ func Run(args Args) error {
 		packageRoot:   absPackageRoot,
 		depCache:      depCache,
 		moduleMap:     moduleMap,
+		localLibs:     localLibs,
 		importMapJSON: importMapJSON,
 		clients:       make(map[chan sseEvent]struct{}),
 		proxies:       proxies,

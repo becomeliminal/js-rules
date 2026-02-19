@@ -6,6 +6,7 @@ js_dev_server(
     deps = [
         "//third_party/js:react",
         "//third_party/js:react-dom",
+        "//test/common/ui",
     ],
     servedir = ".",
     port = 3000,
@@ -28,6 +29,9 @@ gentest(
         """for pkg in react react-dom scheduler; do grep -q "\\"$pkg/\\"" importmap.json || { echo "FAIL: missing prefix entry: $pkg/"; exit 1; }; done""",
         # F: No bare imports in bundled deps are missing from the import map (re-check after merge)
         """grep -roh 'from "[a-zA-Z@][^"]*"' deps/ --include='*.js' | sort -u | sed 's/from "//;s/"$//' | while read spec; do grep -q "\\"$spec\\"" importmap.json || { echo "FAIL: bare import '$spec' not in importmap (post-merge)"; exit 1; }; done""",
+        # G: Local library NOT pre-bundled (served via /@lib/ at runtime)
+        '! test -d deps/test || { echo "FAIL: local lib test/common/ui was pre-bundled into deps/"; exit 1; }',
+        '! grep -q "test/common/ui" importmap.json || { echo "FAIL: local lib should not be in prebundle importmap"; exit 1; }',
     ]),
     data = [":_dev_prebundle"],
     no_test_output = True,

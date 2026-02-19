@@ -163,6 +163,9 @@ func PrebundlePkg(moduleConfigPath, outDir string) error {
 	mergedImportMap := make(map[string]string)
 
 	for pkgName, pkgDir := range moduleMap {
+		if isLocalLibrary(pkgDir) {
+			continue // local js_library targets are not pre-bundled
+		}
 		result := prebundlePackage(pkgName, pkgDir, nil, outdir)
 		if result.err != nil {
 			fmt.Fprintf(os.Stderr, "  warning: skipping %s: %v\n", pkgName, result.err)
@@ -273,10 +276,15 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 	seen := make(map[string]bool)
 
 	for spec := range bareSpecs {
-		pkgName := packageNameFromSpec(spec)
+		pkgName := resolveModuleName(spec, moduleMap)
 		// Check if this package is available in moduleMap
-		if _, ok := moduleMap[pkgName]; !ok {
+		pkgDir, ok := moduleMap[pkgName]
+		if !ok {
 			continue // not a known package, skip
+		}
+		// Skip local libraries — they're served on-demand, not pre-bundled
+		if isLocalLibrary(pkgDir) {
+			continue
 		}
 
 		// Check if exact specifier is already in import map
@@ -339,7 +347,7 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 	// Bundle missing subpaths via esbuild stdin
 	if len(missingSubpaths) > 0 {
 		for _, spec := range missingSubpaths {
-			pkgName := packageNameFromSpec(spec)
+			pkgName := resolveModuleName(spec, moduleMap)
 			pkgDir := moduleMap[pkgName]
 			code, err := bundleSubpathViaStdin(spec, pkgName, pkgDir, moduleMap)
 			if err != nil {

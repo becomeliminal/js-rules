@@ -13,6 +13,32 @@ import (
 // export { X } from "pkg", export * from "pkg".
 var importSpecRe = regexp.MustCompile(`(?:from\s+|import\s*\(\s*|import\s+|require\s*\(\s*)["']([^"']+)["']`)
 
+// isLocalLibrary returns true if the moduleMap entry is a local js_library
+// (no package.json) rather than an npm package.
+func isLocalLibrary(pkgDir string) bool {
+	absPkgDir, _ := filepath.Abs(pkgDir)
+	_, err := os.Stat(filepath.Join(absPkgDir, "package.json"))
+	return err != nil
+}
+
+// resolveModuleName finds the best matching module name for a bare specifier
+// by longest-prefix matching against moduleMap keys. Mirrors the logic in
+// ModuleResolvePlugin (common.go:231-241). Falls back to packageNameFromSpec.
+func resolveModuleName(spec string, moduleMap map[string]string) string {
+	best := ""
+	for name := range moduleMap {
+		if spec == name || strings.HasPrefix(spec, name+"/") {
+			if len(name) > len(best) {
+				best = name
+			}
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return packageNameFromSpec(spec)
+}
+
 // packageNameFromSpec extracts the npm package name from an import specifier.
 // "react" → "react", "react-dom/client" → "react-dom",
 // "@scope/pkg" → "@scope/pkg", "@scope/pkg/sub" → "@scope/pkg".
@@ -61,9 +87,9 @@ func scanSourceImports(sourceRoot string, moduleMap map[string]string) map[strin
 			if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") {
 				continue
 			}
-			// Only include if the package exists in moduleMap
-			pkgName := packageNameFromSpec(spec)
-			if _, ok := moduleMap[pkgName]; ok {
+			// Only include if the module exists in moduleMap
+			modName := resolveModuleName(spec, moduleMap)
+			if _, ok := moduleMap[modName]; ok {
 				used[spec] = true
 			}
 		}

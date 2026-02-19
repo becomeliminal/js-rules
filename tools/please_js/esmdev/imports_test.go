@@ -346,3 +346,114 @@ func TestFindSubpathExports_MultipleSubpaths(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveModuleName(t *testing.T) {
+	moduleMap := map[string]string{
+		"react":         "/path/to/react",
+		"common/js/ui":  "/path/to/common/js/ui",
+		"@scope/pkg":    "/path/to/@scope/pkg",
+	}
+
+	tests := []struct {
+		name string
+		spec string
+		want string
+	}{
+		{
+			name: "npm bare package",
+			spec: "react",
+			want: "react",
+		},
+		{
+			name: "npm subpath",
+			spec: "react/jsx-runtime",
+			want: "react",
+		},
+		{
+			name: "local library exact",
+			spec: "common/js/ui",
+			want: "common/js/ui",
+		},
+		{
+			name: "local library subpath",
+			spec: "common/js/ui/Spinner",
+			want: "common/js/ui",
+		},
+		{
+			name: "scoped package",
+			spec: "@scope/pkg",
+			want: "@scope/pkg",
+		},
+		{
+			name: "scoped package subpath",
+			spec: "@scope/pkg/sub/path",
+			want: "@scope/pkg",
+		},
+		{
+			name: "unknown falls back to packageNameFromSpec",
+			spec: "unknown-pkg/sub",
+			want: "unknown-pkg",
+		},
+		{
+			name: "longest prefix wins",
+			spec: "common/js/ui/deep/path",
+			want: "common/js/ui",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveModuleName(tt.spec, moduleMap)
+			if got != tt.want {
+				t.Errorf("resolveModuleName(%q) = %q, want %q", tt.spec, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsLocalLibrary(t *testing.T) {
+	dir := t.TempDir()
+
+	// npm package (has package.json)
+	npmDir := filepath.Join(dir, "react")
+	os.MkdirAll(npmDir, 0755)
+	os.WriteFile(filepath.Join(npmDir, "package.json"), []byte(`{"name":"react"}`), 0644)
+
+	// local library (no package.json)
+	libDir := filepath.Join(dir, "common", "js", "ui")
+	os.MkdirAll(libDir, 0755)
+	os.WriteFile(filepath.Join(libDir, "Spinner.tsx"), []byte("export const Spinner = () => {};"), 0644)
+
+	if isLocalLibrary(npmDir) {
+		t.Error("expected npm package (with package.json) to NOT be a local library")
+	}
+	if !isLocalLibrary(libDir) {
+		t.Error("expected dir without package.json to be a local library")
+	}
+}
+
+func TestScanSourceImports_LocalLibrary(t *testing.T) {
+	dir := t.TempDir()
+
+	srcFile := filepath.Join(dir, "app.tsx")
+	content := "import { Spinner } from \"common/js/ui/Spinner\";\nimport { Button } from \"common/js/ui/Button\";\n"
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	moduleMap := map[string]string{
+		"common/js/ui": "/some/path/to/common/js/ui",
+	}
+
+	used := scanSourceImports(dir, moduleMap)
+
+	if !used["common/js/ui/Spinner"] {
+		t.Errorf("expected 'common/js/ui/Spinner' in used imports, got %v", used)
+	}
+	if !used["common/js/ui/Button"] {
+		t.Errorf("expected 'common/js/ui/Button' in used imports, got %v", used)
+	}
+	if len(used) != 2 {
+		t.Errorf("expected 2 used imports, got %d: %v", len(used), used)
+	}
+}
