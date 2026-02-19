@@ -35,17 +35,9 @@ func Run(args Args) error {
 			loader = api.LoaderJS
 		}
 
-		// Asset files (images, fonts, media) and CSS are just copied
-		if loader == api.LoaderFile || loader == api.LoaderLocalCSS {
-			outPath := filepath.Join(args.OutDir, filepath.Base(src))
-			if err := os.WriteFile(outPath, data, 0644); err != nil {
-				return fmt.Errorf("failed to write %s: %w", outPath, err)
-			}
-			continue
-		}
-
-		// Plain JS, JSON, and CSS files are just copied
-		if loader == api.LoaderJS || loader == api.LoaderJSON || loader == api.LoaderCSS {
+		// Only TS, TSX, and JSX need transpilation; everything else is copied as-is.
+		needsTranspile := loader == api.LoaderTSX || loader == api.LoaderTS || loader == api.LoaderJSX
+		if !needsTranspile {
 			outPath := filepath.Join(args.OutDir, filepath.Base(src))
 			if err := os.WriteFile(outPath, data, 0644); err != nil {
 				return fmt.Errorf("failed to write %s: %w", outPath, err)
