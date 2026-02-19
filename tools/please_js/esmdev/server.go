@@ -2,7 +2,9 @@ package esmdev
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"os"
@@ -320,13 +322,28 @@ func Run(args Args) error {
 	// Start file watcher
 	go server.watchFiles()
 
-	// Start HTTP server
-	httpServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: server,
+	// Start HTTP server — try successive ports if the configured one is in use.
+	var listener net.Listener
+	actualPort := port
+	for attempts := 0; attempts < 20; attempts++ {
+		ln, listenErr := net.Listen("tcp", fmt.Sprintf(":%d", actualPort))
+		if listenErr == nil {
+			listener = ln
+			break
+		}
+		if !isAddrInUse(listenErr) {
+			return fmt.Errorf("failed to listen on port %d: %w", actualPort, listenErr)
+		}
+		fmt.Printf("  \033[33mPort %d is in use, trying another one...\033[0m\n", actualPort)
+		actualPort++
 	}
+	if listener == nil {
+		return fmt.Errorf("no available port found (tried %d–%d)", port, actualPort-1)
+	}
+
+	httpServer := &http.Server{Handler: server}
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "HTTP server error: %v\n", err)
 			os.Exit(1)
 		}
@@ -337,9 +354,9 @@ func Run(args Args) error {
 	if hasRefresh {
 		fmt.Printf("  \033[1;35mHMR\033[0m  React Fast Refresh enabled\n")
 	}
-	fmt.Printf("\n  \033[36m➜\033[0m  \033[1mLocal:\033[0m   http://localhost:\033[1m%d\033[0m/\n", port)
+	fmt.Printf("\n  \033[36m➜\033[0m  \033[1mLocal:\033[0m   http://localhost:\033[1m%d\033[0m/\n", actualPort)
 	for _, ip := range getLocalIPs() {
-		fmt.Printf("  \033[36m➜\033[0m  \033[2mNetwork: http://%s:%d/\033[0m\n", ip, port)
+		fmt.Printf("  \033[36m➜\033[0m  \033[2mNetwork: http://%s:%d/\033[0m\n", ip, actualPort)
 	}
 	fmt.Println()
 
@@ -351,4 +368,16 @@ func Run(args Args) error {
 	fmt.Println("\nShutting down...")
 	httpServer.Close()
 	return nil
+}
+
+// isAddrInUse reports whether a listen error is due to the address being in use.
+func isAddrInUse(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		var sysErr *os.SyscallError
+		if errors.As(opErr.Err, &sysErr) {
+			return errors.Is(sysErr.Err, syscall.EADDRINUSE)
+		}
+	}
+	return false
 }
