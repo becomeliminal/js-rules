@@ -403,6 +403,7 @@ def npm_repo(name:str, package_lock:str, no_dev:bool=False,
         outs = [name],
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         output_is_complete = True,
+        _subrepo = True,
         visibility = visibility,
         building_description = "Resolving npm dependencies...",
     )
