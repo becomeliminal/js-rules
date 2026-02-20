@@ -94,35 +94,44 @@ var (
 // - Removes CSS link tags that don't resolve (CSS is injected via JS modules)
 // - Injects import map and client scripts before </head>
 func rewriteHTML(html string, importMapJSON []byte, hasRefresh bool, entryURLPath, sourceRoot, packageRoot string) string {
-	// Rewrite HTML when packageRoot differs from sourceRoot.
-	if packageRoot != sourceRoot {
-		html = scriptSrcRe.ReplaceAllStringFunc(html, func(match string) string {
-			parts := scriptSrcRe.FindStringSubmatch(match)
-			if parts == nil {
-				return match
-			}
-			src := parts[2]
-			// Check if file exists in sourceRoot or packageRoot
-			if resolveSourceFile(sourceRoot, src) != "" || resolveSourceFile(packageRoot, src) != "" {
-				return match
-			}
-			// Replace with actual entry point path
-			return parts[1] + entryURLPath + parts[3]
-		})
+	// Rewrite script src paths that don't resolve to real files.
+	html = scriptSrcRe.ReplaceAllStringFunc(html, func(match string) string {
+		parts := scriptSrcRe.FindStringSubmatch(match)
+		if parts == nil {
+			return match
+		}
+		src := parts[2]
+		// Check if file exists in sourceRoot or packageRoot
+		if resolveSourceFile(sourceRoot, src) != "" || resolveSourceFile(packageRoot, src) != "" {
+			return match
+		}
+		// Replace with actual entry point path
+		return parts[1] + entryURLPath + parts[3]
+	})
 
-		html = cssLinkRe.ReplaceAllStringFunc(html, func(match string) string {
-			hrefMatch := hrefRe.FindStringSubmatch(match)
-			if hrefMatch == nil {
-				return match
-			}
-			href := hrefMatch[1]
-			// Check if CSS file exists in sourceRoot or packageRoot
-			if resolveSourceFile(sourceRoot, href) != "" || resolveSourceFile(packageRoot, href) != "" {
-				return match
-			}
-			// Remove the tag — CSS is injected via JS modules in ESM dev mode
-			return ""
-		})
+	// Remove CSS link tags for files that don't exist — CSS is injected via JS modules.
+	html = cssLinkRe.ReplaceAllStringFunc(html, func(match string) string {
+		hrefMatch := hrefRe.FindStringSubmatch(match)
+		if hrefMatch == nil {
+			return match
+		}
+		href := hrefMatch[1]
+		// Check if CSS file exists in sourceRoot or packageRoot
+		if resolveSourceFile(sourceRoot, href) != "" || resolveSourceFile(packageRoot, href) != "" {
+			return match
+		}
+		// Remove the tag — CSS is injected via JS modules in ESM dev mode
+		return ""
+	})
+
+	// Safety net: if no module script tag points to the entry point, inject one.
+	if !strings.Contains(html, `src="`+entryURLPath+`"`) && !strings.Contains(html, `src='`+entryURLPath+`'`) {
+		entryScript := fmt.Sprintf(`<script type="module" src="%s"></script>`, entryURLPath)
+		if idx := strings.Index(html, "</body>"); idx >= 0 {
+			html = html[:idx] + entryScript + "\n" + html[idx:]
+		} else {
+			html = html + "\n" + entryScript
+		}
 	}
 
 	// Inject import map and live reload / HMR script before </head>

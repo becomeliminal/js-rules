@@ -136,18 +136,65 @@ func TestRewriteHTML_ScriptSrcUnchangedWhenFileExists(t *testing.T) {
 	}
 }
 
-func TestRewriteHTML_ScriptSrcNotRewrittenWhenRootsEqual(t *testing.T) {
+func TestRewriteHTML_ScriptSrcRewrittenWhenRootsEqual(t *testing.T) {
 	root := t.TempDir()
 
-	// File does NOT exist, but packageRoot == sourceRoot so no rewriting should happen.
+	// File does NOT exist — rewriting should happen even when packageRoot == sourceRoot.
 	html := `<html><head>
 <script type="module" src="/main.js"></script>
 </head><body></body></html>`
 	importMap := []byte(`{}`)
 	result := rewriteHTML(html, importMap, false, "/entry.tsx", root, root)
 
-	if !strings.Contains(result, `src="/main.js"`) {
-		t.Error("expected script src to remain unchanged when packageRoot == sourceRoot")
+	if !strings.Contains(result, `src="/entry.tsx"`) {
+		t.Error("expected script src to be rewritten to entryURLPath when file does not exist")
+	}
+	if strings.Contains(result, `src="/main.js"`) {
+		t.Error("expected original script src to be replaced")
+	}
+}
+
+func TestRewriteHTML_EntryScriptInjectedWhenMissing(t *testing.T) {
+	root := t.TempDir()
+
+	// HTML with no module script tag — entry point should be injected before </body>.
+	html := `<html><head></head><body>
+<div>Hello</div>
+</body></html>`
+	importMap := []byte(`{}`)
+	result := rewriteHTML(html, importMap, false, "/app.js", root, root)
+
+	if !strings.Contains(result, `<script type="module" src="/app.js"></script>`) {
+		t.Error("expected entry point script to be injected when no module script tag exists")
+	}
+
+	scriptIdx := strings.Index(result, `<script type="module" src="/app.js"></script>`)
+	bodyCloseIdx := strings.Index(result, `</body>`)
+	if scriptIdx < 0 || bodyCloseIdx < 0 || scriptIdx >= bodyCloseIdx {
+		t.Error("expected entry point script to be injected before </body>")
+	}
+}
+
+func TestRewriteHTML_EntryScriptNotDuplicatedWhenPresent(t *testing.T) {
+	root := t.TempDir()
+
+	// HTML already has a script tag that will be rewritten to the entry point —
+	// no duplicate should be injected.
+	html := `<html><head>
+<script type="module" src="/main.js"></script>
+</head><body></body></html>`
+	importMap := []byte(`{}`)
+	result := rewriteHTML(html, importMap, false, "/entry.tsx", root, root)
+
+	// The script should be rewritten to entry.tsx
+	if !strings.Contains(result, `src="/entry.tsx"`) {
+		t.Error("expected script src to be rewritten to entryURLPath")
+	}
+
+	// Count occurrences of the entry point — should be exactly one
+	count := strings.Count(result, `src="/entry.tsx"`)
+	if count != 1 {
+		t.Errorf("expected exactly 1 occurrence of entry point script, got %d", count)
 	}
 }
 
