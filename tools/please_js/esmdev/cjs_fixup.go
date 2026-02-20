@@ -1,11 +1,18 @@
 package esmdev
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 )
+
+// hasExportStatement returns true if the code contains an ESM export statement.
+// Used to detect entry points that lost their exports due to esbuild's code splitting.
+func hasExportStatement(code []byte) bool {
+	return bytes.Contains(code, []byte("\nexport ")) || bytes.HasPrefix(code, []byte("export "))
+}
 
 // dynamicRequireRe matches __require("specifier") calls in esbuild output.
 // These are generated when CJS code require()s an external package in ESM format.

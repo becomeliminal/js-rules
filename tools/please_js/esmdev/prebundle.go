@@ -182,6 +182,42 @@ func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdi
 		depCache["/@deps/"+filepath.ToSlash(rel)] = f.Contents
 	}
 
+	// Fix entry points that lost exports due to esbuild's code splitting.
+	// When Splitting=true and a main entry subsumes all subpath entry code,
+	// esbuild may strip exports from subpath output files. Detect this and
+	// rebuild those entries individually without splitting.
+	for _, ep := range entryPoints {
+		urlPath := importMap[ep.OutputPath]
+		if urlPath == "" {
+			continue
+		}
+		code, ok := depCache[urlPath]
+		if !ok || hasExportStatement(code) {
+			continue
+		}
+		singleResult := api.Build(api.BuildOptions{
+			EntryPoints:       []string{ep.InputPath},
+			Bundle:            true,
+			Write:             false,
+			Format:            api.FormatESModule,
+			Platform:          api.PlatformBrowser,
+			Target:            api.ESNext,
+			Outdir:            outdir,
+			LogLevel:          api.LogLevelSilent,
+			Define:            define,
+			IgnoreAnnotations: true,
+			Plugins: []api.Plugin{
+				common.ModuleResolvePlugin(singlePkgMap, "browser"),
+				common.NodeBuiltinEmptyPlugin(fullModuleMap...),
+				common.UnknownExternalPlugin(singlePkgMap),
+			},
+			Loader: depLoaders,
+		})
+		if len(singleResult.Errors) == 0 && len(singleResult.OutputFiles) > 0 {
+			depCache[urlPath] = singleResult.OutputFiles[0].Contents
+		}
+	}
+
 	// Detect CJS exports via Node.js when available
 	var knownExports map[string][]string
 	if nodePath != "" {

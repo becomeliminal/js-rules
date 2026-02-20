@@ -5,6 +5,64 @@ import (
 	"testing"
 )
 
+func TestHasExportStatement(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+		want bool
+	}{
+		{
+			name: "export default at start",
+			code: "export default function() {}",
+			want: true,
+		},
+		{
+			name: "export const after newline",
+			code: "var x = 1;\nexport const foo = x;",
+			want: true,
+		},
+		{
+			name: "export { destructured",
+			code: "var a = 1;\nexport { a };",
+			want: true,
+		},
+		{
+			name: "no exports",
+			code: "var x = 1;\nvar y = 2;\nconsole.log(x + y);",
+			want: false,
+		},
+		{
+			name: "export in string not at line start",
+			code: "var x = \"export default foo\";\n",
+			want: false,
+		},
+		{
+			name: "empty code",
+			code: "",
+			want: false,
+		},
+		{
+			name: "only newlines",
+			code: "\n\n\n",
+			want: false,
+		},
+		{
+			name: "export as part of identifier",
+			code: "var exporter = 1;\n",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasExportStatement([]byte(tt.code))
+			if got != tt.want {
+				t.Errorf("hasExportStatement(%q) = %v, want %v", tt.code, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveCJSExports(t *testing.T) {
 	tests := []struct {
 		name     string
