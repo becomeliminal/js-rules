@@ -274,6 +274,72 @@ func TestPrebundlePackage_NodeBuiltinPolyfill(t *testing.T) {
 	}
 }
 
+// TestCJSFixup_ModuleExportsIdentifier verifies that addCJSNamedExportsToCache
+// detects the pattern where module.exports is assigned to a named identifier
+// (e.g., `module.exports = EventEmitter`) and that identifier has properties
+// assigned to it (e.g., `EventEmitter.once = once; EventEmitter.EventEmitter = EventEmitter`).
+// This is common in packages like "events" where the constructor IS module.exports.
+func TestCJSFixup_ModuleExportsIdentifier(t *testing.T) {
+	// Simulate esbuild output for a CJS package with the self-referencing pattern:
+	//   module.exports = EventEmitter;
+	//   EventEmitter.EventEmitter = EventEmitter;
+	//   EventEmitter.once = once;
+	//   EventEmitter.prototype.on = function() {};
+	//   EventEmitter._private = something;
+	bundled := `// chunk
+var require_events = __commonJS({
+  "index.js"(exports, module) {
+    function EventEmitter() {}
+    EventEmitter.prototype.on = function() {};
+    EventEmitter.prototype.emit = function() {};
+    function once(emitter, name) { return []; }
+    EventEmitter.EventEmitter = EventEmitter;
+    EventEmitter.once = once;
+    EventEmitter._private = true;
+    module.exports = EventEmitter;
+  }
+});
+export default require_events();
+`
+
+	depCache := map[string][]byte{
+		"deps/events.js": []byte(bundled),
+	}
+	addCJSNamedExportsToCache(depCache)
+
+	result := string(depCache["deps/events.js"])
+
+	// Should have export const { ... } destructuring
+	if !strings.Contains(result, "export const {") {
+		t.Fatalf("expected 'export const {' in output, got:\n%s", result)
+	}
+
+	// EventEmitter should be a named export
+	if !strings.Contains(result, "EventEmitter") || !strings.Contains(result, "export const {") {
+		t.Errorf("expected EventEmitter in export destructuring, got:\n%s", result)
+	}
+
+	// once should also be a named export
+	if !strings.Contains(result, "once") {
+		t.Errorf("expected 'once' in export destructuring, got:\n%s", result)
+	}
+
+	// prototype and _private should NOT be named exports
+	exportLine := ""
+	for _, line := range strings.Split(result, "\n") {
+		if strings.Contains(line, "export const {") {
+			exportLine = line
+			break
+		}
+	}
+	if strings.Contains(exportLine, "prototype") {
+		t.Errorf("prototype should not be a named export, got:\n%s", exportLine)
+	}
+	if strings.Contains(exportLine, "_private") {
+		t.Errorf("_private should not be a named export, got:\n%s", exportLine)
+	}
+}
+
 // TestPrebundlePackage_NoNestedNodeModules verifies that packages without
 // nested node_modules still work correctly (no regression).
 func TestPrebundlePackage_NoNestedNodeModules(t *testing.T) {

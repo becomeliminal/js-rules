@@ -21,7 +21,11 @@ gentest(
         'grep -q "EventEmitter" deps/events.js'
             ' || { echo "FAIL: EventEmitter not found in prebundled events"; '
             'echo "--- raw output ---"; cat deps/events.js; exit 1; }',
-        # C: events is in the import map
+        # C: EventEmitter named export exists (CJS fixup produced it)
+        'grep "export const {" deps/events.js | grep -q "EventEmitter"'
+            ' || { echo "FAIL: EventEmitter not in export const destructuring"; '
+            'echo "--- export lines ---"; grep "export" deps/events.js; exit 1; }',
+        # D: events is in the import map
         'grep -q "\"events\"" importmap.json'
             ' || { echo "FAIL: events not in importmap"; exit 1; }',
     ]),

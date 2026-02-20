@@ -121,6 +121,22 @@ func addCJSNamedExportsToCache(depCache map[string][]byte) {
 				}
 			}
 
+			// Also detect module.exports = SomeVar; SomeVar.xxx = ...
+			// This handles CJS packages like "events" where the constructor is
+			// assigned to module.exports and properties are added to it directly.
+			moduleExportsIdentRe := regexp.MustCompile(`module\.exports\s*=\s*(\w+)\s*;`)
+			if m := moduleExportsIdentRe.FindStringSubmatch(block); m != nil {
+				ident := m[1]
+				identPropRe := regexp.MustCompile(regexp.QuoteMeta(ident) + `\.(\w+)\s*=`)
+				for _, pm := range identPropRe.FindAllStringSubmatch(block, -1) {
+					name := pm[1]
+					if !seen[name] && !strings.HasPrefix(name, "_") && name != "prototype" {
+						info.exports = append(info.exports, name)
+						seen[name] = true
+					}
+				}
+			}
+
 			cjsInfo[funcName] = info
 		}
 	}
