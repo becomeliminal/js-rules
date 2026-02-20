@@ -45,33 +45,49 @@ var NodeBuiltins = []string{
 // built-in module imports to empty modules. For browser builds, this replaces
 // the External approach — instead of leaving bare import "stream" statements
 // in the output (which browsers can't resolve), it bundles an empty module.
-func NodeBuiltinEmptyPlugin() api.Plugin {
+//
+// When availablePkgs is provided, bare builtin names (without node: prefix)
+// that exist as npm polyfills in the map are skipped, letting
+// UnknownExternalPlugin externalize them so the browser import map can
+// resolve them to the real polyfill package.
+func NodeBuiltinEmptyPlugin(availablePkgs ...map[string]string) api.Plugin {
 	builtinSet := make(map[string]bool, len(NodeBuiltins))
 	for _, b := range NodeBuiltins {
 		builtinSet[b] = true
+	}
+	var pkgMap map[string]string
+	if len(availablePkgs) > 0 {
+		pkgMap = availablePkgs[0]
 	}
 	return api.Plugin{
 		Name: "node-builtin-empty",
 		Setup: func(build api.PluginBuild) {
 			build.OnResolve(api.OnResolveOptions{Filter: "^[^./]"},
 				func(args api.OnResolveArgs) (api.OnResolveResult, error) {
-					// Exact match
-					if builtinSet[args.Path] {
-						return api.OnResolveResult{
-							Path:      args.Path,
-							Namespace: "node-builtin-empty",
-						}, nil
-					}
-					// Subpath: "node:fs/promises" → base "node:fs", "fs/promises" → base "fs"
+					// Extract base module name for builtin check
+					base := args.Path
 					if i := strings.Index(args.Path, "/"); i > 0 {
-						if builtinSet[args.Path[:i]] {
-							return api.OnResolveResult{
-								Path:      args.Path,
-								Namespace: "node-builtin-empty",
-							}, nil
+						base = args.Path[:i]
+					}
+
+					if !builtinSet[base] {
+						return api.OnResolveResult{}, nil
+					}
+
+					// Skip bare builtins that have npm polyfills available.
+					// node:-prefixed imports are always stubbed (no npm package
+					// matches "node:events"). Bare names like "events" or
+					// "events/foo" are skipped if "events" exists in pkgMap.
+					if pkgMap != nil && !strings.HasPrefix(base, "node:") {
+						if _, ok := pkgMap[base]; ok {
+							return api.OnResolveResult{}, nil
 						}
 					}
-					return api.OnResolveResult{}, nil
+
+					return api.OnResolveResult{
+						Path:      args.Path,
+						Namespace: "node-builtin-empty",
+					}, nil
 				},
 			)
 			build.OnLoad(api.OnLoadOptions{Filter: ".*", Namespace: "node-builtin-empty"},

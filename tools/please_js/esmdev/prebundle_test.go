@@ -220,6 +220,60 @@ if (process.env.NODE_ENV === 'production') {
 	}
 }
 
+// TestPrebundlePackage_NodeBuiltinPolyfill verifies that when a package
+// imports a Node.js builtin name (like "events") that also exists as an npm
+// polyfill in the full moduleMap, the prebundle externalizes it instead of
+// stubbing it to an empty module. Without this, packages like WalletConnect's
+// EthereumProvider get `EventEmitter is not a constructor` at runtime.
+func TestPrebundlePackage_NodeBuiltinPolyfill(t *testing.T) {
+	dir := t.TempDir()
+	outdir := filepath.Join(dir, "outdir")
+
+	// Create a package that imports EventEmitter from "events"
+	pkgDir := filepath.Join(dir, "my-provider")
+	os.MkdirAll(pkgDir, 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "my-provider",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte(
+		"import { EventEmitter } from \"events\";\nexport class Provider extends EventEmitter {}\n",
+	), 0644)
+
+	// Full moduleMap includes "events" as an available npm polyfill.
+	// This tells NodeBuiltinEmptyPlugin to skip "events" and let
+	// UnknownExternalPlugin externalize it instead.
+	fullModuleMap := map[string]string{
+		"my-provider": pkgDir,
+		"events":      filepath.Join(dir, "fake-events"), // path doesn't matter, only key existence
+	}
+
+	result := prebundlePackage("my-provider", pkgDir, nil, outdir, nil, fullModuleMap)
+
+	if result.err != nil {
+		t.Fatalf("prebundlePackage failed: %v", result.err)
+	}
+
+	// The output should have "events" as an external import (from "events"),
+	// NOT an inlined empty stub. When events is stubbed, the output will
+	// contain the __commonJS helper with `module.exports = {}` and no
+	// external import of "events".
+	hasExternalEventsImport := false
+	for _, content := range result.depCache {
+		text := string(content)
+		if strings.Contains(text, `from "events"`) {
+			hasExternalEventsImport = true
+		}
+	}
+	if !hasExternalEventsImport {
+		t.Error("expected 'events' to be externalized (from \"events\"), not stubbed empty")
+		for path, content := range result.depCache {
+			t.Logf("  %s:\n%s", path, string(content))
+		}
+	}
+}
+
 // TestPrebundlePackage_NoNestedNodeModules verifies that packages without
 // nested node_modules still work correctly (no regression).
 func TestPrebundlePackage_NoNestedNodeModules(t *testing.T) {

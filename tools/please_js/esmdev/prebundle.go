@@ -105,7 +105,7 @@ func entryPointsForPackage(pkgName, pkgDir string, usedImports map[string]bool) 
 
 // prebundlePackage bundles a single npm package with all other packages externalized.
 // Uses splitting within the package for shared internal state between subpath exports.
-func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdir string, define map[string]string) packageBuildResult {
+func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdir string, define map[string]string, fullModuleMap ...map[string]string) packageBuildResult {
 	entryPoints, importMap := entryPointsForPackage(pkgName, pkgDir, usedImports)
 	if len(entryPoints) == 0 {
 		return packageBuildResult{pkgName: pkgName}
@@ -156,7 +156,7 @@ func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdi
 		IgnoreAnnotations:   true,
 		Plugins: []api.Plugin{
 			common.ModuleResolvePlugin(singlePkgMap, "browser"),
-			common.NodeBuiltinEmptyPlugin(),
+			common.NodeBuiltinEmptyPlugin(fullModuleMap...),
 			common.UnknownExternalPlugin(singlePkgMap),
 		},
 		Loader: depLoaders,
@@ -212,7 +212,7 @@ func prebundleAllPackages(ctx context.Context, moduleMap map[string]string, used
 		}
 		name, dir := pkgName, pkgDir
 		g.Go(func() error {
-			result := prebundlePackage(name, dir, usedImports, outdir, define)
+			result := prebundlePackage(name, dir, usedImports, outdir, define, moduleMap)
 
 			mu.Lock()
 			defer mu.Unlock()

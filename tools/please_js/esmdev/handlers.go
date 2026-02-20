@@ -375,7 +375,7 @@ func (s *esmServer) handleDepOnDemand(w http.ResponseWriter, r *http.Request, ur
 		IgnoreAnnotations: true,
 		Plugins: []api.Plugin{
 			common.ModuleResolvePlugin(singlePkgMap, "browser"),
-			common.NodeBuiltinEmptyPlugin(),
+			common.NodeBuiltinEmptyPlugin(s.moduleMap),
 			common.UnknownExternalPlugin(singlePkgMap),
 		},
 	})
@@ -422,7 +422,7 @@ func (s *esmServer) bundleViaStdin(spec, pkgName, pkgDir string) ([]byte, error)
 		Define:   s.define,
 		Plugins: []api.Plugin{
 			common.ModuleResolvePlugin(singlePkgMap, "browser"),
-			common.NodeBuiltinEmptyPlugin(),
+			common.NodeBuiltinEmptyPlugin(s.moduleMap),
 			common.UnknownExternalPlugin(singlePkgMap),
 		},
 	})

@@ -37,3 +37,8 @@ npm_module(
     version = "1.6.0",
     deps = [":react"],
 )
+
+npm_module(
+    name = "events",
+    version = "3.3.0",
+)

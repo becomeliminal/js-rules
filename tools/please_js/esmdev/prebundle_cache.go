@@ -170,7 +170,7 @@ func PrebundlePkg(moduleConfigPath, outDir string) error {
 		if isLocalLibrary(pkgDir) {
 			continue // local js_library targets are not pre-bundled
 		}
-		result := prebundlePackage(pkgName, pkgDir, nil, outdir, define)
+		result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, moduleMap)
 		if result.err != nil {
 			fmt.Fprintf(os.Stderr, "  warning: skipping %s: %v\n", pkgName, result.err)
 			continue
@@ -331,7 +331,7 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 		outdir, _ := filepath.Abs(".esm-prebundle-tmp")
 		for _, pkgName := range missingPkgs {
 			pkgDir := moduleMap[pkgName]
-			result := prebundlePackage(pkgName, pkgDir, nil, outdir, define)
+			result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, moduleMap)
 			if result.err != nil {
 				fmt.Fprintf(os.Stderr, "  warning: skipping missing dep %s: %v\n", pkgName, result.err)
 				continue
@@ -394,7 +394,7 @@ func bundleSubpathViaStdin(spec, pkgName, pkgDir string, moduleMap map[string]st
 		Define:   define,
 		Plugins: []api.Plugin{
 			common.ModuleResolvePlugin(singlePkgMap, "browser"),
-			common.NodeBuiltinEmptyPlugin(),
+			common.NodeBuiltinEmptyPlugin(moduleMap),
 			common.UnknownExternalPlugin(singlePkgMap),
 		},
 	})
