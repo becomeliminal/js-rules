@@ -58,21 +58,62 @@ type parentConflict struct {
 
 // breakCycles detects and removes back-edges in the dependency graph via DFS,
 // ensuring the resulting graph is a DAG suitable for Please's build system.
-func breakCycles(packages []resolvedPackage) {
-	idx := make(map[string]int, len(packages))
-	for i, pkg := range packages {
-		idx[pkg.Name] = i
+// It operates on a unified graph containing both regular packages and
+// version-conflict targets so that cycles spanning both are detected.
+func breakCycles(packages []resolvedPackage, ctargets []conflictTarget) {
+	// Build unified adjacency list over both regular packages and conflict targets.
+	adj := make(map[string][]string)
+
+	// Track which edges from regular packages come from NestedDeps.
+	// nestedEdgeKey[pkgName][conflictTargetName] = importName
+	nestedEdgeKey := make(map[string]map[string]string)
+
+	// Add regular package nodes.
+	for _, pkg := range packages {
+		var edges []string
+		for _, dep := range pkg.Deps {
+			edges = append(edges, dep)
+		}
+		for importName, label := range pkg.NestedDeps {
+			targetName := extractTargetName(label)
+			edges = append(edges, targetName)
+			if nestedEdgeKey[pkg.Name] == nil {
+				nestedEdgeKey[pkg.Name] = make(map[string]string)
+			}
+			nestedEdgeKey[pkg.Name][targetName] = importName
+		}
+		adj[pkg.Name] = edges
 	}
 
+	// Add conflict target nodes.
+	for _, ct := range ctargets {
+		var edges []string
+		for _, dep := range ct.Deps {
+			edges = append(edges, dep)
+		}
+		adj[ct.TargetName] = edges
+	}
+
+	// Sort all node keys for deterministic traversal.
+	allNodes := make([]string, 0, len(adj))
+	for key := range adj {
+		allNodes = append(allNodes, key)
+	}
+	sort.Strings(allNodes)
+
 	// DFS coloring: 0=white, 1=gray (in stack), 2=black (done)
-	color := make(map[string]int, len(packages))
+	color := make(map[string]int, len(allNodes))
 
 	var dfs func(name string)
 	dfs = func(name string) {
 		color[name] = 1
-		i := idx[name]
 		var kept []string
-		for _, dep := range packages[i].Deps {
+		for _, dep := range adj[name] {
+			if _, inGraph := adj[dep]; !inGraph {
+				// Keep edges to nodes outside the graph (e.g. filtered-out packages).
+				kept = append(kept, dep)
+				continue
+			}
 			if color[dep] == 1 {
 				log.Printf("warning: breaking circular dependency: %s -> %s", name, dep)
 				continue
@@ -82,15 +123,52 @@ func breakCycles(packages []resolvedPackage) {
 				dfs(dep)
 			}
 		}
-		packages[i].Deps = kept
+		adj[name] = kept
 		color[name] = 2
 	}
 
-	for _, pkg := range packages {
-		if color[pkg.Name] == 0 {
-			dfs(pkg.Name)
+	for _, node := range allNodes {
+		if color[node] == 0 {
+			dfs(node)
 		}
 	}
+
+	// Write back pruned edges to regular packages.
+	for i, pkg := range packages {
+		var deps []string
+		var nestedDeps map[string]string
+		for _, edge := range adj[pkg.Name] {
+			if importName, ok := nestedEdgeKey[pkg.Name][edge]; ok {
+				if nestedDeps == nil {
+					nestedDeps = make(map[string]string)
+				}
+				nestedDeps[importName] = pkg.NestedDeps[importName]
+			} else {
+				deps = append(deps, edge)
+			}
+		}
+		packages[i].Deps = deps
+		packages[i].NestedDeps = nestedDeps
+	}
+
+	// Write back pruned edges to conflict targets.
+	for i := range ctargets {
+		var deps []string
+		for _, edge := range adj[ctargets[i].TargetName] {
+			deps = append(deps, edge)
+		}
+		ctargets[i].Deps = deps
+	}
+}
+
+// extractTargetName extracts the target name from a subrepo target label
+// like "//dir:target_name".
+func extractTargetName(label string) string {
+	if idx := strings.LastIndex(label, ":"); idx >= 0 {
+		return label[idx+1:]
+	}
+	parts := strings.Split(strings.TrimPrefix(label, "//"), "/")
+	return parts[len(parts)-1]
 }
 
 // collectPackages extracts top-level packages from the lockfile and detects

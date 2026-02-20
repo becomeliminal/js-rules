@@ -22,7 +22,7 @@ func Run(args Args) error {
 
 	// Collect all top-level packages (skip root, nested, dev) and version-conflict targets
 	packages, conflictTargets := collectPackages(lock.Packages, args.NoDev)
-	breakCycles(packages)
+	breakCycles(packages, conflictTargets)
 
 	// Generate output directory
 	if err := os.MkdirAll(args.Out, 0755); err != nil {
