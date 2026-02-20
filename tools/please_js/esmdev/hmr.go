@@ -117,6 +117,7 @@ func (s *esmServer) watchFiles() {
 				}
 			}
 			if changed {
+				s.clearTailwindCache()
 				mtimes = newMtimes
 				s.broadcast(sseEvent{Type: "change"})
 			}
@@ -172,9 +173,11 @@ func (s *esmServer) watchFiles() {
 		}
 
 		if needFullReload {
+			s.clearTailwindCache()
 			mtimes = newMtimes
 			s.broadcast(sseEvent{Type: "full-reload"})
 		} else if len(hmrFiles) > 0 || len(cssFiles) > 0 {
+			s.clearTailwindCache()
 			mtimes = newMtimes
 			if len(hmrFiles) > 0 {
 				s.broadcast(sseEvent{Type: "hmr-update", Files: hmrFiles})

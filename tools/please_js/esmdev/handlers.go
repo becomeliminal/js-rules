@@ -260,8 +260,21 @@ func (s *esmServer) handleCSSModule(w http.ResponseWriter, r *http.Request, urlP
 		return
 	}
 
+	cssContent := string(data)
+
+	// Process through Tailwind if configured and file has @tailwind directives
+	if s.tailwindBin != "" && strings.Contains(cssContent, "@tailwind") {
+		compiled, err := s.compileTailwind(filePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  tailwind error: %v\n", err)
+			// Fall through with raw CSS on error
+		} else {
+			cssContent = compiled
+		}
+	}
+
 	// JSON-encode the CSS content for safe embedding in JS
-	cssJSON, err := json.Marshal(string(data))
+	cssJSON, err := json.Marshal(cssContent)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

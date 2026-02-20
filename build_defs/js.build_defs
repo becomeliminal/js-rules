@@ -583,14 +583,21 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
             building_description = "Merging pre-bundled dependencies...",
         )
 
+        tailwind_arg = ""
+        if tailwind_config:
+            tools["tailwind"] = [CONFIG.JS.TAILWIND_TOOL]
+            tailwind_arg = f' --tailwind-bin \'\"$TAILWIND\"\' --tailwind-config \'\"$PKG_DIR\"\'/{tailwind_config}'
+        resolve_tailwind = "TAILWIND=$(readlink -f $TOOLS_TAILWIND)" if tailwind_config else "true"
+
         cmd = " && ".join([
             "PLEASE_JS=$(readlink -f $TOOLS_PLEASE_JS)",
+            resolve_tailwind,
             "echo '#!/bin/bash' > $OUT",
             "echo 'set -euo pipefail' >> $OUT",
             "echo 'MODCONF=$(mktemp)' >> $OUT",
             "echo 'trap \"rm -f $MODCONF\" EXIT' >> $OUT",
             """echo 'find "$(pwd)/plz-out/gen" -name "*.moduleconfig" | while read f; do abs="${f%.moduleconfig}"; while IFS="=" read -r name _; do echo "$name=$abs"; done < "$f"; done > $MODCONF' >> $OUT""",
-            f"echo 'exec '\"$PLEASE_JS\"' esm-dev --entry '\"$PKG_DIR\"'/{entry_point} --prebundle-dir $(pwd)/plz-out/gen/'\"$PKG\"'/{prebundle_name} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --root '\"$PKG_DIR\"' --port {port}{tsconfig_arg}{define_arg}{proxy_arg}{env_arg}' >> $OUT",
+            f"echo 'exec '\"$PLEASE_JS\"' esm-dev --entry '\"$PKG_DIR\"'/{entry_point} --prebundle-dir $(pwd)/plz-out/gen/'\"$PKG\"'/{prebundle_name} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --root '\"$PKG_DIR\"' --port {port}{tsconfig_arg}{define_arg}{proxy_arg}{env_arg}{tailwind_arg}' >> $OUT",
             "chmod +x $OUT",
         ])
     else:
@@ -616,7 +623,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
     all_srcs = [entry_point] + srcs + assets
     if tsconfig:
         all_srcs = all_srcs + [tsconfig]
-    if tailwind_config and not esm:
+    if tailwind_config:
         tools["tailwind"] = [CONFIG.JS.TAILWIND_TOOL]
         all_srcs = all_srcs + [tailwind_config]
 

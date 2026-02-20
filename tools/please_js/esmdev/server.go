@@ -20,17 +20,19 @@ import (
 
 // Args holds the arguments for the esm-dev subcommand.
 type Args struct {
-	Entry        string
-	ModuleConfig string
-	Servedir     string
-	Port         int
-	Tsconfig     string
-	Define       []string
-	Proxy        []string
-	EnvFile      string
-	EnvPrefix    string
-	PrebundleDir string // path to pre-bundled deps dir (skips runtime prebundle)
-	Root         string // package root for source file resolution
+	Entry          string
+	ModuleConfig   string
+	Servedir       string
+	Port           int
+	Tsconfig       string
+	Define         []string
+	Proxy          []string
+	EnvFile        string
+	EnvPrefix      string
+	PrebundleDir   string // path to pre-bundled deps dir (skips runtime prebundle)
+	Root           string // package root for source file resolution
+	TailwindBin    string
+	TailwindConfig string
 }
 
 // esmServer serves individual ES modules with on-demand transformation.
@@ -52,6 +54,9 @@ type esmServer struct {
 	hasRefresh     bool     // true if react-refresh found in pre-bundled deps
 	entryURLPath   string   // entry file URL path (e.g., "/main.jsx") — skip HMR for this
 	componentFiles sync.Map // abs path → bool (true if last transform found components)
+	tailwindBin    string
+	tailwindConfig string
+	tailwindCache  sync.Map // abs CSS path → *tailwindEntry
 }
 
 func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -304,19 +309,21 @@ func Run(args Args) error {
 	entryURLPath := "/" + filepath.ToSlash(entryRel)
 
 	server := &esmServer{
-		sourceRoot:    absServedir,
-		packageRoot:   absPackageRoot,
-		depCache:      depCache,
-		moduleMap:     moduleMap,
-		localLibs:     localLibs,
-		importMapJSON: importMapJSON,
-		clients:       make(map[chan sseEvent]struct{}),
-		proxies:       proxies,
-		proxyPrefixes: proxyPrefixes,
-		define:        define,
-		tsconfig:      args.Tsconfig,
-		hasRefresh:    hasRefresh,
-		entryURLPath:  entryURLPath,
+		sourceRoot:     absServedir,
+		packageRoot:    absPackageRoot,
+		depCache:       depCache,
+		moduleMap:      moduleMap,
+		localLibs:      localLibs,
+		importMapJSON:  importMapJSON,
+		clients:        make(map[chan sseEvent]struct{}),
+		proxies:        proxies,
+		proxyPrefixes:  proxyPrefixes,
+		define:         define,
+		tsconfig:       args.Tsconfig,
+		hasRefresh:     hasRefresh,
+		entryURLPath:   entryURLPath,
+		tailwindBin:    args.TailwindBin,
+		tailwindConfig: args.TailwindConfig,
 	}
 
 	// Start file watcher

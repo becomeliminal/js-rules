@@ -67,17 +67,19 @@ var opts = struct {
 	} `command:"dev" alias:"d" description:"Start dev server with live reload using esbuild"`
 
 	EsmDev struct {
-		Entry        string   `short:"e" long:"entry" required:"true" description:"Entry point file"`
-		ModuleConfig string   `short:"m" long:"moduleconfig" description:"Aggregated moduleconfig file"`
-		Servedir     string   `short:"s" long:"servedir" default:"." description:"Directory to serve static files from"`
-		Port         int      `short:"p" long:"port" default:"3000" description:"HTTP port"`
-		Tsconfig     string   `long:"tsconfig" description:"Path to tsconfig.json"`
-		Define       []string `long:"define" description:"Define substitutions (key=value)"`
-		Proxy        []string `long:"proxy" description:"Proxy rules (prefix=target)"`
-		EnvFile      string   `long:"env-file" description:"Base .env file path for auto-discovery"`
-		EnvPrefix    string   `long:"env-prefix" default:"PLZ_" description:"Prefix filter for .env variables"`
-		PrebundleDir string   `long:"prebundle-dir" description:"Path to pre-bundled deps directory (skips runtime prebundle)"`
-		Root         string   `long:"root" description:"Package root directory for source file resolution"`
+		Entry          string   `short:"e" long:"entry" required:"true" description:"Entry point file"`
+		ModuleConfig   string   `short:"m" long:"moduleconfig" description:"Aggregated moduleconfig file"`
+		Servedir       string   `short:"s" long:"servedir" default:"." description:"Directory to serve static files from"`
+		Port           int      `short:"p" long:"port" default:"3000" description:"HTTP port"`
+		Tsconfig       string   `long:"tsconfig" description:"Path to tsconfig.json"`
+		Define         []string `long:"define" description:"Define substitutions (key=value)"`
+		Proxy          []string `long:"proxy" description:"Proxy rules (prefix=target)"`
+		EnvFile        string   `long:"env-file" description:"Base .env file path for auto-discovery"`
+		EnvPrefix      string   `long:"env-prefix" default:"PLZ_" description:"Prefix filter for .env variables"`
+		PrebundleDir   string   `long:"prebundle-dir" description:"Path to pre-bundled deps directory (skips runtime prebundle)"`
+		Root           string   `long:"root" description:"Package root directory for source file resolution"`
+		TailwindBin    string   `long:"tailwind-bin" description:"Path to Tailwind CSS binary"`
+		TailwindConfig string   `long:"tailwind-config" description:"Path to tailwind.config.js"`
 	} `command:"esm-dev" description:"Start ESM dev server with native import maps"`
 
 	Prebundle struct {
@@ -182,17 +184,19 @@ var subCommands = map[string]func() int{
 	},
 	"esm-dev": func() int {
 		if err := esmdev.Run(esmdev.Args{
-			Entry:        opts.EsmDev.Entry,
-			ModuleConfig: opts.EsmDev.ModuleConfig,
-			Servedir:     opts.EsmDev.Servedir,
-			Port:         opts.EsmDev.Port,
-			Tsconfig:     opts.EsmDev.Tsconfig,
-			Define:       opts.EsmDev.Define,
-			Proxy:        opts.EsmDev.Proxy,
-			EnvFile:      opts.EsmDev.EnvFile,
-			EnvPrefix:    opts.EsmDev.EnvPrefix,
-			PrebundleDir: opts.EsmDev.PrebundleDir,
-			Root:         opts.EsmDev.Root,
+			Entry:          opts.EsmDev.Entry,
+			ModuleConfig:   opts.EsmDev.ModuleConfig,
+			Servedir:       opts.EsmDev.Servedir,
+			Port:           opts.EsmDev.Port,
+			Tsconfig:       opts.EsmDev.Tsconfig,
+			Define:         opts.EsmDev.Define,
+			Proxy:          opts.EsmDev.Proxy,
+			EnvFile:        opts.EsmDev.EnvFile,
+			EnvPrefix:      opts.EsmDev.EnvPrefix,
+			PrebundleDir:   opts.EsmDev.PrebundleDir,
+			Root:           opts.EsmDev.Root,
+			TailwindBin:    opts.EsmDev.TailwindBin,
+			TailwindConfig: opts.EsmDev.TailwindConfig,
 		}); err != nil {
 			log.Fatal(err)
 		}
