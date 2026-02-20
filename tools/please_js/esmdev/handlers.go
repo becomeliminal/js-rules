@@ -393,6 +393,24 @@ func (s *esmServer) handleDepOnDemand(w http.ResponseWriter, r *http.Request, ur
 		return
 	}
 
+	// CSS files from npm packages — serve as style-injecting JS module.
+	if filepath.Ext(ep) == ".css" {
+		data, err := os.ReadFile(ep)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		cssJSON, _ := json.Marshal(string(data))
+		js := []byte(fmt.Sprintf(cssModuleTemplate, urlPath, string(cssJSON)))
+		s.onDemandDeps.Store(urlPath, js)
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write(js)
+		fmt.Printf("  \033[2m[dep-css] %s %s → 200 (%dms)\033[0m\n",
+			r.Method, urlPath, time.Since(start).Milliseconds())
+		return
+	}
+
 	// Bundle the single entry point with esbuild
 	singlePkgMap := map[string]string{pkgName: pkgDir}
 	result := api.Build(api.BuildOptions{
