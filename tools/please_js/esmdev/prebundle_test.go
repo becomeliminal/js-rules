@@ -358,3 +358,191 @@ func TestPrebundlePackage_NoNestedNodeModules(t *testing.T) {
 		t.Error("expected '42' in bundle output")
 	}
 }
+
+// TestFillMissingDeps_ESMDefaultExport is an end-to-end test for the real
+// lodash-es bug. It simulates the exact production scenario:
+//
+//  1. Package "esm-lib" (like lodash-es) — ESM, no exports field, files with default exports.
+//  2. Package "consumer" (like mermaid) — imports "esm-lib/memoize.js" which gets externalized.
+//  3. Per-package prebundle: consumer is bundled, esm-lib is bundled (main entry only).
+//  4. MergeImportmaps runs fillMissingDeps, which finds "esm-lib/memoize.js" in consumer's
+//     bundled output and calls bundleSubpathViaStdin to create the missing subpath file.
+//
+// The bug: bundleSubpathViaStdin used `export * from "esm-lib/memoize.js"` which per the ES
+// spec does NOT re-export default exports, producing an empty file.
+//
+// The fix: resolve to the actual file and use it as a direct entry point.
+func TestFillMissingDeps_ESMDefaultExport(t *testing.T) {
+	dir := t.TempDir()
+
+	// esm-lib: like lodash-es — ESM, no "exports" field, individual files with default exports
+	esmLibDir := filepath.Join(dir, "esm-lib")
+	os.MkdirAll(esmLibDir, 0755)
+	os.WriteFile(filepath.Join(esmLibDir, "package.json"), []byte(`{
+  "name": "esm-lib",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(esmLibDir, "index.js"), []byte(
+		"export { default as memoize } from './memoize.js';\n",
+	), 0644)
+	os.WriteFile(filepath.Join(esmLibDir, "memoize.js"), []byte(
+		"function memoize(fn) { return fn; }\nexport default memoize;\n",
+	), 0644)
+
+	// consumer: like mermaid — imports esm-lib/memoize.js (externalized in its bundle)
+	consumerDir := filepath.Join(dir, "consumer")
+	os.MkdirAll(consumerDir, 0755)
+	os.WriteFile(filepath.Join(consumerDir, "package.json"), []byte(`{
+  "name": "consumer",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(consumerDir, "index.js"), []byte(
+		"import memoize from 'esm-lib/memoize.js';\nexport default memoize;\n",
+	), 0644)
+
+	// Write moduleconfig
+	moduleConfigPath := filepath.Join(dir, "moduleconfig")
+	os.WriteFile(moduleConfigPath, []byte(
+		"esm-lib="+esmLibDir+"\n"+
+			"consumer="+consumerDir+"\n",
+	), 0644)
+
+	// Simulate prebundle output: esm-lib main entry exists, consumer has
+	// an externalized import of "esm-lib/memoize.js".
+	depsDir := filepath.Join(dir, "deps")
+	os.MkdirAll(filepath.Join(depsDir, "consumer"), 0755)
+	os.WriteFile(filepath.Join(depsDir, "consumer.js"), []byte(
+		"import memoize from \"esm-lib/memoize.js\";\nvar consumer_default = memoize;\nexport {\n  consumer_default as default\n};\n",
+	), 0644)
+	os.WriteFile(filepath.Join(depsDir, "esm-lib.js"), []byte(
+		"function memoize(fn) { return fn; }\nexport { memoize };\n",
+	), 0644)
+
+	// Seed the import map with what per-package prebundling would produce
+	importMap := map[string]string{
+		"consumer":  "/@deps/consumer.js",
+		"consumer/": "/@deps/consumer/",
+		"esm-lib":   "/@deps/esm-lib.js",
+		"esm-lib/":  "/@deps/esm-lib/",
+	}
+
+	err := fillMissingDeps(importMap, moduleConfigPath, depsDir)
+	if err != nil {
+		t.Fatalf("fillMissingDeps failed: %v", err)
+	}
+
+	// The import map should now have esm-lib/memoize.js
+	urlPath, ok := importMap["esm-lib/memoize.js"]
+	if !ok {
+		t.Fatalf("import map missing esm-lib/memoize.js; map: %v", importMap)
+	}
+	t.Logf("esm-lib/memoize.js → %s", urlPath)
+
+	// Read the generated file from depsDir
+	rel := strings.TrimPrefix(urlPath, "/@deps/")
+	filePath := filepath.Join(depsDir, rel)
+	code, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to read generated file %s: %v", filePath, err)
+	}
+
+	text := string(code)
+	t.Logf("generated esm-lib/memoize.js.js:\n%s", text)
+
+	// MUST have a default export — this is the actual browser error
+	if !strings.Contains(text, "default") {
+		t.Errorf("esm-lib/memoize.js has NO default export — would cause:\n"+
+			"  'The requested module does not provide an export named default'\n"+
+			"Content:\n%s", text)
+	}
+	if !hasExportStatement(code) {
+		t.Errorf("esm-lib/memoize.js has no export statements.\nContent:\n%s", text)
+	}
+}
+
+// TestBundleSubpathViaStdin_DefaultExport verifies that bundleSubpathViaStdin
+// preserves default exports from ESM subpath files.
+func TestBundleSubpathViaStdin_DefaultExport(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create an ESM package with no "exports" field and individual files
+	// that use default exports — exactly like lodash-es.
+	pkgDir := filepath.Join(dir, "esm-pkg")
+	os.MkdirAll(pkgDir, 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "esm-pkg",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte(
+		"export { default as memoize } from './memoize.js';\n",
+	), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "memoize.js"), []byte(
+		"function memoize(fn) { return fn; }\nexport default memoize;\n",
+	), 0644)
+
+	moduleMap := map[string]string{"esm-pkg": pkgDir}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	code, err := bundleSubpathViaStdin("esm-pkg/memoize.js", "esm-pkg", pkgDir, moduleMap, define)
+	if err != nil {
+		t.Fatalf("bundleSubpathViaStdin failed: %v", err)
+	}
+
+	text := string(code)
+	t.Logf("output:\n%s", text)
+
+	// MUST have a default export — `import memoize from "esm-pkg/memoize.js"` needs it.
+	if !strings.Contains(text, "default") {
+		t.Errorf("expected default export in output, got:\n%s", text)
+	}
+	if !hasExportStatement([]byte(text)) {
+		t.Errorf("expected export statement in output, got:\n%s", text)
+	}
+}
+
+// TestBundleSubpathViaStdin_NamedExportsOnly verifies that bundleSubpathViaStdin
+// also works for ESM subpath files that only have named exports (no default).
+func TestBundleSubpathViaStdin_NamedExportsOnly(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "esm-pkg")
+	os.MkdirAll(pkgDir, 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "esm-pkg",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte(
+		"export { foo, bar } from './utils.js';\n",
+	), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "utils.js"), []byte(
+		"export function foo() { return 1; }\nexport function bar() { return 2; }\n",
+	), 0644)
+
+	moduleMap := map[string]string{"esm-pkg": pkgDir}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	code, err := bundleSubpathViaStdin("esm-pkg/utils.js", "esm-pkg", pkgDir, moduleMap, define)
+	if err != nil {
+		t.Fatalf("bundleSubpathViaStdin failed: %v", err)
+	}
+
+	text := string(code)
+	t.Logf("output:\n%s", text)
+
+	if !strings.Contains(text, "foo") {
+		t.Errorf("expected 'foo' in output, got:\n%s", text)
+	}
+	if !strings.Contains(text, "bar") {
+		t.Errorf("expected 'bar' in output, got:\n%s", text)
+	}
+	if !hasExportStatement([]byte(text)) {
+		t.Errorf("expected export statement in output, got:\n%s", text)
+	}
+}

@@ -42,3 +42,8 @@ npm_module(
     name = "events",
     version = "3.3.0",
 )
+
+npm_module(
+    name = "lodash-es",
+    version = "4.17.21",
+)

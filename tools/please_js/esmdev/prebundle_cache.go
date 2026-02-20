@@ -372,13 +372,53 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 	return nil
 }
 
-// bundleSubpathViaStdin bundles a bare specifier using esbuild's stdin API.
-// Uses the full moduleMap for cross-package resolution within the bundle.
+// bundleSubpathViaStdin bundles a bare specifier for on-demand serving.
+// Prefers resolving to a direct file and using it as an entry point, which
+// preserves all exports including default. Falls back to stdin with
+// `export * from "spec"` when resolution fails (but note: export * does NOT
+// re-export default exports per the ES spec).
 func bundleSubpathViaStdin(spec, pkgName, pkgDir string, moduleMap map[string]string, define map[string]string) ([]byte, error) {
-	contents := fmt.Sprintf("export * from %q;\n", spec)
-	// Use single-package map for externalization: only the current package
-	// is resolved, all others are externalized.
 	singlePkgMap := map[string]string{pkgName: pkgDir}
+	absPkgDir, _ := filepath.Abs(pkgDir)
+
+	// Try to resolve the subpath to an actual file so we can use it as a
+	// direct entry point. This preserves all exports including default,
+	// unlike `export * from "spec"` which strips default exports.
+	subpath := "./" + strings.TrimPrefix(spec, pkgName+"/")
+	resolved := common.ResolvePackageEntry(absPkgDir, subpath, "browser")
+	if resolved == "" {
+		// No exports field match — try direct file path.
+		candidate := filepath.Join(absPkgDir, strings.TrimPrefix(spec, pkgName+"/"))
+		if _, err := os.Stat(candidate); err == nil {
+			resolved = candidate
+		}
+	}
+
+	if resolved != "" {
+		result := api.Build(api.BuildOptions{
+			EntryPoints: []string{resolved},
+			Bundle:      true,
+			Write:       false,
+			Format:      api.FormatESModule,
+			Platform:    api.PlatformBrowser,
+			Target:      api.ESNext,
+			LogLevel:    api.LogLevelSilent,
+			Define:      define,
+			Plugins: []api.Plugin{
+				common.ModuleResolvePlugin(singlePkgMap, "browser"),
+				common.NodeBuiltinEmptyPlugin(moduleMap),
+				common.UnknownExternalPlugin(singlePkgMap),
+			},
+			Loader: depLoaders,
+		})
+		if len(result.Errors) == 0 && len(result.OutputFiles) > 0 {
+			return fixupOnDemandDep(result.OutputFiles[0].Contents), nil
+		}
+		// Fall through to stdin approach if direct entry fails.
+	}
+
+	// Fallback: stdin with export * (doesn't re-export default exports).
+	contents := fmt.Sprintf("export * from %q;\n", spec)
 	result := api.Build(api.BuildOptions{
 		Stdin: &api.StdinOptions{
 			Contents:   contents,
