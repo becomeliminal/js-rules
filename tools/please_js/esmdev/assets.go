@@ -33,3 +33,19 @@ var assetExts = func() map[string]bool {
 func isAssetExt(ext string) bool {
 	return assetExts[ext]
 }
+
+// textExts is the set of file extensions treated as text imports.
+var textExts = func() map[string]bool {
+	m := make(map[string]bool)
+	for ext, loader := range common.Loaders {
+		if loader == api.LoaderText {
+			m[ext] = true
+		}
+	}
+	return m
+}()
+
+// isTextExt reports whether the extension is a known text type.
+func isTextExt(ext string) bool {
+	return textExts[ext]
+}

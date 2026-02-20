@@ -123,6 +123,15 @@ func (s *esmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 7a. Text files — serve as JS module exporting text content when imported.
+	if isTextExt(ext) {
+		fetchDest := r.Header.Get("Sec-Fetch-Dest")
+		if fetchDest == "script" || r.URL.Query().Get("module") != "" {
+			s.handleTextModule(w, r, urlPath, start)
+			return
+		}
+	}
+
 	// 7b. Asset files — serve as JS module when imported as ES module.
 	if isAssetExt(ext) {
 		fetchDest := r.Header.Get("Sec-Fetch-Dest")

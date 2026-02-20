@@ -288,6 +288,25 @@ func (s *esmServer) handleCSSModule(w http.ResponseWriter, r *http.Request, urlP
 		r.Method, urlPath, time.Since(start).Milliseconds())
 }
 
+func (s *esmServer) handleTextModule(w http.ResponseWriter, r *http.Request, urlPath string, start time.Time) {
+	filePath := filepath.Join(s.packageRoot, filepath.FromSlash(urlPath))
+	if _, err := os.Stat(filePath); err != nil && s.packageRoot != s.sourceRoot {
+		filePath = filepath.Join(s.sourceRoot, filepath.FromSlash(urlPath))
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	textJSON, _ := json.Marshal(string(data))
+	js := fmt.Sprintf("export default %s;\n", string(textJSON))
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write([]byte(js))
+	fmt.Printf("  \033[2m[text-module] %s %s → 200 (%dms)\033[0m\n",
+		r.Method, urlPath, time.Since(start).Milliseconds())
+}
+
 func (s *esmServer) handleAssetModule(w http.ResponseWriter, r *http.Request, urlPath string, start time.Time) {
 	js := fmt.Sprintf(assetModuleTemplate, urlPath)
 	w.Header().Set("Content-Type", "application/javascript")
