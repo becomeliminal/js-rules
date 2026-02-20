@@ -537,6 +537,11 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
         # Each dep gets its own prebundle rule cached independently by Please.
         # Changing one dep only rebuilds that package, not all deps.
         prebundle_rules = []
+        prebundle_tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]}
+        prebundle_cmd = '"$PLEASE_JS" prebundle-pkg --moduleconfig moduleconfig --out "$OUT"'
+        if CONFIG.JS.NODE_TOOL:
+            prebundle_tools["node"] = [CONFIG.JS.NODE_TOOL]
+            prebundle_cmd += ' --node "$TOOLS_NODE"'
         for dep in deps + dev_deps:
             dep_label = dep.split(":")[-1] if ":" in dep else dep.split("/")[-1]
             pname = f"_{name}_esm_{dep_label}"
@@ -548,9 +553,9 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
                     "PLEASE_JS=$(readlink -f $TOOLS_PLEASE_JS)",
                     _aggregate_moduleconfig_cmd(),
                     'mkdir -p "$OUT"',
-                    '"$PLEASE_JS" prebundle-pkg --moduleconfig moduleconfig --out "$OUT"',
+                    prebundle_cmd,
                 ]),
-                tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
+                tools = prebundle_tools,
                 needs_transitive_deps = True,
                 building_description = f"Pre-bundling {dep_label}...",
             )

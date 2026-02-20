@@ -209,7 +209,7 @@ func TestAddCJSNamedExportsToCache(t *testing.T) {
 					"});\n",
 			),
 		}
-		addCJSNamedExportsToCache(depCache)
+		addCJSNamedExportsToCache(depCache, nil)
 		result := string(depCache["/dep/entry.js"])
 
 		if !strings.Contains(result, "__cjs_exports") {
@@ -218,9 +218,12 @@ func TestAddCJSNamedExportsToCache(t *testing.T) {
 		if !strings.Contains(result, "export default __cjs_exports") {
 			t.Errorf("expected default export of __cjs_exports, got:\n%s", result)
 		}
-		// Named exports should be sorted
-		if !strings.Contains(result, "export const { bar, baz } = __cjs_exports") {
-			t.Errorf("expected named re-exports for bar and baz, got:\n%s", result)
+		// Named exports should be individual statements (not destructuring)
+		if !strings.Contains(result, "export const bar = __cjs_exports.bar;") {
+			t.Errorf("expected named re-export for bar, got:\n%s", result)
+		}
+		if !strings.Contains(result, "export const baz = __cjs_exports.baz;") {
+			t.Errorf("expected named re-export for baz, got:\n%s", result)
 		}
 	})
 
@@ -241,14 +244,17 @@ func TestAddCJSNamedExportsToCache(t *testing.T) {
 					"});\n",
 			),
 		}
-		addCJSNamedExportsToCache(depCache)
+		addCJSNamedExportsToCache(depCache, nil)
 		result := string(depCache["/dep/react.js"])
 
 		if !strings.Contains(result, "export default __cjs_exports") {
 			t.Errorf("expected default export, got:\n%s", result)
 		}
-		if !strings.Contains(result, "useEffect") || !strings.Contains(result, "useState") {
-			t.Errorf("expected named exports from delegated module, got:\n%s", result)
+		if !strings.Contains(result, "export const useEffect = __cjs_exports.useEffect;") {
+			t.Errorf("expected named export for useEffect, got:\n%s", result)
+		}
+		if !strings.Contains(result, "export const useState = __cjs_exports.useState;") {
+			t.Errorf("expected named export for useState, got:\n%s", result)
 		}
 	})
 
@@ -257,7 +263,7 @@ func TestAddCJSNamedExportsToCache(t *testing.T) {
 		depCache := map[string][]byte{
 			"/dep/entry.js": []byte(original),
 		}
-		addCJSNamedExportsToCache(depCache)
+		addCJSNamedExportsToCache(depCache, nil)
 		result := string(depCache["/dep/entry.js"])
 
 		if result != original {
@@ -278,7 +284,7 @@ func TestAddCJSNamedExportsToCache(t *testing.T) {
 					"});\n",
 			),
 		}
-		addCJSNamedExportsToCache(depCache)
+		addCJSNamedExportsToCache(depCache, nil)
 		result := string(depCache["/dep/entry.js"])
 
 		if strings.Contains(result, "__esModule") {
@@ -287,7 +293,7 @@ func TestAddCJSNamedExportsToCache(t *testing.T) {
 		if strings.Contains(result, "__internal") {
 			t.Errorf("expected __internal to be skipped, got:\n%s", result)
 		}
-		if !strings.Contains(result, "publicApi") {
+		if !strings.Contains(result, "export const publicApi = __cjs_exports.publicApi;") {
 			t.Errorf("expected publicApi to be included, got:\n%s", result)
 		}
 	})
@@ -304,7 +310,7 @@ func TestAddCJSNamedExportsToCache(t *testing.T) {
 					"});\n",
 			),
 		}
-		addCJSNamedExportsToCache(depCache)
+		addCJSNamedExportsToCache(depCache, nil)
 		result := string(depCache["/dep/entry.js"])
 
 		if result != original {
@@ -325,19 +331,13 @@ func TestAddCJSNamedExportsToCache(t *testing.T) {
 					"});\n",
 			),
 		}
-		addCJSNamedExportsToCache(depCache)
+		addCJSNamedExportsToCache(depCache, nil)
 		result := string(depCache["/dep/entry.js"])
 
-		// "bar" should only appear once in the destructuring
-		exportLine := ""
-		for _, line := range strings.Split(result, "\n") {
-			if strings.Contains(line, "export const {") {
-				exportLine = line
-				break
-			}
-		}
-		if strings.Count(exportLine, "bar") != 1 {
-			t.Errorf("expected bar to appear exactly once in export destructuring, got:\n%s", exportLine)
+		// "bar" export should only appear once
+		count := strings.Count(result, "export const bar = __cjs_exports.bar;")
+		if count != 1 {
+			t.Errorf("expected bar export to appear exactly once, got %d in:\n%s", count, result)
 		}
 	})
 }
@@ -360,8 +360,11 @@ func TestFixupOnDemandDep(t *testing.T) {
 		if !strings.Contains(result, "export default __cjs_exports") {
 			t.Errorf("expected default export of __cjs_exports, got:\n%s", result)
 		}
-		if !strings.Contains(result, "export const { bar, baz } = __cjs_exports") {
-			t.Errorf("expected named re-exports, got:\n%s", result)
+		if !strings.Contains(result, "export const bar = __cjs_exports.bar;") {
+			t.Errorf("expected named re-export for bar, got:\n%s", result)
+		}
+		if !strings.Contains(result, "export const baz = __cjs_exports.baz;") {
+			t.Errorf("expected named re-export for baz, got:\n%s", result)
 		}
 	})
 
@@ -401,8 +404,8 @@ export default foo;`
 		result := string(fixupOnDemandDep([]byte(input)))
 
 		// Named exports from CJS wrapper
-		if !strings.Contains(result, "export const { bar } = __cjs_exports") {
-			t.Errorf("expected named re-exports, got:\n%s", result)
+		if !strings.Contains(result, "export const bar = __cjs_exports.bar;") {
+			t.Errorf("expected named re-export for bar, got:\n%s", result)
 		}
 		// Dynamic require replaced with static import
 		if !strings.Contains(result, `import __ext_0 from "react"`) {

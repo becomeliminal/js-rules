@@ -76,11 +76,30 @@ type cjsModuleInfo struct {
 	delegatesTo string   // module.exports = require_xxx() delegation
 }
 
+// jsReservedWords is the set of JavaScript reserved words that cannot appear
+// as bare identifiers in destructuring patterns or export declarations.
+var jsReservedWords = map[string]bool{
+	"default": true, "break": true, "case": true, "catch": true, "class": true,
+	"const": true, "continue": true, "debugger": true, "delete": true, "do": true,
+	"else": true, "enum": true, "export": true, "extends": true, "finally": true,
+	"for": true, "function": true, "if": true, "import": true, "in": true,
+	"instanceof": true, "let": true, "new": true, "return": true, "super": true,
+	"switch": true, "this": true, "throw": true, "try": true, "typeof": true,
+	"var": true, "void": true, "while": true, "with": true, "yield": true,
+	"await": true, "implements": true, "interface": true, "package": true,
+	"private": true, "protected": true, "public": true, "static": true,
+}
+
 // addCJSNamedExportsToCache processes all files in the dep cache together.
 // It scans chunks for __commonJS wrappers, traces delegation chains
 // (e.g. require_react → require_react_development), and adds named
 // re-exports to entry files that only have `export default require_xxx()`.
-func addCJSNamedExportsToCache(depCache map[string][]byte) {
+//
+// When knownExports is non-nil, it maps URL paths to export name lists
+// detected by running Node.js require(). These take priority over regex
+// detection; regex is used as fallback when knownExports is nil or the
+// entry isn't in the map.
+func addCJSNamedExportsToCache(depCache map[string][]byte, knownExports map[string][]string) {
 	// Pass 1: scan all files for __commonJS declarations
 	cjsInfo := make(map[string]*cjsModuleInfo)
 
@@ -150,7 +169,18 @@ func addCJSNamedExportsToCache(depCache map[string][]byte) {
 		// Try pattern A: `export default require_xxx()`
 		if match := defaultRequireRe.FindStringSubmatch(codeStr); match != nil {
 			funcName := match[1]
-			names := resolveCJSExports(cjsInfo, funcName)
+
+			// Use Node-detected exports when available, fall back to regex
+			var names []string
+			if knownExports != nil {
+				if exports, ok := knownExports[urlPath]; ok && len(exports) > 0 {
+					names = exports
+				}
+			}
+			if len(names) == 0 {
+				names = resolveCJSExports(cjsInfo, funcName)
+			}
+			names = filterExportNames(names)
 			if len(names) == 0 {
 				continue
 			}
@@ -174,9 +204,7 @@ func addCJSNamedExportsToCache(depCache map[string][]byte) {
 			sb.WriteString("var __cjs_exports = ")
 			sb.WriteString(expr)
 			sb.WriteString(";\nexport default __cjs_exports;\n")
-			sb.WriteString("export const { ")
-			sb.WriteString(strings.Join(names, ", "))
-			sb.WriteString(" } = __cjs_exports;\n")
+			writeNamedExports(&sb, names)
 			sb.WriteString(trailing)
 
 			depCache[urlPath] = []byte(sb.String())
@@ -187,7 +215,18 @@ func addCJSNamedExportsToCache(depCache map[string][]byte) {
 		// Produced by esbuild when `export * from "cjs-pkg"` is bundled via stdin.
 		if match := reExportRe.FindStringSubmatch(codeStr); match != nil {
 			funcName := match[1]
-			names := resolveCJSExports(cjsInfo, funcName)
+
+			// Use Node-detected exports when available, fall back to regex
+			var names []string
+			if knownExports != nil {
+				if exports, ok := knownExports[urlPath]; ok && len(exports) > 0 {
+					names = exports
+				}
+			}
+			if len(names) == 0 {
+				names = resolveCJSExports(cjsInfo, funcName)
+			}
+			names = filterExportNames(names)
 			if len(names) == 0 {
 				continue
 			}
@@ -200,13 +239,33 @@ func addCJSNamedExportsToCache(depCache map[string][]byte) {
 			sb.WriteString("var __cjs_exports = ")
 			sb.WriteString(funcName)
 			sb.WriteString("();\nexport default __cjs_exports;\n")
-			sb.WriteString("export const { ")
-			sb.WriteString(strings.Join(names, ", "))
-			sb.WriteString(" } = __cjs_exports;\n")
+			writeNamedExports(&sb, names)
 			sb.WriteString(codeStr[loc[1]:])
 
 			depCache[urlPath] = []byte(sb.String())
 		}
+	}
+}
+
+// filterExportNames removes reserved words and __-prefixed names from export lists.
+func filterExportNames(names []string) []string {
+	var filtered []string
+	for _, name := range names {
+		if jsReservedWords[name] || strings.HasPrefix(name, "__") {
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	return filtered
+}
+
+// writeNamedExports writes individual export statements for each name.
+// Uses property access (export const foo = __cjs_exports.foo) instead of
+// destructuring (export const { foo } = __cjs_exports) to avoid issues
+// with reserved words as property names.
+func writeNamedExports(sb *strings.Builder, names []string) {
+	for _, name := range names {
+		fmt.Fprintf(sb, "export const %s = __cjs_exports.%s;\n", name, name)
 	}
 }
 
@@ -215,7 +274,7 @@ func addCJSNamedExportsToCache(depCache map[string][]byte) {
 // single-entry depCache — the same logic used for prebundled packages.
 func fixupOnDemandDep(code []byte) []byte {
 	depCache := map[string][]byte{"entry": code}
-	addCJSNamedExportsToCache(depCache)
+	addCJSNamedExportsToCache(depCache, nil)
 	fixDynamicRequires(depCache)
 	return depCache["entry"]
 }

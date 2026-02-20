@@ -88,6 +88,7 @@ var opts = struct {
 	PrebundlePkg struct {
 		ModuleConfig string `short:"m" long:"moduleconfig" required:"true" description:"Moduleconfig for a single package"`
 		Out          string `short:"o" long:"out" required:"true" description:"Output directory for pre-bundled package"`
+		Node         string `long:"node" description:"Path to Node.js binary for CJS export detection"`
 	} `command:"prebundle-pkg" description:"Pre-bundle a single npm package for ESM dev server"`
 
 	MergeImportmaps struct {
@@ -204,7 +205,7 @@ var subCommands = map[string]func() int{
 		return 0
 	},
 	"prebundle-pkg": func() int {
-		if err := esmdev.PrebundlePkg(opts.PrebundlePkg.ModuleConfig, opts.PrebundlePkg.Out); err != nil {
+		if err := esmdev.PrebundlePkg(opts.PrebundlePkg.ModuleConfig, opts.PrebundlePkg.Out, opts.PrebundlePkg.Node); err != nil {
 			log.Fatal(err)
 		}
 		return 0

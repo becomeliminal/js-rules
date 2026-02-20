@@ -105,7 +105,7 @@ func entryPointsForPackage(pkgName, pkgDir string, usedImports map[string]bool) 
 
 // prebundlePackage bundles a single npm package with all other packages externalized.
 // Uses splitting within the package for shared internal state between subpath exports.
-func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdir string, define map[string]string, fullModuleMap ...map[string]string) packageBuildResult {
+func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdir string, define map[string]string, nodePath string, fullModuleMap ...map[string]string) packageBuildResult {
 	entryPoints, importMap := entryPointsForPackage(pkgName, pkgDir, usedImports)
 	if len(entryPoints) == 0 {
 		return packageBuildResult{pkgName: pkgName}
@@ -182,7 +182,26 @@ func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdi
 		depCache["/@deps/"+filepath.ToSlash(rel)] = f.Contents
 	}
 
-	addCJSNamedExportsToCache(depCache)
+	// Detect CJS exports via Node.js when available
+	var knownExports map[string][]string
+	if nodePath != "" {
+		entryMap := make(map[string]string)
+		for _, ep := range entryPoints {
+			entryMap[ep.OutputPath] = ep.InputPath
+		}
+		nodeExports, _ := detectCJSExports(nodePath, entryMap)
+		if nodeExports != nil {
+			knownExports = make(map[string][]string)
+			for spec, exports := range nodeExports {
+				if exports != nil {
+					urlPath := importMap[spec]
+					knownExports[urlPath] = exports
+				}
+			}
+		}
+	}
+
+	addCJSNamedExportsToCache(depCache, knownExports)
 	fixDynamicRequires(depCache)
 
 	return packageBuildResult{
@@ -195,7 +214,7 @@ func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdi
 // prebundleAllPackages orchestrates parallel per-package prebundling.
 // Each package is bundled independently with all other packages externalized.
 // Cross-package references are resolved by the browser import map at runtime.
-func prebundleAllPackages(ctx context.Context, moduleMap map[string]string, usedImports map[string]bool, define map[string]string) (map[string][]byte, map[string]string, []string) {
+func prebundleAllPackages(ctx context.Context, moduleMap map[string]string, usedImports map[string]bool, define map[string]string, nodePath string) (map[string][]byte, map[string]string, []string) {
 	outdir, _ := filepath.Abs(".esm-prebundle-tmp")
 
 	g, _ := errgroup.WithContext(ctx)
@@ -212,7 +231,7 @@ func prebundleAllPackages(ctx context.Context, moduleMap map[string]string, used
 		}
 		name, dir := pkgName, pkgDir
 		g.Go(func() error {
-			result := prebundlePackage(name, dir, usedImports, outdir, define, moduleMap)
+			result := prebundlePackage(name, dir, usedImports, outdir, define, nodePath, moduleMap)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -269,7 +288,7 @@ func addPrefixImportMapEntries(importMap map[string]string) {
 // Each package is built independently with cross-package imports externalized.
 // The browser import map resolves cross-package references at runtime.
 func prebundleDeps(moduleMap map[string]string, usedImports map[string]bool, define map[string]string) (map[string][]byte, []byte, error) {
-	depCache, importMap, failedPkgs := prebundleAllPackages(context.Background(), moduleMap, usedImports, define)
+	depCache, importMap, failedPkgs := prebundleAllPackages(context.Background(), moduleMap, usedImports, define, "")
 
 	if len(failedPkgs) > 0 {
 		sort.Strings(failedPkgs)

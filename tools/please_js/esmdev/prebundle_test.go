@@ -53,7 +53,7 @@ func TestPrebundlePackage_NestedNodeModules(t *testing.T) {
 	), 0644)
 
 	// --- Run prebundlePackage ---
-	result := prebundlePackage("parent-pkg", parentDir, nil, outdir, nil)
+	result := prebundlePackage("parent-pkg", parentDir, nil, outdir, nil, "")
 
 	if result.err != nil {
 		t.Fatalf("prebundlePackage failed: %v", result.err)
@@ -117,7 +117,7 @@ func TestPrebundlePackage_NestedScopedPackage(t *testing.T) {
 		"export const helper = \"scoped-v2\";\n",
 	), 0644)
 
-	result := prebundlePackage("parent-pkg", parentDir, nil, outdir, nil)
+	result := prebundlePackage("parent-pkg", parentDir, nil, outdir, nil, "")
 
 	if result.err != nil {
 		t.Fatalf("prebundlePackage failed: %v", result.err)
@@ -198,13 +198,8 @@ if (process.env.NODE_ENV === 'production') {
 	text := string(code)
 
 	// Named export should be present (CJS fixup worked)
-	if !strings.Contains(text, "myNamedExport") {
+	if !strings.Contains(text, "export const myNamedExport = __cjs_exports.myNamedExport;") {
 		t.Errorf("expected named export 'myNamedExport' in output, got:\n%s", text)
-	}
-
-	// Should have export const { ... } destructuring (CJS fixup adds this)
-	if !strings.Contains(text, "export const {") {
-		t.Errorf("expected 'export const {' destructuring in output, got:\n%s", text)
 	}
 
 	// Should NOT have __require("specifier") calls (fixDynamicRequires should replace them).
@@ -249,7 +244,7 @@ func TestPrebundlePackage_NodeBuiltinPolyfill(t *testing.T) {
 		"events":      filepath.Join(dir, "fake-events"), // path doesn't matter, only key existence
 	}
 
-	result := prebundlePackage("my-provider", pkgDir, nil, outdir, nil, fullModuleMap)
+	result := prebundlePackage("my-provider", pkgDir, nil, outdir, nil, "", fullModuleMap)
 
 	if result.err != nil {
 		t.Fatalf("prebundlePackage failed: %v", result.err)
@@ -305,38 +300,24 @@ export default require_events();
 	depCache := map[string][]byte{
 		"deps/events.js": []byte(bundled),
 	}
-	addCJSNamedExportsToCache(depCache)
+	addCJSNamedExportsToCache(depCache, nil)
 
 	result := string(depCache["deps/events.js"])
 
-	// Should have export const { ... } destructuring
-	if !strings.Contains(result, "export const {") {
-		t.Fatalf("expected 'export const {' in output, got:\n%s", result)
+	// Should have individual export statements
+	if !strings.Contains(result, "export const EventEmitter = __cjs_exports.EventEmitter;") {
+		t.Errorf("expected named export for EventEmitter, got:\n%s", result)
 	}
-
-	// EventEmitter should be a named export
-	if !strings.Contains(result, "EventEmitter") || !strings.Contains(result, "export const {") {
-		t.Errorf("expected EventEmitter in export destructuring, got:\n%s", result)
-	}
-
-	// once should also be a named export
-	if !strings.Contains(result, "once") {
-		t.Errorf("expected 'once' in export destructuring, got:\n%s", result)
+	if !strings.Contains(result, "export const once = __cjs_exports.once;") {
+		t.Errorf("expected named export for once, got:\n%s", result)
 	}
 
 	// prototype and _private should NOT be named exports
-	exportLine := ""
-	for _, line := range strings.Split(result, "\n") {
-		if strings.Contains(line, "export const {") {
-			exportLine = line
-			break
-		}
+	if strings.Contains(result, "export const prototype") {
+		t.Errorf("prototype should not be a named export, got:\n%s", result)
 	}
-	if strings.Contains(exportLine, "prototype") {
-		t.Errorf("prototype should not be a named export, got:\n%s", exportLine)
-	}
-	if strings.Contains(exportLine, "_private") {
-		t.Errorf("_private should not be a named export, got:\n%s", exportLine)
+	if strings.Contains(result, "export const _private") {
+		t.Errorf("_private should not be a named export, got:\n%s", result)
 	}
 }
 
@@ -357,7 +338,7 @@ func TestPrebundlePackage_NoNestedNodeModules(t *testing.T) {
 		"export const x = 42;\n",
 	), 0644)
 
-	result := prebundlePackage("simple-pkg", pkgDir, nil, outdir, nil)
+	result := prebundlePackage("simple-pkg", pkgDir, nil, outdir, nil, "")
 
 	if result.err != nil {
 		t.Fatalf("prebundlePackage failed: %v", result.err)

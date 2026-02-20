@@ -129,7 +129,7 @@ func PrebundleAll(moduleConfigPath, outDir string) error {
 
 	define := make(map[string]string)
 	common.MergeEnvDefines(define, "development")
-	depCache, importMap, failedPkgs := prebundleAllPackages(context.Background(), moduleMap, nil, define)
+	depCache, importMap, failedPkgs := prebundleAllPackages(context.Background(), moduleMap, nil, define, "")
 
 	if len(failedPkgs) > 0 {
 		sort.Strings(failedPkgs)
@@ -150,7 +150,7 @@ func PrebundleAll(moduleConfigPath, outDir string) error {
 // The moduleconfig should contain exactly one entry mapping the package name to
 // its lib directory. Used by the "prebundle-pkg" subcommand for per-package
 // Please rules where each dep is cached independently.
-func PrebundlePkg(moduleConfigPath, outDir string) error {
+func PrebundlePkg(moduleConfigPath, outDir, nodePath string) error {
 	moduleMap, err := common.ParseModuleConfig(moduleConfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to parse moduleconfig: %w", err)
@@ -170,7 +170,7 @@ func PrebundlePkg(moduleConfigPath, outDir string) error {
 		if isLocalLibrary(pkgDir) {
 			continue // local js_library targets are not pre-bundled
 		}
-		result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, moduleMap)
+		result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, nodePath, moduleMap)
 		if result.err != nil {
 			fmt.Fprintf(os.Stderr, "  warning: skipping %s: %v\n", pkgName, result.err)
 			continue
@@ -331,7 +331,7 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 		outdir, _ := filepath.Abs(".esm-prebundle-tmp")
 		for _, pkgName := range missingPkgs {
 			pkgDir := moduleMap[pkgName]
-			result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, moduleMap)
+			result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, "", moduleMap)
 			if result.err != nil {
 				fmt.Fprintf(os.Stderr, "  warning: skipping missing dep %s: %v\n", pkgName, result.err)
 				continue
