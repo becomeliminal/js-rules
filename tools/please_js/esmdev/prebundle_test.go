@@ -1,6 +1,7 @@
 package esmdev
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -544,5 +545,142 @@ func TestBundleSubpathViaStdin_NamedExportsOnly(t *testing.T) {
 	}
 	if !hasExportStatement([]byte(text)) {
 		t.Errorf("expected export statement in output, got:\n%s", text)
+	}
+}
+
+// TestPrebundleDeps_TransitiveDeps verifies that transitive dependencies
+// (packages imported by prebundled deps but not by user source code) get
+// included in the import map in filtered mode.
+//
+// Scenario modelled after Tiptap: @tiptap/react → @tiptap/core → prosemirror-state.
+// User code imports @tiptap/react. In filtered mode, only @tiptap/react is in
+// usedImports. The prebundled @tiptap/react externalizes @tiptap/core, and
+// @tiptap/core externalizes prosemirror-state. Without the fix, neither
+// @tiptap/core nor prosemirror-state would be in the import map, causing the
+// browser to fail with "Failed to resolve module specifier".
+func TestPrebundleDeps_TransitiveDeps(t *testing.T) {
+	dir := t.TempDir()
+
+	// "wrapper" imports "transitive-dep" (like @tiptap/react → @tiptap/core)
+	wrapperDir := filepath.Join(dir, "wrapper")
+	os.MkdirAll(wrapperDir, 0755)
+	os.WriteFile(filepath.Join(wrapperDir, "package.json"), []byte(`{
+  "name": "wrapper",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(wrapperDir, "index.js"), []byte(
+		"import { x } from \"transitive-dep\";\nexport const wrapped = x + 1;\n",
+	), 0644)
+
+	// "transitive-dep" is a standalone package (like @tiptap/core or prosemirror-state)
+	transDir := filepath.Join(dir, "transitive-dep")
+	os.MkdirAll(transDir, 0755)
+	os.WriteFile(filepath.Join(transDir, "package.json"), []byte(`{
+  "name": "transitive-dep",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(transDir, "index.js"), []byte(
+		"export const x = 42;\n",
+	), 0644)
+
+	moduleMap := map[string]string{
+		"wrapper":        wrapperDir,
+		"transitive-dep": transDir,
+	}
+	// Filtered mode: only "wrapper" in usedImports (user code doesn't import transitive-dep)
+	usedImports := map[string]bool{"wrapper": true}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	_, importMapJSON, err := prebundleDeps(moduleMap, usedImports, define)
+	if err != nil {
+		t.Fatalf("prebundleDeps failed: %v", err)
+	}
+
+	var imData struct {
+		Imports map[string]string `json:"imports"`
+	}
+	if err := json.Unmarshal(importMapJSON, &imData); err != nil {
+		t.Fatalf("failed to parse import map: %v", err)
+	}
+
+	// wrapper should be in import map
+	if _, ok := imData.Imports["wrapper"]; !ok {
+		t.Fatalf("wrapper not in import map: %v", imData.Imports)
+	}
+
+	// transitive-dep MUST be in import map so the browser can resolve the
+	// externalized `from "transitive-dep"` in wrapper.js.
+	// Without it, the browser throws: "Failed to resolve module specifier 'transitive-dep'"
+	if _, ok := imData.Imports["transitive-dep"]; !ok {
+		t.Errorf("transitive-dep missing from import map; browser can't resolve bare specifiers.\nimportMap: %v", imData.Imports)
+	}
+}
+
+// TestPrebundleDeps_TransitiveDepsChain verifies that chains of transitive
+// dependencies (A → B → C) are all filled in, not just one level deep.
+// Models the Tiptap chain: @tiptap/react → @tiptap/core → prosemirror-state.
+func TestPrebundleDeps_TransitiveDepsChain(t *testing.T) {
+	dir := t.TempDir()
+
+	// "app-lib" imports "middle" (like @tiptap/react → @tiptap/core)
+	appDir := filepath.Join(dir, "app-lib")
+	os.MkdirAll(appDir, 0755)
+	os.WriteFile(filepath.Join(appDir, "package.json"), []byte(`{
+  "name": "app-lib",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(appDir, "index.js"), []byte(
+		"import { core } from \"middle\";\nexport const app = core;\n",
+	), 0644)
+
+	// "middle" imports "deep-dep" (like @tiptap/core → prosemirror-state)
+	middleDir := filepath.Join(dir, "middle")
+	os.MkdirAll(middleDir, 0755)
+	os.WriteFile(filepath.Join(middleDir, "package.json"), []byte(`{
+  "name": "middle",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(middleDir, "index.js"), []byte(
+		"import { val } from \"deep-dep\";\nexport const core = val;\n",
+	), 0644)
+
+	// "deep-dep" — leaf dependency (like prosemirror-state)
+	deepDir := filepath.Join(dir, "deep-dep")
+	os.MkdirAll(deepDir, 0755)
+	os.WriteFile(filepath.Join(deepDir, "package.json"), []byte(`{
+  "name": "deep-dep",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(deepDir, "index.js"), []byte(
+		"export const val = 99;\n",
+	), 0644)
+
+	moduleMap := map[string]string{
+		"app-lib":  appDir,
+		"middle":   middleDir,
+		"deep-dep": deepDir,
+	}
+	usedImports := map[string]bool{"app-lib": true}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	_, importMapJSON, err := prebundleDeps(moduleMap, usedImports, define)
+	if err != nil {
+		t.Fatalf("prebundleDeps failed: %v", err)
+	}
+
+	var imData struct {
+		Imports map[string]string `json:"imports"`
+	}
+	json.Unmarshal(importMapJSON, &imData)
+
+	for _, pkg := range []string{"app-lib", "middle", "deep-dep"} {
+		if _, ok := imData.Imports[pkg]; !ok {
+			t.Errorf("%s missing from import map; full chain must be resolved.\nimportMap: %v", pkg, imData.Imports)
+		}
 	}
 }

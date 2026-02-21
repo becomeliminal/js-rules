@@ -320,11 +320,74 @@ func addPrefixImportMapEntries(importMap map[string]string) {
 	}
 }
 
+// fillTransitiveImports scans prebundled output for bare import specifiers
+// that are missing from the import map and prebundles those packages. This
+// catches transitive dependencies (e.g., prosemirror-state used by @tiptap/pm)
+// that weren't in the user's source-scanned usedImports in filtered mode.
+func fillTransitiveImports(depCache map[string][]byte, importMap map[string]string, moduleMap map[string]string, define map[string]string) {
+	outdir, _ := filepath.Abs(".esm-prebundle-tmp")
+
+	for round := 0; round < 3; round++ {
+		missing := make(map[string]bool)
+
+		for _, code := range depCache {
+			for _, m := range importSpecRe.FindAllStringSubmatch(string(code), -1) {
+				spec := m[1]
+				if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") {
+					continue
+				}
+				if _, ok := importMap[spec]; ok {
+					continue
+				}
+				pkgName := resolveModuleName(spec, moduleMap)
+				pkgDir, ok := moduleMap[pkgName]
+				if !ok || isLocalLibrary(pkgDir) {
+					continue
+				}
+				// If the base package already has entries, the prefix import map
+				// entry + handleDepOnDemand will handle subpaths at runtime.
+				if spec != pkgName {
+					if _, ok := importMap[pkgName]; ok {
+						continue
+					}
+				}
+				missing[pkgName] = true
+			}
+		}
+
+		if len(missing) == 0 {
+			break
+		}
+
+		for pkgName := range missing {
+			pkgDir := moduleMap[pkgName]
+			result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, "", moduleMap)
+			if result.err != nil {
+				continue
+			}
+			for k, v := range result.depCache {
+				depCache[k] = v
+			}
+			for k, v := range result.importMap {
+				importMap[k] = v
+			}
+		}
+		addPrefixImportMapEntries(importMap)
+	}
+}
+
 // prebundleDeps pre-bundles npm dependencies using per-package parallel builds.
 // Each package is built independently with cross-package imports externalized.
 // The browser import map resolves cross-package references at runtime.
 func prebundleDeps(moduleMap map[string]string, usedImports map[string]bool, define map[string]string) (map[string][]byte, []byte, error) {
 	depCache, importMap, failedPkgs := prebundleAllPackages(context.Background(), moduleMap, usedImports, define, "")
+
+	// In filtered mode, prebundled packages may externalize dependencies that
+	// weren't in the user's source-scanned usedImports. Fill those in so the
+	// browser import map can resolve all bare specifiers.
+	if usedImports != nil {
+		fillTransitiveImports(depCache, importMap, moduleMap, define)
+	}
 
 	if len(failedPkgs) > 0 {
 		sort.Strings(failedPkgs)
