@@ -71,6 +71,25 @@ func resolveSourceFile(sourceRoot, urlPath string) string {
 	return ""
 }
 
+// sourcefileFromResolved computes the Sourcefile value for esbuild's Transform
+// API from the resolved absolute path. This ensures esbuild resolves relative
+// imports within the file relative to the file's actual directory (not the
+// original URL path's directory), which matters for barrel re-exports like
+// `export { Foo } from "./Foo"` in an index.ts file.
+func sourcefileFromResolved(packageRoot, sourceRoot, resolved string) string {
+	rel, err := filepath.Rel(packageRoot, resolved)
+	if err == nil && !strings.HasPrefix(rel, "..") {
+		return "/" + filepath.ToSlash(rel)
+	}
+	if sourceRoot != "" {
+		rel, err = filepath.Rel(sourceRoot, resolved)
+		if err == nil && !strings.HasPrefix(rel, "..") {
+			return "/" + filepath.ToSlash(rel)
+		}
+	}
+	return resolved
+}
+
 // loaderForFile returns the esbuild loader for a given file path.
 func loaderForFile(path string) api.Loader {
 	ext := filepath.Ext(path)

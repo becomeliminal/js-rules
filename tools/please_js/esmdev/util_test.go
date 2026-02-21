@@ -31,6 +31,69 @@ func TestIsSourceFileExt(t *testing.T) {
 	}
 }
 
+func TestSourcefileFromResolved(t *testing.T) {
+	tests := []struct {
+		name        string
+		packageRoot string
+		sourceRoot  string
+		resolved    string
+		want        string
+	}{
+		{
+			name:        "relative to packageRoot",
+			packageRoot: "/home/user/project",
+			sourceRoot:  "",
+			resolved:    "/home/user/project/src/components/index.ts",
+			want:        "/src/components/index.ts",
+		},
+		{
+			name:        "relative to sourceRoot when not under packageRoot",
+			packageRoot: "/home/user/project",
+			sourceRoot:  "/home/user/other",
+			resolved:    "/home/user/other/lib/utils.ts",
+			want:        "/lib/utils.ts",
+		},
+		{
+			name:        "packageRoot preferred over sourceRoot",
+			packageRoot: "/home/user/project",
+			sourceRoot:  "/home/user/project",
+			resolved:    "/home/user/project/main.tsx",
+			want:        "/main.tsx",
+		},
+		{
+			name:        "falls back to resolved when outside both roots",
+			packageRoot: "/home/user/project",
+			sourceRoot:  "/home/user/other",
+			resolved:    "/somewhere/else/file.ts",
+			want:        "/somewhere/else/file.ts",
+		},
+		{
+			name:        "empty sourceRoot skips sourceRoot check",
+			packageRoot: "/home/user/project",
+			sourceRoot:  "",
+			resolved:    "/other/path/file.ts",
+			want:        "/other/path/file.ts",
+		},
+		{
+			name:        "barrel index file gets full path",
+			packageRoot: "/home/user/project/src",
+			sourceRoot:  "",
+			resolved:    "/home/user/project/src/components/editor/extensions/index.ts",
+			want:        "/components/editor/extensions/index.ts",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sourcefileFromResolved(tt.packageRoot, tt.sourceRoot, tt.resolved)
+			if got != tt.want {
+				t.Errorf("sourcefileFromResolved(%q, %q, %q) = %q, want %q",
+					tt.packageRoot, tt.sourceRoot, tt.resolved, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveSourceFile(t *testing.T) {
 	dir := t.TempDir()
 
