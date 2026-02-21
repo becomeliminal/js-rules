@@ -50,6 +50,16 @@ func (s *esmServer) handleSource(w http.ResponseWriter, r *http.Request, urlPath
 		return
 	}
 
+	// If URL resolved to an index file in a subdirectory, redirect so the
+	// browser resolves relative imports against the correct directory.
+	if base := filepath.Base(resolved); strings.HasPrefix(base, "index.") {
+		resolvedURL := sourcefileFromResolved(s.packageRoot, s.sourceRoot, resolved)
+		if resolvedURL != urlPath {
+			http.Redirect(w, r, resolvedURL, http.StatusFound)
+			return
+		}
+	}
+
 	// Check cache
 	info, err := os.Stat(resolved)
 	if err != nil {
@@ -83,7 +93,7 @@ func (s *esmServer) handleSource(w http.ResponseWriter, r *http.Request, urlPath
 		JSX:            api.JSXAutomatic,
 		Sourcemap:      api.SourceMapInline,
 		SourcesContent: api.SourcesContentInclude,
-		Sourcefile:     urlPath,
+		Sourcefile:     sourcefileFromResolved(s.packageRoot, s.sourceRoot, resolved),
 		Define:         s.define,
 		LogLevel:       api.LogLevelWarning,
 	}
@@ -170,6 +180,17 @@ func (s *esmServer) handleLibSource(w http.ResponseWriter, r *http.Request, urlP
 		return
 	}
 
+	// If URL resolved to an index file in a subdirectory, redirect so the
+	// browser resolves relative imports against the correct directory.
+	if base := filepath.Base(resolved); strings.HasPrefix(base, "index.") {
+		rel, _ := filepath.Rel(bestDir, resolved)
+		correctURL := "/@lib/" + bestLib + "/" + filepath.ToSlash(rel)
+		if correctURL != urlPath {
+			http.Redirect(w, r, correctURL, http.StatusFound)
+			return
+		}
+	}
+
 	// Check cache
 	info, err := os.Stat(resolved)
 	if err != nil {
@@ -203,7 +224,7 @@ func (s *esmServer) handleLibSource(w http.ResponseWriter, r *http.Request, urlP
 		JSX:            api.JSXAutomatic,
 		Sourcemap:      api.SourceMapInline,
 		SourcesContent: api.SourcesContentInclude,
-		Sourcefile:     urlPath,
+		Sourcefile:     sourcefileFromResolved(bestDir, "", resolved),
 		Define:         s.define,
 		LogLevel:       api.LogLevelWarning,
 	}
