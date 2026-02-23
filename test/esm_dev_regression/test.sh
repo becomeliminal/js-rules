@@ -100,7 +100,7 @@ fi
 echo "Checking bare imports in dep files resolve correctly..."
 
 PREBUNDLE_DIR="plz-out/gen/test/esm_dev_regression/_dev_prebundle/deps"
-NODE_MODULES="plz-out/gen/test/esm_dev_regression/npm_deps/node_modules"
+NODE_MODULES="plz-out/gen/test/esm_dev_regression/npm_deps"
 
 # Write HTML to temp file to avoid shell quoting issues with large strings.
 HTML_FILE=$(mktemp)
@@ -141,15 +141,25 @@ def resolve_spec(spec):
     return None
 
 # Extract bare imports from dep files
-result = subprocess.run(
+# Static imports: from "pkg"
+r1 = subprocess.run(
     ["grep", "-roh", 'from "[a-zA-Z@][^"]*"',
      "$PREBUNDLE_DIR", "--include=*.js"],
     capture_output=True, text=True
 )
+# Dynamic imports: import("pkg")
+r2 = subprocess.run(
+    ["grep", "-roh", 'import("[a-zA-Z@][^"]*")',
+     "$PREBUNDLE_DIR", "--include=*.js"],
+    capture_output=True, text=True
+)
 specs = set()
-for line in result.stdout.strip().split("\n"):
+for line in r1.stdout.strip().split("\n"):
     if line:
         specs.add(line.replace('from "', "").rstrip('"'))
+for line in r2.stdout.strip().split("\n"):
+    if line:
+        specs.add(line.replace('import("', "").rstrip('")'))
 
 nm = "$NODE_MODULES"
 urls = set()

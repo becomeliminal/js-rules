@@ -49,9 +49,13 @@ func writeBuildFile(outDir string, pkg resolvedPackage, subincludePath string) e
 	if targetName != pkgName || pkg.RealName != "" {
 		addStringArg(call, "pkg_name", pkgName)
 	}
-	// For scoped packages, pass import_name so moduleconfig uses the full
-	// scoped name (e.g. "@tiptap/react") instead of the flat target name.
-	if strings.HasPrefix(pkgName, "@") {
+	// For aliased packages (e.g., cbw-sdk → @coinbase/wallet-sdk), the
+	// import specifier in source code is the alias name, not the real name.
+	// For scoped packages, pass the full scoped name since the target name
+	// is flattened (e.g., "tiptap_react" target → "@tiptap/react" import).
+	if pkg.RealName != "" {
+		addStringArg(call, "import_name", pkg.Name)
+	} else if strings.HasPrefix(pkgName, "@") {
 		addStringArg(call, "import_name", pkgName)
 	}
 	addStringArg(call, "version", pkg.Version)
