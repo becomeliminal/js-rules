@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/please-build/buildtools/build"
 
@@ -19,7 +20,7 @@ func writePlzConfig(outDir string) error {
 // writeBuildFile generates a BUILD file for a single npm package using
 // the buildtools AST for correct formatting.
 func writeBuildFile(outDir string, pkg resolvedPackage, subincludePath string) error {
-	pkgDir := filepath.Join(outDir, pkg.Name)
+	pkgDir := filepath.Join(outDir, common.FlattenPkgName(pkg.Name))
 	if err := os.MkdirAll(pkgDir, 0755); err != nil {
 		return err
 	}
@@ -47,6 +48,11 @@ func writeBuildFile(outDir string, pkg resolvedPackage, subincludePath string) e
 	pkgName := pkg.effectivePkgName()
 	if targetName != pkgName || pkg.RealName != "" {
 		addStringArg(call, "pkg_name", pkgName)
+	}
+	// For scoped packages, pass import_name so moduleconfig uses the full
+	// scoped name (e.g. "@tiptap/react") instead of the flat target name.
+	if strings.HasPrefix(pkgName, "@") {
+		addStringArg(call, "import_name", pkgName)
 	}
 	addStringArg(call, "version", pkg.Version)
 

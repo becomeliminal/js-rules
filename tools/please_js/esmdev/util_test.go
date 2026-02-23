@@ -148,3 +148,57 @@ func TestResolveSourceFile(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveSubpathFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create test files at various paths
+	for _, rel := range []string{
+		"lib/foo.js",
+		"lib/bar.cjs",
+		"lib/baz.mjs",
+		"data/config.json",
+		"components/index.js",
+		"utils/index.cjs",
+		"exact/file.txt",
+		"deep/a/b/c.js",
+	} {
+		full := filepath.Join(dir, rel)
+		os.MkdirAll(filepath.Dir(full), 0755)
+		os.WriteFile(full, []byte("test"), 0644)
+	}
+	// Create a directory without index files
+	os.MkdirAll(filepath.Join(dir, "emptydir"), 0755)
+
+	tests := []struct {
+		name    string
+		subpath string
+		want    string // relative to dir, or "" for not found
+	}{
+		{"exact match with extension", "lib/foo.js", "lib/foo.js"},
+		{"extension probing .js", "lib/foo", "lib/foo.js"},
+		{"extension probing .cjs", "lib/bar", "lib/bar.cjs"},
+		{"extension probing .mjs", "lib/baz", "lib/baz.mjs"},
+		{"extension probing .json", "data/config", "data/config.json"},
+		{"index resolution .js", "components", "components/index.js"},
+		{"index resolution .cjs", "utils", "utils/index.cjs"},
+		{"not found", "nonexistent", ""},
+		{"directory without index", "emptydir", ""},
+		{"with ./ prefix", "./lib/foo", "lib/foo.js"},
+		{"deep subpath", "deep/a/b/c", "deep/a/b/c.js"},
+		{"non-js exact file", "exact/file.txt", "exact/file.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveSubpathFile(dir, tt.subpath)
+			want := ""
+			if tt.want != "" {
+				want = filepath.Join(dir, tt.want)
+			}
+			if got != want {
+				t.Errorf("resolveSubpathFile(%q) = %q, want %q", tt.subpath, got, want)
+			}
+		})
+	}
+}

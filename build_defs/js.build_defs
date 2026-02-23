@@ -68,24 +68,35 @@ def js_library(name:str, srcs:list, deps:list=[], module_name:str="",
     """
     module_name = module_name or package_name()
 
+    # Moduleconfig: separate target (like go-rules' importconfig pattern).
+    # Added to exported_deps so it flows transitively to any dependents,
+    # ensuring `find . -name "*.moduleconfig"` in build sandboxes finds ALL
+    # transitive deps' configs — not just direct deps.
+    # Named {name}.moduleconfig — uniqueness comes from flat directory structure
+    # (like go-rules' {package}.importconfig in unique module directories).
+    import_cfg = build_rule(
+        name = name,
+        tag = "moduleconfig",
+        cmd = f'echo "{module_name}=$PKG_DIR/{name}" > "$OUT"',
+        outs = [f"{name}.moduleconfig"],
+        visibility = visibility,
+        test_only = test_only,
+    )
+
     return build_rule(
         name = name,
         srcs = srcs,
         deps = deps,
-        outs = {
-            "lib": [name],
-            "moduleconfig": [f"{name}.moduleconfig"],
-        },
+        outs = [name],
         cmd = " && ".join([
-            "mkdir -p $OUTS_LIB",
-            "$TOOLS_PLEASE_JS transpile --out-dir $OUTS_LIB $SRCS",
-            f'echo "{module_name}=$PKG_DIR/{name}" > $OUTS_MODULECONFIG',
+            "mkdir -p $OUT",
+            "$TOOLS_PLEASE_JS transpile --out-dir $OUT $SRCS",
         ]),
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         visibility = visibility,
         test_only = test_only,
         labels = labels + [f"js_module:{module_name}"],
-        exported_deps = deps,
+        exported_deps = deps + [import_cfg],
         building_description = "Compiling...",
     )
 
@@ -278,8 +289,8 @@ def js_test(name:str, srcs:list, entry_point:str=None, deps:list=[],
 
 
 def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
-               nested_deps:dict={}, hashes:list=None, visibility:list=["PUBLIC"],
-               labels:list=[], entry_point:str=""):
+               nested_deps:dict={}, hashes:list=None, import_name:str="",
+               visibility:list=["PUBLIC"], labels:list=[], entry_point:str=""):
     """Downloads an npm package and makes it available as a dependency.
 
     Downloads a package tarball from the npm registry, extracts it, and
@@ -295,6 +306,8 @@ def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
                      The nested dep's lib output is placed into node_modules/<import_name>/
                      inside this package's output directory.
         hashes: Optional hashes for the download.
+        import_name: Override the import specifier for moduleconfig. Used by generated
+                     BUILD files for scoped packages (e.g. "@tiptap/react" for target "tiptap_react").
         visibility: Visibility specification.
         labels: Additional labels.
         entry_point: Override the package entry point.
@@ -304,16 +317,9 @@ def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
         fail("version is required for npm_module")
 
     # Determine the import name for moduleconfig.
-    # For scoped packages (@scope/pkg), pkg_name is the full scoped name and
-    # name is the last segment — imports use the full scoped name.
-    # For aliases (my-ms → ms), pkg_name is the real package for download
-    # but imports use the alias name (name).
-    if pkg_name and "/" in pkg_name and pkg_name.split("/")[-1] == name:
-        # Scoped package: import as the full scoped name
-        import_key = pkg_name
-    else:
-        # Simple package or alias: import as the target name
-        import_key = name
+    # For scoped packages, resolve.go passes import_name="@tiptap/react" explicitly.
+    # For simple packages, aliases, and conflict targets, import_key = name.
+    import_key = import_name or name
 
     # npm tarball URL: scoped packages use @scope/pkg/-/pkg-ver.tgz
     pkg_basename = pkg.split("/")[-1] if "/" in pkg else pkg
@@ -330,6 +336,21 @@ def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
         extract = True,
     )
 
+    # Moduleconfig: separate target (like go-rules' importconfig pattern).
+    # Added to exported_deps so it flows transitively to any dependents,
+    # ensuring `find . -name "*.moduleconfig"` in build sandboxes finds ALL
+    # transitive deps' configs — not just direct deps.
+    # Named {name}.moduleconfig — uniqueness comes from flat directory structure
+    # (like go-rules' {package}.importconfig in unique module directories).
+    import_cfg = build_rule(
+        name = name,
+        tag = "moduleconfig",
+        cmd = f'echo "{import_key}=$PKG_DIR/{name}" > "$OUT"',
+        outs = [f"{name}.moduleconfig"],
+        visibility = visibility,
+        labels = labels,
+    )
+
     if nested_deps:
         # Named srcs: main package download + each nested dep's lib output.
         # Use numeric keys (n0, n1, ...) since Please uppercases dict keys
@@ -338,35 +359,34 @@ def npm_module(name:str, pkg_name:str="", version:str="", deps:list=[],
         nested_cmds = []
         for i, import_name in enumerate(sorted(nested_deps.keys())):
             dep_label = nested_deps[import_name]
-            srcs[f"n{i}"] = [f"{dep_label}|lib"]
+            srcs[f"n{i}"] = [dep_label]
             nested_cmds += [
-                f"mkdir -p $OUTS_LIB/node_modules/{import_name}",
-                f"cp -r $SRCS_N{i}/. $OUTS_LIB/node_modules/{import_name}/",
+                f"mkdir -p $OUT/node_modules/{import_name}",
+                f"cp -r $SRCS_N{i}/. $OUT/node_modules/{import_name}/",
             ]
         cmd = " && ".join([
-            "mkdir -p $OUTS_LIB",
-            "if [ -d $SRCS_PKG/package ]; then cp -r $SRCS_PKG/package/. $OUTS_LIB/; else cp -r $SRCS_PKG/. $OUTS_LIB/; fi",
-        ] + nested_cmds + [
-            f'echo "{import_key}=$PKG_DIR/{name}" > $OUTS_MODULECONFIG',
-        ])
+            "mkdir -p $OUT",
+            "if [ -d $SRCS_PKG/package ]; then cp -r $SRCS_PKG/package/. $OUT/; else cp -r $SRCS_PKG/. $OUT/; fi",
+        ] + nested_cmds)
     else:
         srcs = [download]
         cmd = " && ".join([
-            "mkdir -p $OUTS_LIB",
+            "mkdir -p $OUT",
             # npm tarballs extract to a package/ subdirectory
-            "if [ -d $SRCS/package ]; then cp -r $SRCS/package/. $OUTS_LIB/; else cp -r $SRCS/. $OUTS_LIB/; fi",
-            f'echo "{import_key}=$PKG_DIR/{name}" > $OUTS_MODULECONFIG',
+            "if [ -d $SRCS/package ]; then cp -r $SRCS/package/. $OUT/; else cp -r $SRCS/. $OUT/; fi",
         ])
+
+    # Include nested dep labels in exported_deps so their moduleconfigs
+    # (and transitive moduleconfigs like hey-listen via framer-motion_v6_5_1)
+    # flow to downstream targets like merge-importmaps.
+    nested_dep_labels = [nested_deps[k] for k in sorted(nested_deps.keys())] if nested_deps else []
 
     return build_rule(
         name = name,
         srcs = srcs,
-        outs = {
-            "lib": [name],
-            "moduleconfig": [f"{name}.moduleconfig"],
-        },
+        outs = [name],
         cmd = cmd,
-        exported_deps = deps,
+        exported_deps = deps + nested_dep_labels + [import_cfg],
         visibility = visibility,
         labels = labels + [f"npm_module:{pkg}@{version}"],
         building_description = "Installing npm package...",
@@ -544,7 +564,13 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
             prebundle_tools["node"] = [CONFIG.JS.NODE_TOOL]
             prebundle_cmd += ' --node "$TOOLS_NODE"'
         for dep in deps + dev_deps:
-            dep_label = dep.split(":")[-1] if ":" in dep else dep.split("/")[-1]
+            if ":" in dep:
+                dep_label = dep.split(":")[-1]
+            elif dep.startswith("///"):
+                # Subrepo: ///pkg/subrepo//target — target may be scoped (@scope/name)
+                dep_label = dep.split("//")[-1].replace("@", "").replace("/", "_")
+            else:
+                dep_label = dep.split("/")[-1]
             pname = f"_{name}_esm_{dep_label}"
             build_rule(
                 name = pname,
@@ -597,7 +623,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
             "echo 'set -euo pipefail' >> $OUT",
             "echo 'MODCONF=$(mktemp)' >> $OUT",
             "echo 'trap \"rm -f $MODCONF\" EXIT' >> $OUT",
-            """echo 'find "$(pwd)/plz-out/gen" -name "*.moduleconfig" | while read f; do abs="${f%.moduleconfig}"; while IFS="=" read -r name _; do echo "$name=$abs"; done < "$f"; done > $MODCONF' >> $OUT""",
+            """echo 'find "$(pwd)/plz-out/gen" -name "*.moduleconfig" | while read f; do dir=$(dirname "$f"); while IFS="=" read -r name relpath; do echo "$name=$dir/$(basename "$relpath")"; done < "$f"; done > $MODCONF' >> $OUT""",
             f"echo 'exec '\"$PLEASE_JS\"' esm-dev --entry '\"$PKG_DIR\"'/{entry_point} --prebundle-dir $(pwd)/plz-out/gen/'\"$PKG\"'/{prebundle_name} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --root '\"$PKG_DIR\"' --port {port}{tsconfig_arg}{define_arg}{proxy_arg}{env_arg}{tailwind_arg}' >> $OUT",
             "chmod +x $OUT",
         ])
@@ -616,7 +642,7 @@ def js_dev_server(name:str, entry_point:str, srcs:list=[], deps:list=[],
             "echo 'set -euo pipefail' >> $OUT",
             "echo 'MODCONF=$(mktemp)' >> $OUT",
             "echo 'trap \"rm -f $MODCONF\" EXIT' >> $OUT",
-            """echo 'find "$(pwd)/plz-out/gen" -name "*.moduleconfig" | while read f; do abs="${f%.moduleconfig}"; while IFS="=" read -r name _; do echo "$name=$abs"; done < "$f"; done > $MODCONF' >> $OUT""",
+            """echo 'find "$(pwd)/plz-out/gen" -name "*.moduleconfig" | while read f; do dir=$(dirname "$f"); while IFS="=" read -r name relpath; do echo "$name=$dir/$(basename "$relpath")"; done < "$f"; done > $MODCONF' >> $OUT""",
             f"echo 'exec '\"$PLEASE_JS\"' dev --entry '\"$PKG_DIR\"'/{entry_point} --moduleconfig $MODCONF --servedir '\"$PKG_DIR\"'/{servedir} --port {port} --format {format} --platform {platform}{tsconfig_arg}{define_arg}{proxy_arg}{env_arg}{tailwind_arg}' >> $OUT",
             "chmod +x $OUT",
         ])

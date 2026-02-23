@@ -244,7 +244,8 @@ func MergeImportmaps(files []string, outPath, moduleConfigPath, depsDir string) 
 }
 
 // fillMissingDeps scans all .js files in depsDir for bare import specifiers,
-// finds those missing from the import map, and bundles them.
+// finds those missing from the import map, and bundles them. Uses a worklist
+// (BFS) to follow transitive dependency chains to completion.
 func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir string) error {
 	moduleMap, err := common.ParseModuleConfig(moduleConfigPath)
 	if err != nil {
@@ -255,9 +256,65 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 	}
 	define := make(map[string]string)
 	common.MergeEnvDefines(define, "development")
+	outdir, _ := filepath.Abs(".esm-prebundle-tmp")
 
-	// Scan all .js files in depsDir for bare import specifiers
-	bareSpecs := make(map[string]bool)
+	// visited tracks packages already processed or in the import map.
+	visited := make(map[string]bool)
+	for spec := range importMap {
+		visited[packageNameFromSpec(spec)] = true
+	}
+
+	// Seed worklist by scanning all .js files in depsDir.
+	var worklist []string
+	filepath.Walk(depsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".js") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		worklist = append(worklist, extractMissingPkgs(data, moduleMap, visited)...)
+		return nil
+	})
+
+	// BFS: bundle missing packages, discovering transitive deps as we go.
+	for len(worklist) > 0 {
+		pkgName := worklist[0]
+		worklist = worklist[1:]
+		if visited[pkgName] {
+			continue
+		}
+		visited[pkgName] = true
+
+		pkgDir := moduleMap[pkgName]
+		result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, "", moduleMap)
+		if result.err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: skipping missing dep %s: %v\n", pkgName, result.err)
+			continue
+		}
+
+		for k, v := range result.importMap {
+			importMap[k] = v
+		}
+		// Write bundled files to depsDir and scan for more missing packages.
+		for urlPath, data := range result.depCache {
+			rel := strings.TrimPrefix(urlPath, "/@deps/")
+			filePath := filepath.Join(depsDir, rel)
+			os.MkdirAll(filepath.Dir(filePath), 0755)
+			os.WriteFile(filePath, data, 0644)
+			if strings.HasSuffix(rel, ".js") {
+				worklist = append(worklist, extractMissingPkgs(data, moduleMap, visited)...)
+			}
+		}
+	}
+
+	addPrefixImportMapEntries(importMap)
+
+	// Bundle missing subpaths — single pass is sufficient since subpath
+	// bundling doesn't introduce new package-level dependencies.
+	var missingSubpaths []string
+	seen := make(map[string]bool)
 	filepath.Walk(depsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".js") {
 			return nil
@@ -268,105 +325,40 @@ func fillMissingDeps(importMap map[string]string, moduleConfigPath, depsDir stri
 		}
 		for _, m := range importSpecRe.FindAllStringSubmatch(string(data), -1) {
 			spec := m[1]
-			if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") {
+			if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") || seen[spec] {
 				continue
 			}
-			bareSpecs[spec] = true
+			if _, ok := importMap[spec]; ok {
+				continue
+			}
+			pkgName := resolveModuleName(spec, moduleMap)
+			if spec == pkgName {
+				continue // whole-package missing would have been caught by BFS
+			}
+			pkgDir, ok := moduleMap[pkgName]
+			if !ok || isLocalLibrary(pkgDir) {
+				continue
+			}
+			seen[spec] = true
+			missingSubpaths = append(missingSubpaths, spec)
 		}
 		return nil
 	})
 
-	// Find missing: specifiers where neither exact match nor base package exists
-	var missingPkgs []string   // whole packages not in import map
-	var missingSubpaths []string // subpath specifiers where base pkg exists but subpath doesn't
-	seen := make(map[string]bool)
-
-	for spec := range bareSpecs {
-		pkgName := resolveModuleName(spec, moduleMap)
-		// Check if this package is available in moduleMap
-		pkgDir, ok := moduleMap[pkgName]
-		if !ok {
-			continue // not a known package, skip
-		}
-		// Skip local libraries — they're served on-demand, not pre-bundled
-		if isLocalLibrary(pkgDir) {
-			continue
-		}
-
-		// Check if exact specifier is already in import map
-		if _, ok := importMap[spec]; ok {
-			continue
-		}
-
-		if spec == pkgName {
-			// Whole package missing
-			if !seen[pkgName] {
-				seen[pkgName] = true
-				missingPkgs = append(missingPkgs, pkgName)
-			}
-		} else {
-			// Check if base package has ANY entry
-			hasBase := false
-			if _, ok := importMap[pkgName]; ok {
-				hasBase = true
-			}
-			if !hasBase {
-				// Whole package missing
-				if !seen[pkgName] {
-					seen[pkgName] = true
-					missingPkgs = append(missingPkgs, pkgName)
-				}
-			} else {
-				// Base package exists but this subpath doesn't
-				missingSubpaths = append(missingSubpaths, spec)
-			}
-		}
-	}
-
-	sort.Strings(missingPkgs)
 	sort.Strings(missingSubpaths)
-
-	// Bundle missing whole packages
-	if len(missingPkgs) > 0 {
-		outdir, _ := filepath.Abs(".esm-prebundle-tmp")
-		for _, pkgName := range missingPkgs {
-			pkgDir := moduleMap[pkgName]
-			result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, "", moduleMap)
-			if result.err != nil {
-				fmt.Fprintf(os.Stderr, "  warning: skipping missing dep %s: %v\n", pkgName, result.err)
-				continue
-			}
-			for k, v := range result.importMap {
-				importMap[k] = v
-			}
-			// Write bundled files to depsDir
-			for urlPath, data := range result.depCache {
-				rel := strings.TrimPrefix(urlPath, "/@deps/")
-				filePath := filepath.Join(depsDir, rel)
-				os.MkdirAll(filepath.Dir(filePath), 0755)
-				os.WriteFile(filePath, data, 0644)
-			}
+	for _, spec := range missingSubpaths {
+		pkgName := resolveModuleName(spec, moduleMap)
+		pkgDir := moduleMap[pkgName]
+		code, err := bundleSubpathViaStdin(spec, pkgName, pkgDir, moduleMap, define)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: skipping missing subpath %s: %v\n", spec, err)
+			continue
 		}
-		addPrefixImportMapEntries(importMap)
-	}
-
-	// Bundle missing subpaths via esbuild stdin
-	if len(missingSubpaths) > 0 {
-		for _, spec := range missingSubpaths {
-			pkgName := resolveModuleName(spec, moduleMap)
-			pkgDir := moduleMap[pkgName]
-			code, err := bundleSubpathViaStdin(spec, pkgName, pkgDir, moduleMap, define)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  warning: skipping missing subpath %s: %v\n", spec, err)
-				continue
-			}
-			urlPath := "/@deps/" + spec + ".js"
-			importMap[spec] = urlPath
-			// Write to depsDir
-			filePath := filepath.Join(depsDir, spec+".js")
-			os.MkdirAll(filepath.Dir(filePath), 0755)
-			os.WriteFile(filePath, code, 0644)
-		}
+		urlPath := "/@deps/" + spec + ".js"
+		importMap[spec] = urlPath
+		filePath := filepath.Join(depsDir, spec+".js")
+		os.MkdirAll(filepath.Dir(filePath), 0755)
+		os.WriteFile(filePath, code, 0644)
 	}
 
 	return nil
@@ -387,11 +379,7 @@ func bundleSubpathViaStdin(spec, pkgName, pkgDir string, moduleMap map[string]st
 	subpath := "./" + strings.TrimPrefix(spec, pkgName+"/")
 	resolved := common.ResolvePackageEntry(absPkgDir, subpath, "browser")
 	if resolved == "" {
-		// No exports field match — try direct file path.
-		candidate := filepath.Join(absPkgDir, strings.TrimPrefix(spec, pkgName+"/"))
-		if _, err := os.Stat(candidate); err == nil {
-			resolved = candidate
-		}
+		resolved = resolveSubpathFile(absPkgDir, subpath)
 	}
 
 	if resolved != "" {
@@ -417,9 +405,11 @@ func bundleSubpathViaStdin(spec, pkgName, pkgDir string, moduleMap map[string]st
 		// Fall through to stdin approach if direct entry fails.
 	}
 
-	// Fallback: stdin with export * (doesn't re-export default exports).
-	contents := fmt.Sprintf("export * from %q;\n", spec)
-	result := api.Build(api.BuildOptions{
+	// Fallback: stdin. Try with both export * and export { default } first.
+	// Per ES spec, export * does NOT include the default export. If the module
+	// has no default, esbuild will error, and we retry without it.
+	contents := fmt.Sprintf("export * from %q;\nexport { default } from %q;\n", spec, spec)
+	buildOpts := api.BuildOptions{
 		Stdin: &api.StdinOptions{
 			Contents:   contents,
 			ResolveDir: pkgDir,
@@ -437,7 +427,13 @@ func bundleSubpathViaStdin(spec, pkgName, pkgDir string, moduleMap map[string]st
 			common.NodeBuiltinEmptyPlugin(moduleMap),
 			common.UnknownExternalPlugin(singlePkgMap),
 		},
-	})
+	}
+	result := api.Build(buildOpts)
+	if len(result.Errors) > 0 {
+		// Retry without default export — module may not have one
+		buildOpts.Stdin.Contents = fmt.Sprintf("export * from %q;\n", spec)
+		result = api.Build(buildOpts)
+	}
 	if len(result.Errors) > 0 || len(result.OutputFiles) == 0 {
 		errMsg := "no output"
 		if len(result.Errors) > 0 {

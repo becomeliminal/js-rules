@@ -169,3 +169,164 @@ func TestHandleTextModule_NotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
+
+// TestHandleDepOnDemand_CJSFunctionSubpath tests the runtime on-demand handler
+// for a CJS package subpath with `module.exports = function(){}`.
+func TestHandleDepOnDemand_CJSFunctionSubpath(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "cjs-pkg")
+	os.MkdirAll(filepath.Join(pkgDir, "lib"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "cjs-pkg",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "lib", "sub.js"), []byte(
+		"module.exports = function helper() { return 'ok'; };\n",
+	), 0644)
+
+	srv := &esmServer{
+		moduleMap: map[string]string{"cjs-pkg": pkgDir},
+		define:    map[string]string{"process.env.NODE_ENV": `"development"`},
+	}
+
+	req := httptest.NewRequest("GET", "/@deps/cjs-pkg/lib/sub.js", nil)
+	rec := httptest.NewRecorder()
+	srv.handleDepOnDemand(rec, req, "/@deps/cjs-pkg/lib/sub.js", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "default") {
+		t.Errorf("expected default export for CJS function, got:\n%s", body)
+	}
+}
+
+// TestHandleDepOnDemand_ExtensionlessURL tests that the handler resolves
+// a request for "/@deps/pkg/sub.js" when the file on disk has the extension.
+func TestHandleDepOnDemand_ExtensionlessURL(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "ext-pkg")
+	os.MkdirAll(filepath.Join(pkgDir, "lib"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "ext-pkg",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "lib", "utils.js"), []byte(
+		"export function greet() { return 'hello'; }\n",
+	), 0644)
+
+	srv := &esmServer{
+		moduleMap: map[string]string{"ext-pkg": pkgDir},
+		define:    map[string]string{"process.env.NODE_ENV": `"development"`},
+	}
+
+	// Request with .js extension — the file is lib/utils.js
+	req := httptest.NewRequest("GET", "/@deps/ext-pkg/lib/utils.js", nil)
+	rec := httptest.NewRecorder()
+	srv.handleDepOnDemand(rec, req, "/@deps/ext-pkg/lib/utils.js", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "greet") {
+		t.Errorf("expected 'greet' in output, got:\n%s", body)
+	}
+}
+
+// TestHandleDepOnDemand_ESMNamedExports tests that ESM subpaths with only
+// named exports (no default) are served correctly.
+func TestHandleDepOnDemand_ESMNamedExports(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "esm-pkg")
+	os.MkdirAll(filepath.Join(pkgDir, "lib"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "esm-pkg",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("export default {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "lib", "helpers.js"), []byte(
+		"export function foo() { return 1; }\nexport function bar() { return 2; }\n",
+	), 0644)
+
+	srv := &esmServer{
+		moduleMap: map[string]string{"esm-pkg": pkgDir},
+		define:    map[string]string{"process.env.NODE_ENV": `"development"`},
+	}
+
+	req := httptest.NewRequest("GET", "/@deps/esm-pkg/lib/helpers.js", nil)
+	rec := httptest.NewRecorder()
+	srv.handleDepOnDemand(rec, req, "/@deps/esm-pkg/lib/helpers.js", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "foo") {
+		t.Errorf("expected 'foo' in output, got:\n%s", body)
+	}
+	if !strings.Contains(body, "bar") {
+		t.Errorf("expected 'bar' in output, got:\n%s", body)
+	}
+}
+
+// TestHandleDepOnDemand_CSSSubpath tests that CSS files from npm packages
+// are served as style-injecting JS modules.
+func TestHandleDepOnDemand_CSSSubpath(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "css-pkg")
+	os.MkdirAll(filepath.Join(pkgDir, "dist"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "css-pkg",
+  "version": "1.0.0",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./styles.css": "./dist/styles.css"
+  }
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "dist", "styles.css"), []byte(
+		".btn { color: red; }\n",
+	), 0644)
+
+	srv := &esmServer{
+		moduleMap: map[string]string{"css-pkg": pkgDir},
+		define:    map[string]string{"process.env.NODE_ENV": `"development"`},
+	}
+
+	req := httptest.NewRequest("GET", "/@deps/css-pkg/styles.css", nil)
+	rec := httptest.NewRecorder()
+	srv.handleDepOnDemand(rec, req, "/@deps/css-pkg/styles.css", time.Now())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/javascript" {
+		t.Errorf("expected Content-Type application/javascript, got %q", ct)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "style") {
+		t.Errorf("expected style injection in output, got:\n%s", body)
+	}
+	if !strings.Contains(body, ".btn") {
+		t.Errorf("expected CSS content in output, got:\n%s", body)
+	}
+}

@@ -232,3 +232,52 @@ func TestRewriteHTML_CSSLinkKeptWhenFileExists(t *testing.T) {
 		t.Error("expected CSS link tag to remain when file exists in sourceRoot")
 	}
 }
+
+func TestRewriteHTML_GlobalsPolyfillWithBuffer(t *testing.T) {
+	html := `<html><head></head><body></body></html>`
+	importMap := []byte(`{"imports":{"buffer":"/npm/buffer","react":"/npm/react"}}`)
+	result := rewriteHTML(html, importMap, false, "/app.js", "/src", "/src")
+
+	if !strings.Contains(result, "globalThis.global = globalThis;") {
+		t.Error("expected globalThis.global polyfill")
+	}
+	if !strings.Contains(result, "globalThis.process = globalThis.process") {
+		t.Error("expected globalThis.process polyfill")
+	}
+	if !strings.Contains(result, `import { Buffer } from "buffer"`) {
+		t.Error("expected Buffer import when buffer is in import map")
+	}
+	if !strings.Contains(result, "globalThis.Buffer = Buffer;") {
+		t.Error("expected globalThis.Buffer assignment when buffer is in import map")
+	}
+
+	// Polyfill should appear after import map but before client scripts.
+	importMapIdx := strings.Index(result, `<script type="importmap">`)
+	polyfillIdx := strings.Index(result, "globalThis.global = globalThis;")
+	clientIdx := strings.Index(result, `EventSource("/__esm_dev_sse")`)
+	if importMapIdx >= polyfillIdx {
+		t.Error("expected polyfill to appear after import map")
+	}
+	if polyfillIdx >= clientIdx {
+		t.Error("expected polyfill to appear before client scripts")
+	}
+}
+
+func TestRewriteHTML_GlobalsPolyfillWithoutBuffer(t *testing.T) {
+	html := `<html><head></head><body></body></html>`
+	importMap := []byte(`{"imports":{"react":"/npm/react"}}`)
+	result := rewriteHTML(html, importMap, false, "/app.js", "/src", "/src")
+
+	if !strings.Contains(result, "globalThis.global = globalThis;") {
+		t.Error("expected globalThis.global polyfill even without buffer")
+	}
+	if !strings.Contains(result, "globalThis.process = globalThis.process") {
+		t.Error("expected globalThis.process polyfill even without buffer")
+	}
+	if strings.Contains(result, `import { Buffer }`) {
+		t.Error("did not expect Buffer import when buffer is not in import map")
+	}
+	if strings.Contains(result, "globalThis.Buffer") {
+		t.Error("did not expect globalThis.Buffer when buffer is not in import map")
+	}
+}

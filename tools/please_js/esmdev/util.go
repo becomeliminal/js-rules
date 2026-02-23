@@ -90,6 +90,29 @@ func sourcefileFromResolved(packageRoot, sourceRoot, resolved string) string {
 	return resolved
 }
 
+// resolveSubpathFile finds the actual file for a package subpath, trying
+// the bare path, then common extensions (.js, .cjs, .mjs, .json), then
+// index files. This handles npm packages that use extensionless imports
+// internally (e.g., highlight.js/lib/languages/1c → 1c.js).
+func resolveSubpathFile(pkgDir, subpath string) string {
+	base := filepath.Join(pkgDir, filepath.FromSlash(strings.TrimPrefix(subpath, "./")))
+	if info, err := os.Stat(base); err == nil && !info.IsDir() {
+		return base
+	}
+	for _, ext := range []string{".js", ".cjs", ".mjs", ".json"} {
+		if info, err := os.Stat(base + ext); err == nil && !info.IsDir() {
+			return base + ext
+		}
+	}
+	for _, ext := range []string{".js", ".cjs", ".mjs"} {
+		candidate := filepath.Join(base, "index"+ext)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
 // loaderForFile returns the esbuild loader for a given file path.
 func loaderForFile(path string) api.Loader {
 	ext := filepath.Ext(path)

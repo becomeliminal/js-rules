@@ -239,6 +239,7 @@ func prebundlePackage(pkgName, pkgDir string, usedImports map[string]bool, outdi
 
 	addCJSNamedExportsToCache(depCache, knownExports)
 	fixDynamicRequires(depCache)
+	addESMDefaultExport(depCache)
 
 	return packageBuildResult{
 		pkgName:   pkgName,
@@ -321,59 +322,53 @@ func addPrefixImportMapEntries(importMap map[string]string) {
 }
 
 // fillTransitiveImports scans prebundled output for bare import specifiers
-// that are missing from the import map and prebundles those packages. This
-// catches transitive dependencies (e.g., prosemirror-state used by @tiptap/pm)
-// that weren't in the user's source-scanned usedImports in filtered mode.
+// that are missing from the import map and prebundles those packages. Uses a
+// worklist (BFS) to follow transitive dependency chains to completion, catching
+// deps that weren't in the user's source-scanned usedImports in filtered mode.
 func fillTransitiveImports(depCache map[string][]byte, importMap map[string]string, moduleMap map[string]string, define map[string]string) {
 	outdir, _ := filepath.Abs(".esm-prebundle-tmp")
 
-	for round := 0; round < 3; round++ {
-		missing := make(map[string]bool)
-
-		for _, code := range depCache {
-			for _, m := range importSpecRe.FindAllStringSubmatch(string(code), -1) {
-				spec := m[1]
-				if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") {
-					continue
-				}
-				if _, ok := importMap[spec]; ok {
-					continue
-				}
-				pkgName := resolveModuleName(spec, moduleMap)
-				pkgDir, ok := moduleMap[pkgName]
-				if !ok || isLocalLibrary(pkgDir) {
-					continue
-				}
-				// If the base package already has entries, the prefix import map
-				// entry + handleDepOnDemand will handle subpaths at runtime.
-				if spec != pkgName {
-					if _, ok := importMap[pkgName]; ok {
-						continue
-					}
-				}
-				missing[pkgName] = true
-			}
-		}
-
-		if len(missing) == 0 {
-			break
-		}
-
-		for pkgName := range missing {
-			pkgDir := moduleMap[pkgName]
-			result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, "", moduleMap)
-			if result.err != nil {
-				continue
-			}
-			for k, v := range result.depCache {
-				depCache[k] = v
-			}
-			for k, v := range result.importMap {
-				importMap[k] = v
-			}
-		}
-		addPrefixImportMapEntries(importMap)
+	// visited tracks packages already processed or in the import map.
+	visited := make(map[string]bool)
+	for spec := range importMap {
+		visited[packageNameFromSpec(spec)] = true
 	}
+
+	// Seed worklist by scanning all existing prebundled output.
+	var worklist []string
+	for _, code := range depCache {
+		worklist = append(worklist, extractMissingPkgs(code, moduleMap, visited)...)
+	}
+
+	// BFS: bundle missing packages, discovering transitive deps as we go.
+	for len(worklist) > 0 {
+		pkgName := worklist[0]
+		worklist = worklist[1:]
+		if visited[pkgName] {
+			continue
+		}
+		visited[pkgName] = true
+
+		pkgDir := moduleMap[pkgName]
+		result := prebundlePackage(pkgName, pkgDir, nil, outdir, define, "", moduleMap)
+		if result.err != nil {
+			continue
+		}
+
+		for k, v := range result.depCache {
+			depCache[k] = v
+		}
+		for k, v := range result.importMap {
+			importMap[k] = v
+		}
+
+		// Scan new output for more missing packages.
+		for _, data := range result.depCache {
+			worklist = append(worklist, extractMissingPkgs(data, moduleMap, visited)...)
+		}
+	}
+
+	addPrefixImportMapEntries(importMap)
 }
 
 // prebundleDeps pre-bundles npm dependencies using per-package parallel builds.

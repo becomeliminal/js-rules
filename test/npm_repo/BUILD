@@ -3,6 +3,7 @@ subinclude("//build_defs:js")
 npm_repo(
     name = "npm_test",
     package_lock = "package-lock.json",
+    subinclude_path = "@//build_defs:js",
 )
 
 js_binary(

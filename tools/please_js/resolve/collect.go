@@ -21,13 +21,10 @@ type resolvedPackage struct {
 }
 
 // targetName returns the Please target name for this package.
-// For scoped packages (@scope/pkg), returns just the last component.
+// Uses the flat package name (like go-rules' _module_rule_name) for global uniqueness.
+// "@babel/runtime" → "babel_runtime", "react" → "react"
 func (p resolvedPackage) targetName() string {
-	if strings.Contains(p.Name, "/") {
-		parts := strings.Split(p.Name, "/")
-		return parts[len(parts)-1]
-	}
-	return p.Name
+	return common.FlattenPkgName(p.Name)
 }
 
 // effectivePkgName returns the real npm package name if aliased, otherwise the name.
@@ -41,7 +38,7 @@ func (p resolvedPackage) effectivePkgName() string {
 // conflictTarget represents an additional npm_module target for a specific
 // version of a package that conflicts with the top-level version.
 type conflictTarget struct {
-	Dir        string   // subrepo directory path (e.g., "zod", "@types/react")
+	Dir        string   // flat subrepo directory path (e.g., "zod", "types_react")
 	TargetName string   // version-qualified name (e.g., "zod_v4_3_6")
 	PkgName    string   // real npm package name
 	Version    string
@@ -257,7 +254,7 @@ func collectPackages(pkgs map[string]packageInfo, noDev bool) ([]resolvedPackage
 			parentNestedDeps[c.ParentName] = make(map[string]string)
 		}
 		targetName := common.VersionedTargetName(c.DepName, c.Version)
-		parentNestedDeps[c.ParentName][c.DepName] = fmt.Sprintf("//%s:%s", c.DepName, targetName)
+		parentNestedDeps[c.ParentName][c.DepName] = fmt.Sprintf("//%s:%s", common.FlattenPkgName(c.DepName), targetName)
 	}
 
 	// Phase 4: Build resolvedPackage entries
@@ -348,7 +345,7 @@ func collectPackages(pkgs map[string]packageInfo, noDev bool) ([]resolvedPackage
 		sort.Strings(deps)
 
 		ctargets = append(ctargets, conflictTarget{
-			Dir:        c.DepName,
+			Dir:        common.FlattenPkgName(c.DepName),
 			TargetName: common.VersionedTargetName(c.DepName, c.Version),
 			PkgName:    c.DepName,
 			Version:    c.Version,

@@ -276,13 +276,81 @@ func writeNamedExports(sb *strings.Builder, names []string) {
 	}
 }
 
+// esmExportBlockRe matches `export { ... };` blocks in esbuild ESM output.
+var esmExportBlockRe = regexp.MustCompile(`export\s*\{([^}]+)\}\s*;`)
+
+// addESMDefaultExport adds a synthetic default export to ESM files that only
+// have named exports. This ensures CJS consumers that do `require("pkg")` —
+// which fixDynamicRequires converts to `import X from "pkg"` (a default import)
+// — can resolve the default binding.
+//
+// addCJSNamedExportsToCache handles the CJS side (adding `export default` to
+// packages with __commonJS wrappers). This function is the ESM counterpart.
+func addESMDefaultExport(depCache map[string][]byte) {
+	for urlPath, code := range depCache {
+		codeStr := string(code)
+
+		// Skip if already has a default export
+		if strings.Contains(codeStr, "export default ") ||
+			strings.Contains(codeStr, " as default") {
+			continue
+		}
+
+		// Find the export { ... } block
+		match := esmExportBlockRe.FindStringSubmatch(codeStr)
+		if match == nil {
+			continue
+		}
+
+		// Parse each entry: "localName as exportedName" or "localName"
+		type exportEntry struct {
+			local, exported string
+		}
+		var entries []exportEntry
+		for _, item := range strings.Split(match[1], ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			parts := strings.Fields(item)
+			switch {
+			case len(parts) == 3 && parts[1] == "as":
+				entries = append(entries, exportEntry{local: parts[0], exported: parts[2]})
+			case len(parts) == 1:
+				entries = append(entries, exportEntry{local: parts[0], exported: parts[0]})
+			}
+		}
+		if len(entries) == 0 {
+			continue
+		}
+
+		// Build: var __esm_default = { exported: local, ... };
+		var sb strings.Builder
+		sb.WriteString("\nvar __esm_default = {")
+		for i, e := range entries {
+			if i > 0 {
+				sb.WriteString(",")
+			}
+			if e.local == e.exported {
+				fmt.Fprintf(&sb, " %s", e.local)
+			} else {
+				fmt.Fprintf(&sb, " %s: %s", e.exported, e.local)
+			}
+		}
+		sb.WriteString(" };\nexport { __esm_default as default };\n")
+
+		depCache[urlPath] = []byte(codeStr + sb.String())
+	}
+}
+
 // fixupOnDemandDep applies CJS-to-ESM fixups to a single bundled output.
-// Reuses addCJSNamedExportsToCache and fixDynamicRequires via a throwaway
-// single-entry depCache — the same logic used for prebundled packages.
+// Reuses addCJSNamedExportsToCache, fixDynamicRequires, and addESMDefaultExport
+// via a throwaway single-entry depCache — the same logic used for prebundled packages.
 func fixupOnDemandDep(code []byte) []byte {
 	depCache := map[string][]byte{"entry": code}
 	addCJSNamedExportsToCache(depCache, nil)
 	fixDynamicRequires(depCache)
+	addESMDefaultExport(depCache)
 	return depCache["entry"]
 }
 

@@ -8,30 +8,47 @@ import (
 )
 
 // exportValue represents a node in the package.json exports tree.
-// Each node is either a string path (leaf) or a map of condition/subpath
-// keys to child nodes (branch). Custom UnmarshalJSON handles the polymorphism.
+// Each node is either a string path (leaf), a map of condition/subpath
+// keys to child nodes (branch), or an array of fallback values.
+// Custom UnmarshalJSON handles the polymorphism.
 type exportValue struct {
-	Path string
-	Map  map[string]*exportValue
+	Path  string
+	Map   map[string]*exportValue
+	Array []*exportValue
 }
 
 func (v *exportValue) UnmarshalJSON(data []byte) error {
+	// Try string
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		v.Path = s
 		return nil
 	}
+	// Try map (condition object or subpath map)
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := json.Unmarshal(data, &m); err == nil {
+		v.Map = make(map[string]*exportValue, len(m))
+		for k, raw := range m {
+			child := &exportValue{}
+			if err := json.Unmarshal(raw, child); err != nil {
+				return err
+			}
+			v.Map[k] = child
+		}
+		return nil
+	}
+	// Try array (Node.js "fallback" pattern: [conditionObj, fallbackString])
+	var arr []json.RawMessage
+	if err := json.Unmarshal(data, &arr); err != nil {
 		return err
 	}
-	v.Map = make(map[string]*exportValue, len(m))
-	for k, raw := range m {
+	v.Array = make([]*exportValue, 0, len(arr))
+	for _, raw := range arr {
 		child := &exportValue{}
 		if err := json.Unmarshal(raw, child); err != nil {
 			return err
 		}
-		v.Map[k] = child
+		v.Array = append(v.Array, child)
 	}
 	return nil
 }
@@ -126,13 +143,18 @@ func ResolvePackageEntry(pkgDir, subpath, platform string) string {
 			}
 		}
 
-		// Resolve via module → main
+		// Resolve via module → main (try adding .js extension like Node.js)
 		var entryPath string
 		for _, val := range []string{pkg.Module, pkg.Main} {
 			if val != "" {
 				resolved := filepath.Join(pkgDir, val)
 				if _, err := os.Stat(resolved); err == nil {
 					entryPath = val
+					break
+				}
+				// Try with .js extension (e.g. "main": "lib/index" → "lib/index.js")
+				if _, err := os.Stat(resolved + ".js"); err == nil {
+					entryPath = val + ".js"
 					break
 				}
 			}
@@ -188,6 +210,26 @@ func matchExports(exports *exportValue, subpath, platform string) string {
 		if entry, ok := exports.Map[subpath]; ok {
 			return resolveCondition(entry, platform)
 		}
+		// Try wildcard patterns: "./lib/*" matches "./lib/foo"
+		bestPrefix := ""
+		var bestEntry *exportValue
+		for pattern, entry := range exports.Map {
+			if !strings.Contains(pattern, "*") {
+				continue
+			}
+			prefix := strings.TrimSuffix(pattern, "*")
+			if strings.HasPrefix(subpath, prefix) && len(prefix) > len(bestPrefix) {
+				bestPrefix = prefix
+				bestEntry = entry
+			}
+		}
+		if bestEntry != nil {
+			stem := strings.TrimPrefix(subpath, bestPrefix)
+			result := resolveCondition(bestEntry, platform)
+			if result != "" {
+				return strings.Replace(result, "*", stem, 1)
+			}
+		}
 		return ""
 	}
 
@@ -204,6 +246,14 @@ func matchExports(exports *exportValue, subpath, platform string) string {
 func resolveCondition(value *exportValue, platform string) string {
 	if value.Path != "" {
 		return value.Path
+	}
+	if len(value.Array) > 0 {
+		for _, elem := range value.Array {
+			if result := resolveCondition(elem, platform); result != "" {
+				return result
+			}
+		}
+		return ""
 	}
 	if value.Map == nil {
 		return ""

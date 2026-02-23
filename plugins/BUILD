@@ -9,3 +9,9 @@ plugin_repo(
     owner = "becomeliminal",
     revision = "69935c6",
 )
+plugin_repo(
+  name = "shell",
+  revision = "v0.2.1",
+  plugin = "shell-rules",
+  owner = "please-build",
+)

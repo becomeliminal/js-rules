@@ -383,17 +383,10 @@ func (s *esmServer) handleDepOnDemand(w http.ResponseWriter, r *http.Request, ur
 		ep = common.ResolvePackageEntry(absPkgDir, subpathNoJS, "browser")
 	}
 	if ep == "" {
-		// Direct file path fallback
-		candidate := filepath.Join(absPkgDir, strings.TrimPrefix(spec, pkgName+"/"))
-		if _, err := os.Stat(candidate); err == nil {
-			ep = candidate
-		}
+		ep = resolveSubpathFile(absPkgDir, subpath)
 	}
-	if ep == "" {
-		candidate := filepath.Join(absPkgDir, strings.TrimPrefix(specNoJS, pkgName+"/"))
-		if _, err := os.Stat(candidate); err == nil {
-			ep = candidate
-		}
+	if ep == "" && subpath != subpathNoJS {
+		ep = resolveSubpathFile(absPkgDir, subpathNoJS)
 	}
 	if ep == "" {
 		// ResolvePackageEntry doesn't handle wildcard exports (e.g. "./*").
@@ -476,9 +469,12 @@ func (s *esmServer) handleDepOnDemand(w http.ResponseWriter, r *http.Request, ur
 // This lets esbuild's native resolver handle wildcard exports, conditional
 // exports, and other resolution edge cases that ResolvePackageEntry misses.
 func (s *esmServer) bundleViaStdin(spec, pkgName, pkgDir string) ([]byte, error) {
-	contents := fmt.Sprintf("export * from %q;\n", spec)
+	// Try with both export * and export { default } first. Per ES spec,
+	// export * does NOT include the default export. If the module has no
+	// default, esbuild will error, and we retry without it.
+	contents := fmt.Sprintf("export * from %q;\nexport { default } from %q;\n", spec, spec)
 	singlePkgMap := map[string]string{pkgName: pkgDir}
-	result := api.Build(api.BuildOptions{
+	buildOpts := api.BuildOptions{
 		Stdin: &api.StdinOptions{
 			Contents:   contents,
 			ResolveDir: pkgDir,
@@ -496,7 +492,13 @@ func (s *esmServer) bundleViaStdin(spec, pkgName, pkgDir string) ([]byte, error)
 			common.NodeBuiltinEmptyPlugin(s.moduleMap),
 			common.UnknownExternalPlugin(singlePkgMap),
 		},
-	})
+	}
+	result := api.Build(buildOpts)
+	if len(result.Errors) > 0 {
+		// Retry without default export — module may not have one
+		buildOpts.Stdin.Contents = fmt.Sprintf("export * from %q;\n", spec)
+		result = api.Build(buildOpts)
+	}
 	if len(result.Errors) > 0 || len(result.OutputFiles) == 0 {
 		return nil, fmt.Errorf("esbuild failed")
 	}

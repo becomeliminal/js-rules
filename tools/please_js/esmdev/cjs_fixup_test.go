@@ -474,3 +474,88 @@ export default foo;`
 		}
 	})
 }
+
+func TestAddESMDefaultExport(t *testing.T) {
+	t.Run("adds default to ESM with named exports only", func(t *testing.T) {
+		depCache := map[string][]byte{
+			"/@deps/uuid.js": []byte(
+				"var v4_default = function() {};\n" +
+					"var v5_default = function() {};\n" +
+					"export {\n  v4_default as v4,\n  v5_default as v5\n};\n",
+			),
+		}
+		addESMDefaultExport(depCache)
+		result := string(depCache["/@deps/uuid.js"])
+
+		if !strings.Contains(result, "__esm_default") {
+			t.Errorf("expected __esm_default variable, got:\n%s", result)
+		}
+		if !strings.Contains(result, "v4: v4_default") {
+			t.Errorf("expected v4: v4_default in default object, got:\n%s", result)
+		}
+		if !strings.Contains(result, "v5: v5_default") {
+			t.Errorf("expected v5: v5_default in default object, got:\n%s", result)
+		}
+		if !strings.Contains(result, "export { __esm_default as default }") {
+			t.Errorf("expected export { __esm_default as default }, got:\n%s", result)
+		}
+	})
+
+	t.Run("handles unaliased exports", func(t *testing.T) {
+		depCache := map[string][]byte{
+			"/@deps/pkg.js": []byte(
+				"function foo() {}\n" +
+					"var bar = 42;\n" +
+					"export {\n  foo,\n  bar\n};\n",
+			),
+		}
+		addESMDefaultExport(depCache)
+		result := string(depCache["/@deps/pkg.js"])
+
+		if !strings.Contains(result, "{ foo, bar }") {
+			t.Errorf("expected shorthand properties for unaliased exports, got:\n%s", result)
+		}
+		if !strings.Contains(result, "export { __esm_default as default }") {
+			t.Errorf("expected default export, got:\n%s", result)
+		}
+	})
+
+	t.Run("skips files with existing export default", func(t *testing.T) {
+		original := "var __cjs_exports = require_react();\nexport default __cjs_exports;\nexport const useState = __cjs_exports.useState;\n"
+		depCache := map[string][]byte{
+			"/@deps/react.js": []byte(original),
+		}
+		addESMDefaultExport(depCache)
+		result := string(depCache["/@deps/react.js"])
+
+		if result != original {
+			t.Errorf("expected CJS file unchanged, got:\n%s", result)
+		}
+	})
+
+	t.Run("skips files with as default in export block", func(t *testing.T) {
+		original := "var foo = 42;\nexport { foo as default };\n"
+		depCache := map[string][]byte{
+			"/@deps/pkg.js": []byte(original),
+		}
+		addESMDefaultExport(depCache)
+		result := string(depCache["/@deps/pkg.js"])
+
+		if result != original {
+			t.Errorf("expected file with 'as default' unchanged, got:\n%s", result)
+		}
+	})
+
+	t.Run("skips files without export block", func(t *testing.T) {
+		original := "var x = 1;\nconsole.log(x);\n"
+		depCache := map[string][]byte{
+			"/@deps/pkg.js": []byte(original),
+		}
+		addESMDefaultExport(depCache)
+		result := string(depCache["/@deps/pkg.js"])
+
+		if result != original {
+			t.Errorf("expected file without exports unchanged, got:\n%s", result)
+		}
+	})
+}

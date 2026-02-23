@@ -1,6 +1,7 @@
 package esmdev
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -141,8 +142,9 @@ func rewriteHTML(html string, importMapJSON []byte, hasRefresh bool, entryURLPat
 	} else {
 		clientScript = liveReloadScript
 	}
+	globalsPolyfill := buildGlobalsPolyfill(importMapJSON)
 	injection := fmt.Sprintf(`<script type="importmap">%s</script>
-%s`, string(importMapJSON), clientScript)
+%s%s`, string(importMapJSON), globalsPolyfill, clientScript)
 
 	if idx := strings.Index(html, "</head>"); idx >= 0 {
 		html = html[:idx] + injection + "\n" + html[idx:]
@@ -153,4 +155,27 @@ func rewriteHTML(html string, importMapJSON []byte, hasRefresh bool, entryURLPat
 	}
 
 	return html
+}
+
+// buildGlobalsPolyfill generates a module script that sets up Node.js globals
+// (global, process, Buffer) for packages that reference them as bare globals.
+// It checks the import map to conditionally include Buffer polyfill only when
+// the "buffer" package is available.
+func buildGlobalsPolyfill(importMapJSON []byte) string {
+	var lines []string
+	lines = append(lines, "globalThis.global = globalThis;")
+	lines = append(lines, `globalThis.process = globalThis.process || { env: { NODE_ENV: "development" } };`)
+
+	// Check if "buffer" is available in the import map.
+	var importMap struct {
+		Imports map[string]string `json:"imports"`
+	}
+	if json.Unmarshal(importMapJSON, &importMap) == nil {
+		if _, ok := importMap.Imports["buffer"]; ok {
+			lines = append(lines, `import { Buffer } from "buffer";`)
+			lines = append(lines, "globalThis.Buffer = Buffer;")
+		}
+	}
+
+	return fmt.Sprintf("<script type=\"module\">\n%s\n</script>\n", strings.Join(lines, "\n"))
 }

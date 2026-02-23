@@ -9,7 +9,7 @@ go_library(
 
 go_test(
     name = "common_test",
-    srcs = ["common_test.go"],
+    srcs = ["common_test.go", "package_json_test.go"],
     deps = [
         ":common",
         "//third_party/go:esbuild_api",

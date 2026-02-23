@@ -3,6 +3,7 @@ version = >=17.27.0
 
 [parse]
 preloadsubincludes = ///go//build_defs:go
+preloadsubincludes = ///shell//build_defs:shell
 
 [PluginDefinition]
 name = js
@@ -48,3 +49,6 @@ ReactRefreshDep = //third_party/js:react-refresh
 [Plugin "go"]
 Target = //plugins:go
 gotool = //third_party/go:gotool|go
+
+[Plugin "shell"]
+Target = //plugins:shell

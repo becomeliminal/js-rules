@@ -39,6 +39,25 @@ func resolveModuleName(spec string, moduleMap map[string]string) string {
 	return packageNameFromSpec(spec)
 }
 
+// extractMissingPkgs scans JS source code for bare import specifiers and
+// returns package names that exist in moduleMap but haven't been visited yet.
+func extractMissingPkgs(code []byte, moduleMap map[string]string, visited map[string]bool) []string {
+	var pkgs []string
+	for _, m := range importSpecRe.FindAllStringSubmatch(string(code), -1) {
+		spec := m[1]
+		if strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") {
+			continue
+		}
+		pkg := resolveModuleName(spec, moduleMap)
+		pkgDir, ok := moduleMap[pkg]
+		if !ok || isLocalLibrary(pkgDir) || visited[pkg] {
+			continue
+		}
+		pkgs = append(pkgs, pkg)
+	}
+	return pkgs
+}
+
 // packageNameFromSpec extracts the npm package name from an import specifier.
 // "react" → "react", "react-dom/client" → "react-dom",
 // "@scope/pkg" → "@scope/pkg", "@scope/pkg/sub" → "@scope/pkg".

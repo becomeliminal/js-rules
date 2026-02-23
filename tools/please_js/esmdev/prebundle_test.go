@@ -684,3 +684,446 @@ func TestPrebundleDeps_TransitiveDepsChain(t *testing.T) {
 		}
 	}
 }
+
+// TestBundleSubpathViaStdin_CJSFunctionExport verifies that a CJS package
+// where `module.exports = function(){}` (like highlight.js language files)
+// gets a proper `export default` when bundled as a subpath.
+func TestBundleSubpathViaStdin_CJSFunctionExport(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "hljs")
+	os.MkdirAll(filepath.Join(pkgDir, "lib", "languages"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "hljs",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "lib", "languages", "1c.js"), []byte(
+		"module.exports = function(hljs) { return { name: '1C', keywords: 'procedure' }; };\n",
+	), 0644)
+
+	moduleMap := map[string]string{"hljs": pkgDir}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	code, err := bundleSubpathViaStdin("hljs/lib/languages/1c", "hljs", pkgDir, moduleMap, define)
+	if err != nil {
+		t.Fatalf("bundleSubpathViaStdin failed: %v", err)
+	}
+
+	text := string(code)
+	t.Logf("output:\n%s", text)
+
+	// MUST have a default export — CJS function exports need `export default`
+	if !strings.Contains(text, "default") {
+		t.Errorf("CJS function export has no 'default' export — would cause:\n"+
+			"  'does not provide an export named default'\nContent:\n%s", text)
+	}
+}
+
+// TestBundleSubpathViaStdin_ExtensionlessSubpath verifies that a specifier
+// without an extension (e.g., "pkg/lib/utils") resolves to the actual file
+// on disk (e.g., "lib/utils.js") instead of falling to the stdin path.
+func TestBundleSubpathViaStdin_ExtensionlessSubpath(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "mypkg")
+	os.MkdirAll(filepath.Join(pkgDir, "lib"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "mypkg",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "lib", "utils.js"), []byte(
+		"export function greet() { return 'hello'; }\nexport default function() { return 'world'; }\n",
+	), 0644)
+
+	moduleMap := map[string]string{"mypkg": pkgDir}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	code, err := bundleSubpathViaStdin("mypkg/lib/utils", "mypkg", pkgDir, moduleMap, define)
+	if err != nil {
+		t.Fatalf("bundleSubpathViaStdin failed: %v", err)
+	}
+
+	text := string(code)
+	t.Logf("output:\n%s", text)
+
+	// Must have both the default and named exports
+	if !strings.Contains(text, "default") {
+		t.Errorf("expected default export in output, got:\n%s", text)
+	}
+	if !strings.Contains(text, "greet") {
+		t.Errorf("expected named export 'greet' in output, got:\n%s", text)
+	}
+}
+
+// TestBundleSubpathViaStdin_WildcardExport verifies that bundleSubpathViaStdin
+// resolves subpaths via wildcard export patterns in package.json.
+func TestBundleSubpathViaStdin_WildcardExport(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "mypkg")
+	os.MkdirAll(filepath.Join(pkgDir, "es"), 0755)
+	os.MkdirAll(filepath.Join(pkgDir, "lib"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "mypkg",
+  "version": "1.0.0",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./lib/*": {
+      "import": "./es/*.js",
+      "require": "./lib/*.js"
+    }
+  }
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("export default {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "es", "foo.js"), []byte(
+		"export default function foo() { return 'foo'; }\n",
+	), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "lib", "foo.js"), []byte(
+		"module.exports = function foo() { return 'foo'; };\n",
+	), 0644)
+
+	moduleMap := map[string]string{"mypkg": pkgDir}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	code, err := bundleSubpathViaStdin("mypkg/lib/foo", "mypkg", pkgDir, moduleMap, define)
+	if err != nil {
+		t.Fatalf("bundleSubpathViaStdin failed: %v", err)
+	}
+
+	text := string(code)
+	t.Logf("output:\n%s", text)
+
+	// Should resolve via wildcard to es/foo.js (the "import" condition)
+	if !strings.Contains(text, "foo") {
+		t.Errorf("expected 'foo' in output, got:\n%s", text)
+	}
+	if !hasExportStatement(code) {
+		t.Errorf("expected export statement in output, got:\n%s", text)
+	}
+}
+
+// TestBundleSubpathViaStdin_DeepSubpath verifies extension probing works
+// for subpaths with multiple directory segments (e.g., "pkg/a/b/c" → "a/b/c.js").
+func TestBundleSubpathViaStdin_DeepSubpath(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "deep-pkg")
+	os.MkdirAll(filepath.Join(pkgDir, "a", "b"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "deep-pkg",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "a", "b", "c.js"), []byte(
+		"export const deep = 'value';\n",
+	), 0644)
+
+	moduleMap := map[string]string{"deep-pkg": pkgDir}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	code, err := bundleSubpathViaStdin("deep-pkg/a/b/c", "deep-pkg", pkgDir, moduleMap, define)
+	if err != nil {
+		t.Fatalf("bundleSubpathViaStdin failed: %v", err)
+	}
+
+	text := string(code)
+	if !strings.Contains(text, "deep") {
+		t.Errorf("expected 'deep' in output, got:\n%s", text)
+	}
+}
+
+// TestBundleSubpathViaStdin_IndexSubpath verifies that a subpath pointing
+// to a directory with index.js resolves correctly.
+func TestBundleSubpathViaStdin_IndexSubpath(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "idx-pkg")
+	os.MkdirAll(filepath.Join(pkgDir, "components"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "idx-pkg",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "components", "index.js"), []byte(
+		"export const Button = 'button';\nexport default Button;\n",
+	), 0644)
+
+	moduleMap := map[string]string{"idx-pkg": pkgDir}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	code, err := bundleSubpathViaStdin("idx-pkg/components", "idx-pkg", pkgDir, moduleMap, define)
+	if err != nil {
+		t.Fatalf("bundleSubpathViaStdin failed: %v", err)
+	}
+
+	text := string(code)
+	if !strings.Contains(text, "Button") {
+		t.Errorf("expected 'Button' in output, got:\n%s", text)
+	}
+	if !strings.Contains(text, "default") {
+		t.Errorf("expected default export in output, got:\n%s", text)
+	}
+}
+
+// TestFillMissingDeps_CJSFunctionExport verifies the end-to-end
+// highlight.js scenario: consumer externalizes CJS function export subpaths,
+// fillMissingDeps bundles them via bundleSubpathViaStdin, and the result
+// has a proper `export default`.
+func TestFillMissingDeps_CJSFunctionExport(t *testing.T) {
+	dir := t.TempDir()
+
+	// hljs: package with CJS function export subpath
+	hljsDir := filepath.Join(dir, "hljs")
+	os.MkdirAll(filepath.Join(hljsDir, "lib", "lang"), 0755)
+	os.WriteFile(filepath.Join(hljsDir, "package.json"), []byte(`{
+  "name": "hljs",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(hljsDir, "index.js"), []byte("module.exports = {};\n"), 0644)
+	os.WriteFile(filepath.Join(hljsDir, "lib", "lang", "1c.js"), []byte(
+		"module.exports = function(hljs) { return { name: '1C' }; };\n",
+	), 0644)
+
+	// consumer: imports hljs/lib/lang/1c (externalized in its bundle)
+	consumerDir := filepath.Join(dir, "consumer")
+	os.MkdirAll(consumerDir, 0755)
+	os.WriteFile(filepath.Join(consumerDir, "package.json"), []byte(`{
+  "name": "consumer",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(consumerDir, "index.js"), []byte(
+		"import lang1c from 'hljs/lib/lang/1c';\nexport default lang1c;\n",
+	), 0644)
+
+	moduleConfigPath := filepath.Join(dir, "moduleconfig")
+	os.WriteFile(moduleConfigPath, []byte(
+		"hljs="+hljsDir+"\nconsumer="+consumerDir+"\n",
+	), 0644)
+
+	// Simulate prebundled output with externalized hljs/lib/lang/1c
+	depsDir := filepath.Join(dir, "deps")
+	os.MkdirAll(depsDir, 0755)
+	os.WriteFile(filepath.Join(depsDir, "consumer.js"), []byte(
+		"import lang1c from \"hljs/lib/lang/1c\";\nvar consumer_default = lang1c;\nexport {\n  consumer_default as default\n};\n",
+	), 0644)
+	os.WriteFile(filepath.Join(depsDir, "hljs.js"), []byte(
+		"var hljs_default = {};\nexport { hljs_default as default };\n",
+	), 0644)
+
+	importMap := map[string]string{
+		"consumer":  "/@deps/consumer.js",
+		"consumer/": "/@deps/consumer/",
+		"hljs":      "/@deps/hljs.js",
+		"hljs/":     "/@deps/hljs/",
+	}
+
+	err := fillMissingDeps(importMap, moduleConfigPath, depsDir)
+	if err != nil {
+		t.Fatalf("fillMissingDeps failed: %v", err)
+	}
+
+	// Import map should now have the subpath
+	urlPath, ok := importMap["hljs/lib/lang/1c"]
+	if !ok {
+		t.Fatalf("import map missing hljs/lib/lang/1c; map: %v", importMap)
+	}
+
+	// Read generated file
+	rel := strings.TrimPrefix(urlPath, "/@deps/")
+	code, err := os.ReadFile(filepath.Join(depsDir, rel))
+	if err != nil {
+		t.Fatalf("failed to read generated file: %v", err)
+	}
+
+	text := string(code)
+	t.Logf("generated hljs/lib/lang/1c:\n%s", text)
+
+	// MUST have a default export
+	if !strings.Contains(text, "default") {
+		t.Errorf("CJS function export subpath has no default export:\n%s", text)
+	}
+}
+
+// TestFillMissingDeps_WildcardSubpaths verifies that fillMissingDeps
+// resolves multiple missing subpaths from a package with wildcard exports.
+func TestFillMissingDeps_WildcardSubpaths(t *testing.T) {
+	dir := t.TempDir()
+
+	// Package with wildcard exports
+	pkgDir := filepath.Join(dir, "mypkg")
+	os.MkdirAll(filepath.Join(pkgDir, "es"), 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "mypkg",
+  "version": "1.0.0",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./lib/*": {
+      "import": "./es/*.js"
+    }
+  }
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("export default {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "es", "alpha.js"), []byte("export default function alpha() {};\n"), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "es", "beta.js"), []byte("export default function beta() {};\n"), 0644)
+
+	// consumer externalizes mypkg/lib/alpha and mypkg/lib/beta
+	consumerDir := filepath.Join(dir, "consumer")
+	os.MkdirAll(consumerDir, 0755)
+	os.WriteFile(filepath.Join(consumerDir, "package.json"), []byte(`{
+  "name": "consumer",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(consumerDir, "index.js"), []byte(
+		"import a from 'mypkg/lib/alpha';\nimport b from 'mypkg/lib/beta';\nexport default [a, b];\n",
+	), 0644)
+
+	moduleConfigPath := filepath.Join(dir, "moduleconfig")
+	os.WriteFile(moduleConfigPath, []byte(
+		"mypkg="+pkgDir+"\nconsumer="+consumerDir+"\n",
+	), 0644)
+
+	depsDir := filepath.Join(dir, "deps")
+	os.MkdirAll(depsDir, 0755)
+	os.WriteFile(filepath.Join(depsDir, "consumer.js"), []byte(
+		"import a from \"mypkg/lib/alpha\";\nimport b from \"mypkg/lib/beta\";\nvar consumer_default = [a, b];\nexport { consumer_default as default };\n",
+	), 0644)
+	os.WriteFile(filepath.Join(depsDir, "mypkg.js"), []byte(
+		"var mypkg_default = {};\nexport { mypkg_default as default };\n",
+	), 0644)
+
+	importMap := map[string]string{
+		"consumer":  "/@deps/consumer.js",
+		"consumer/": "/@deps/consumer/",
+		"mypkg":     "/@deps/mypkg.js",
+		"mypkg/":    "/@deps/mypkg/",
+	}
+
+	err := fillMissingDeps(importMap, moduleConfigPath, depsDir)
+	if err != nil {
+		t.Fatalf("fillMissingDeps failed: %v", err)
+	}
+
+	for _, spec := range []string{"mypkg/lib/alpha", "mypkg/lib/beta"} {
+		urlPath, ok := importMap[spec]
+		if !ok {
+			t.Errorf("import map missing %s; map: %v", spec, importMap)
+			continue
+		}
+		rel := strings.TrimPrefix(urlPath, "/@deps/")
+		code, err := os.ReadFile(filepath.Join(depsDir, rel))
+		if err != nil {
+			t.Errorf("failed to read generated file for %s: %v", spec, err)
+			continue
+		}
+		if !hasExportStatement(code) {
+			t.Errorf("%s has no export statement:\n%s", spec, string(code))
+		}
+	}
+}
+
+// TestBundleSubpathViaStdin_StdinFallback_CJSWithDefault forces the stdin
+// fallback path by using a package with a custom "exports" that doesn't
+// match the requested subpath AND the file path doesn't match either
+// (esbuild resolves it via node_modules structure).
+// The CJS module has only a default export (module.exports = function).
+// Without Fix 3, the stdin `export *` strips the default export.
+func TestBundleSubpathViaStdin_StdinFallback_CJSWithDefault(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a package where:
+	// - exports field has "." only (no subpath match for ./internal/helper)
+	// - The file is at node_modules/inner-pkg/internal/helper.js
+	//   (not under pkgDir directly — only esbuild's resolver can find it)
+	pkgDir := filepath.Join(dir, "outer-pkg")
+	os.MkdirAll(pkgDir, 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "outer-pkg",
+  "version": "1.0.0",
+  "main": "index.js",
+  "exports": { ".": "./index.js" }
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte("module.exports = {};\n"), 0644)
+
+	// inner-pkg installed in outer-pkg's node_modules, has a CJS default export
+	innerDir := filepath.Join(pkgDir, "node_modules", "inner-pkg")
+	os.MkdirAll(innerDir, 0755)
+	os.WriteFile(filepath.Join(innerDir, "package.json"), []byte(`{
+  "name": "inner-pkg",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(innerDir, "index.js"), []byte(
+		"module.exports = function helper() { return 'ok'; };\n",
+	), 0644)
+
+	// Call with "inner-pkg" as spec — ResolvePackageEntry on outer-pkg for "inner-pkg"
+	// won't match, resolveSubpathFile on outer-pkg won't find it, but esbuild
+	// can resolve it via node_modules from the resolveDir.
+	moduleMap := map[string]string{
+		"outer-pkg": pkgDir,
+		"inner-pkg": innerDir,
+	}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	// This specifically exercises the stdin fallback in bundleSubpathViaStdin
+	// by using a specifier that can't be resolved by ResolvePackageEntry or
+	// resolveSubpathFile on the pkgDir.
+	code, err := bundleSubpathViaStdin("inner-pkg", "inner-pkg", innerDir, moduleMap, define)
+	if err != nil {
+		t.Fatalf("bundleSubpathViaStdin failed: %v", err)
+	}
+
+	text := string(code)
+	t.Logf("output:\n%s", text)
+
+	// Even via stdin, the CJS fixup should produce a default export
+	if !strings.Contains(text, "default") {
+		t.Errorf("stdin fallback for CJS function export has no default:\n%s", text)
+	}
+}
+
+// TestBundleSubpathViaStdin_StdinFallback_NamedOnly tests that the stdin
+// fallback works for modules with only named exports (no default).
+func TestBundleSubpathViaStdin_StdinFallback_NamedOnly(t *testing.T) {
+	dir := t.TempDir()
+
+	pkgDir := filepath.Join(dir, "named-pkg")
+	os.MkdirAll(pkgDir, 0755)
+	os.WriteFile(filepath.Join(pkgDir, "package.json"), []byte(`{
+  "name": "named-pkg",
+  "version": "1.0.0",
+  "main": "index.js"
+}`), 0644)
+	os.WriteFile(filepath.Join(pkgDir, "index.js"), []byte(
+		"export function foo() { return 1; }\nexport function bar() { return 2; }\n",
+	), 0644)
+
+	moduleMap := map[string]string{"named-pkg": pkgDir}
+	define := map[string]string{"process.env.NODE_ENV": `"development"`}
+
+	code, err := bundleSubpathViaStdin("named-pkg", "named-pkg", pkgDir, moduleMap, define)
+	if err != nil {
+		t.Fatalf("bundleSubpathViaStdin failed: %v", err)
+	}
+
+	text := string(code)
+	t.Logf("output:\n%s", text)
+
+	if !strings.Contains(text, "foo") {
+		t.Errorf("expected named export 'foo' in output, got:\n%s", text)
+	}
+	if !strings.Contains(text, "bar") {
+		t.Errorf("expected named export 'bar' in output, got:\n%s", text)
+	}
+}
