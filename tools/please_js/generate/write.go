@@ -40,14 +40,9 @@ func WriteBUILD(path string, plan *Plan, subincludePath string, sums []string) e
 		if i < len(sums) && sums[i] != "" {
 			list(call, "hashes", []string{sums[i]})
 		}
-		if e.HasBin {
-			// A bool, not the string "True": generated files should read the
-			// way a hand-written one would.
-			call.List = append(call.List, &build.AssignExpr{
-				LHS: &build.Ident{Name: "has_bin"}, Op: "=",
-				RHS: &build.Ident{Name: "True"},
-			})
-		}
+		// Executables are deliberately not recorded here. The lockfile's
+		// hasBin says only that some exist; the names and paths live in the
+		// package's own manifest, which npm_repo reads at build time.
 		f.Stmt = append(f.Stmt, call)
 	}
 

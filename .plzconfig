@@ -10,6 +10,12 @@ DefaultValue = ///js//third_party/node:node|node
 Help = Build label for the Node.js binary. Defaults to a toolchain from node-rules.
 Inherit = true
 
+[PluginConfig "please_js_tool"]
+ConfigKey = PleaseJsTool
+DefaultValue = //tools/please_js
+Help = Build label for the please_js companion tool.
+Inherit = true
+
 [PluginConfig "npm_registry"]
 ConfigKey = NpmRegistry
 DefaultValue = https://registry.npmjs.org

@@ -8,5 +8,6 @@ go_binary(
         "//third_party/go:go-flags",
         "//tools/please_js/generate",
         "//tools/please_js/lockfile",
+        "//tools/please_js/store",
     ],
 )
