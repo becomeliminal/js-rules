@@ -32,17 +32,18 @@ var opts = struct {
 	} `command:"update" description:"Translate a pnpm lockfile into npm_repo targets"`
 
 	Describe struct {
+		Name    string   `long:"name" required:"true" description:"this entry's identity, its target name"`
 		Package string   `long:"package" required:"true" description:"npm package name"`
-		Version string   `long:"version" required:"true" description:"exact version"`
-		Key     string   `long:"key" description:"store key; defaults to package@version"`
-		Dep     []string `long:"dep" description:"a dependency, as import-name=store-key"`
-		Dir     string   `long:"dir" required:"true" description:"the fetched package directory"`
-		Out     string   `long:"out" required:"true" description:"metadata file to write"`
+		Version string   `long:"version" description:"exact version"`
+		AliasOf string   `long:"alias-of" description:"the entry this one rebinds, for an npm alias"`
+		Dep     []string `long:"dep" description:"name of an entry in this package's node_modules"`
+		Dir     string   `long:"dir" description:"the fetched package directory"`
+		Out     string   `long:"out" required:"true" description:"description file to write"`
 	} `command:"describe" description:"Record what a fetched package is, for npm_link to assemble"`
 
 	Link struct {
 		Source []string `long:"source" description:"a staged package, as metadata-path:package-dir"`
-		LinkTo []string `long:"link" description:"a top-level link, as import-name=store-key"`
+		LinkTo []string `long:"link" description:"name of an entry to expose at the top level"`
 		Out    string   `long:"out" required:"true" description:"node_modules root to build"`
 	} `command:"link" description:"Assemble a node_modules tree from staged packages"`
 }{
@@ -134,32 +135,23 @@ func update() error {
 // from a set of them without re-deriving anything from the directory layout.
 func describe() error {
 	o := opts.Describe
-	key := o.Key
-	if key == "" {
-		key = o.Package + "@" + o.Version
-	}
 
-	deps := map[string]string{}
-	for _, d := range o.Dep {
-		alias, depKey, ok := strings.Cut(d, "=")
-		if !ok {
-			return fmt.Errorf("--dep %q is not import-name=store-key", d)
+	// Executables come from the package's own manifest, which is where npm puts
+	// them -- the lockfile only records that some exist.
+	var bins map[string]string
+	if o.Dir != "" {
+		var err error
+		if bins, err = store.ReadBins(o.Dir, o.Package); err != nil {
+			return err
 		}
-		deps[alias] = depKey
-	}
-
-	// Executables are read from the package's own manifest rather than
-	// declared in the lockfile, because that is where npm puts them.
-	bins, err := store.ReadBins(o.Dir, o.Package)
-	if err != nil {
-		return err
 	}
 
 	return store.WriteMeta(o.Out, store.Meta{
+		Name:    o.Name,
 		Package: o.Package,
 		Version: o.Version,
-		Key:     key,
-		Deps:    deps,
+		AliasOf: o.AliasOf,
+		Deps:    o.Dep,
 		Bins:    bins,
 	})
 }
@@ -179,14 +171,5 @@ func link() error {
 		sources = append(sources, store.Source{Dir: dir, Meta: meta})
 	}
 
-	var links []store.Link
-	for _, l := range opts.Link.LinkTo {
-		alias, key, ok := strings.Cut(l, "=")
-		if !ok {
-			return fmt.Errorf("--link %q is not import-name=store-key", l)
-		}
-		links = append(links, store.Link{Alias: alias, Key: key})
-	}
-
-	return store.Build(opts.Link.Out, sources, links)
+	return store.Build(opts.Link.Out, sources, opts.Link.LinkTo)
 }

@@ -29,7 +29,7 @@ npm_repo(
     name = "loose_envify",
     pkg = "loose-envify",
     version = "1.4.0",
-    deps = {"js-tokens": ":js_tokens_4"},
+    deps = ["js_tokens_4"],
 )
 
 # Same package, different resolution, therefore a different store key. This is
@@ -38,20 +38,14 @@ npm_repo(
     name = "loose_envify_old",
     pkg = "loose-envify",
     version = "1.1.0",
-    key = "loose-envify@1.1.0_js-tokens@3.0.2",
-    deps = {"js-tokens": ":js_tokens_3"},
+    deps = ["js_tokens_3"],
 )
 
 npm_repo(
     name = "react_dom",
     pkg = "react-dom",
     version = "18.3.1",
-    key = "react-dom@18.3.1_react@18.3.1",
-    deps = {
-        "loose-envify": ":loose_envify",
-        "react": ":react",
-        "scheduler": ":scheduler",
-    },
+    deps = ["loose_envify", "react", "scheduler"],
 )
 
 # TypeScript 7 is the Go-native compiler: a thin wrapper plus one platform
@@ -66,5 +60,5 @@ npm_repo(
 npm_repo(
     name = "typescript",
     version = "7.0.2",
-    deps = {"@typescript/typescript-linux-x64": ":typescript_linux_x64"},
+    deps = ["typescript_linux_x64"],
 )

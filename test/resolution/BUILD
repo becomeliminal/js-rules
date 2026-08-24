@@ -1,5 +1,14 @@
 subinclude("//build_defs:npm")
 
+# The list form makes a genuine collision visible: both entries are the package
+# loose-envify, so only one can be imported under that name. Rebinding the older
+# one is what npm aliasing is for.
+npm_alias(
+    name = "loose_envify_old_alias",
+    pkg = "loose-envify-old",
+    of = "loose_envify_old",
+)
+
 npm_link(
     name = "node_modules",
     # The closure, not just the top-level links: scheduler and both js-tokens
@@ -14,12 +23,12 @@ npm_link(
         "//third_party/js:react_dom",
         "//third_party/js:scheduler",
     ],
-    packages = {
-        "loose-envify": "//third_party/js:loose_envify",
-        "loose-envify-old": "//third_party/js:loose_envify_old",
-        "react": "//third_party/js:react",
-        "react-dom": "//third_party/js:react_dom",
-    },
+    packages = [
+        "//third_party/js:loose_envify",
+        "//third_party/js:react",
+        "//third_party/js:react_dom",
+        ":loose_envify_old_alias",
+    ],
 )
 
 # Node resolving a real package graph through a store Please built: leaf

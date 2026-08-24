@@ -6,7 +6,9 @@ npm_link(
         "//third_party/js:typescript",
         "//third_party/js:typescript_linux_x64",
     ],
-    packages = {"typescript": "//third_party/js:typescript"},
+    packages = [
+        "//third_party/js:typescript",
+    ],
 )
 
 # The keystone. tsc is an npm-provided binary that does its own module

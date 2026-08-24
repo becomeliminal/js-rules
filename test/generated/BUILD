@@ -28,12 +28,18 @@ npm_repo(
     version = "1.0.0",
 )
 
+npm_alias(
+    name = "aspect-test_c1_alias_79ed7c4a",
+    of = "aspect-test_c_1.0.0",
+    pkg = "@aspect-test/c1",
+)
+
 npm_link(
     name = "node_modules_lib",
-    packages = {
-        "@aspect-test/e": ":aspect-test_e_1.0.0",
-        "@aspect-test/f": ":aspect-test_f_1.0.0",
-    },
+    packages = [
+        ":aspect-test_e_1.0.0",
+        ":aspect-test_f_1.0.0",
+    ],
     store = [
         ":aspect-test_e_1.0.0",
         ":aspect-test_f_1.0.0",
@@ -43,10 +49,10 @@ npm_link(
 
 npm_link(
     name = "node_modules_lib-dupes",
-    packages = {
-        "@aspect-test/c": ":aspect-test_c_2.0.2",
-        "@aspect-test/c1": ":aspect-test_c_1.0.0",
-    },
+    packages = [
+        ":aspect-test_c1_alias_79ed7c4a",
+        ":aspect-test_c_2.0.2",
+    ],
     store = [
         ":aspect-test_c_1.0.0",
         ":aspect-test_c_2.0.2",

@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -24,82 +23,136 @@ const StoreRoot = ".plz"
 
 // Meta describes one fetched package. npm_repo writes it beside the package;
 // npm_link reads every one it is given and assembles the tree from them.
+//
+// Deps is a list of names, not a map of import-name to name, for the same
+// reason go_library takes a list: the name a dependency is imported under is
+// read from that dependency's own description. It is also not a list of Please
+// labels. npm permits dependency cycles -- @babel/core and
+// @babel/helper-module-transforms require each other, as do browserslist and
+// update-browserslist-db -- and Please rejects a cyclic build graph outright.
+// Go and Rust never hit this because both languages forbid import cycles.
+// Since npm_link is handed the whole closure anyway, edges between packages
+// would buy nothing, so a dependency is named here and resolved at link time.
 type Meta struct {
-	Package string            `json:"package"`
-	Version string            `json:"version"`
-	Key     string            `json:"key"`
-	Deps    map[string]string `json:"deps,omitempty"` // import name -> dep's store key
-	Bins    map[string]string `json:"bins,omitempty"` // bin name -> path within the package
+	Package string   `json:"package"`
+	Version string   `json:"version"`
+	Name    string   `json:"name"`              // this entry's identity: its target name
+	AliasOf string   `json:"aliasOf,omitempty"` // set when this entry rebinds another
+	Deps    []string `json:"deps,omitempty"`    // names of entries in this package's node_modules
+	Bins    map[string]string `json:"bins,omitempty"`
 }
 
-// StoreKey flattens a key into a single directory name.
+// StoreDir is the directory an entry occupies within the store.
 //
-// A scoped package's key carries a path separator, which would otherwise nest
-// the entry a level deeper than every path referencing it. pnpm and
-// aspect_rules_js both map the separator to '+' for the same reason.
-func StoreKey(key string) string { return strings.ReplaceAll(key, "/", "+") }
+// The entry's identity is its Please target name, which is already unique per
+// resolution: the generator folds the peer resolution into it, and Please
+// enforces uniqueness within a package. pnpm has to invent a key here because
+// it has no target names; we do, so the name is the key.
+func StoreDir(name string) string { return strings.ReplaceAll(name, "/", "+") }
 
-// Source is one staged package directory together with its metadata.
+// Source is one staged package directory together with its description.
 type Source struct {
-	Dir  string // directory holding the package's files
+	Dir  string // directory holding the package's files; empty for an alias
 	Meta Meta
 }
 
-// Link is a package to expose at the top level of node_modules, under the name
-// source code imports it by. That name is not always the package name: a
-// lockfile can bind one package under several aliases, at different versions.
-type Link struct {
-	Alias string
-	Key   string
-}
-
 // Build assembles a node_modules tree at root.
-func Build(root string, sources []Source, links []Link) error {
-	byKey := make(map[string]Source, len(sources))
+//
+// links names the entries to expose at the top level. An entry is exposed under
+// its own package name, so rebinding a package under another name is done by
+// linking an alias entry rather than by naming it here -- which is why this
+// takes a list and not a map.
+func Build(root string, sources []Source, links []string) error {
+	byName := make(map[string]Source, len(sources))
 	for _, s := range sources {
-		byKey[s.Meta.Key] = s
+		if _, dup := byName[s.Meta.Name]; dup {
+			return fmt.Errorf("two store entries are both named %q", s.Meta.Name)
+		}
+		byName[s.Meta.Name] = s
 	}
 
-	// Every package's files, once, at a path keyed by its resolution.
+	// An alias holds no files of its own; it points at the entry it rebinds, so
+	// the package is still present exactly once. Following the chain rather
+	// than copying is what keeps a package a singleton, which matters because
+	// two copies of something like React are two module instances.
+	resolve := func(name string) (Source, error) {
+		seen := map[string]bool{}
+		for {
+			s, ok := byName[name]
+			if !ok {
+				return Source{}, fmt.Errorf(
+					"%q is not in the closure -- npm_link needs every entry reachable from "+
+						"the packages it links, not only the direct ones", name)
+			}
+			if s.Meta.AliasOf == "" {
+				return s, nil
+			}
+			if seen[name] {
+				return Source{}, fmt.Errorf("alias cycle through %q", name)
+			}
+			seen[name] = true
+			name = s.Meta.AliasOf
+		}
+	}
+
+	// Every package's files, once, at a path keyed by its identity.
 	for _, s := range sources {
-		dst := filepath.Join(root, StoreRoot, StoreKey(s.Meta.Key), "node_modules", s.Meta.Package)
+		if s.Meta.AliasOf != "" {
+			continue
+		}
+		dst := filepath.Join(root, StoreRoot, StoreDir(s.Meta.Name), "node_modules", s.Meta.Package)
 		if err := copyTree(s.Dir, dst); err != nil {
-			return fmt.Errorf("staging %s: %w", s.Meta.Key, err)
+			return fmt.Errorf("staging %s: %w", s.Meta.Name, err)
 		}
 	}
 
 	// A package's own dependencies, as siblings of it inside its store entry.
-	// Node's resolution walks up from a file to the nearest node_modules, so
-	// this is what makes a dependency resolvable from inside the package
-	// without any resolver hook.
+	// Node resolves by walking up from a file to the nearest node_modules, so
+	// this is what makes a dependency reachable from inside the package without
+	// any resolver hook. The name a dependency appears under comes from that
+	// dependency's own description, never from the dependent.
 	for _, s := range sources {
-		for _, alias := range sortedKeys(s.Meta.Deps) {
-			depKey := s.Meta.Deps[alias]
-			dep, ok := byKey[depKey]
-			if !ok {
-				return fmt.Errorf(
-					"%s depends on %s, which is not in the closure -- npm_link needs every "+
-						"store entry reachable from the packages it links, not just the direct ones",
-					s.Meta.Key, depKey)
+		if s.Meta.AliasOf != "" {
+			continue
+		}
+		for _, depName := range s.Meta.Deps {
+			dep, err := resolve(depName)
+			if err != nil {
+				return fmt.Errorf("%s depends on %w", s.Meta.Name, err)
 			}
-			from := filepath.Join(root, StoreRoot, StoreKey(s.Meta.Key), "node_modules", alias)
-			to := filepath.Join(root, StoreRoot, StoreKey(depKey), "node_modules", dep.Meta.Package)
+			alias := byName[depName].Meta.Package
+			from := filepath.Join(root, StoreRoot, StoreDir(s.Meta.Name), "node_modules", alias)
+			to := filepath.Join(root, StoreRoot, StoreDir(dep.Meta.Name), "node_modules", dep.Meta.Package)
 			if err := symlink(from, to); err != nil {
-				return fmt.Errorf("linking %s -> %s: %w", from, to, err)
+				return fmt.Errorf("linking %s into %s: %w", alias, s.Meta.Name, err)
 			}
 		}
 	}
 
-	// The top level: what this project can import by name.
-	for _, l := range links {
-		src, ok := byKey[l.Key]
+	// The top level: what this project can import by name. Two entries wanting
+	// the same name is a real condition -- two versions of one package, only
+	// one of which can hold the plain name -- and it has to be refused rather
+	// than resolved by whichever happens to be linked last.
+	taken := map[string]string{}
+	for _, name := range links {
+		entry, ok := byName[name]
 		if !ok {
-			return fmt.Errorf("link %q refers to %s, which is not in the closure", l.Alias, l.Key)
+			return fmt.Errorf("%q is linked at the top level but is not in the closure", name)
 		}
-		from := filepath.Join(root, l.Alias)
-		to := filepath.Join(root, StoreRoot, StoreKey(l.Key), "node_modules", src.Meta.Package)
+		target, err := resolve(name)
+		if err != nil {
+			return err
+		}
+		if prev, dup := taken[entry.Meta.Package]; dup {
+			return fmt.Errorf(
+				"%s and %s would both be imported as %q; link an npm_alias to give one of them another name",
+				prev, name, entry.Meta.Package)
+		}
+		taken[entry.Meta.Package] = name
+		from := filepath.Join(root, entry.Meta.Package)
+		to := filepath.Join(root, StoreRoot, StoreDir(target.Meta.Name), "node_modules", target.Meta.Package)
 		if err := symlink(from, to); err != nil {
-			return fmt.Errorf("linking %s: %w", l.Alias, err)
+			return fmt.Errorf("linking %s: %w", entry.Meta.Package, err)
 		}
 	}
 	return nil
@@ -176,15 +229,6 @@ func WriteMeta(path string, m Meta) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
-}
-
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // ReadBins returns a package's executables, from the "bin" field of its own

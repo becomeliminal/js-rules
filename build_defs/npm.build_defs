@@ -1,55 +1,61 @@
 """npm dependencies as a pnpm-style symlinked package store.
 
-Every package version lives once, at a path keyed by the resolution that
-produced it, and everything needing it is a symlink into that one copy. Node's
-resolution walks up node_modules directories, so a package placed at
-<store>/node_modules/<pkg> with its dependencies as siblings resolves correctly
-with no resolver hook -- which is what lets npm-provided tools, which do their
-own resolution, run unchanged.
+Every package version lives once, at a path keyed by its identity, and
+everything needing it is a symlink into that one copy. Node's resolution walks
+up node_modules directories, so a package placed at <store>/node_modules/<pkg>
+with its dependencies as siblings resolves correctly with no resolver hook --
+which is what lets npm-provided tools, which do their own resolution, run
+unchanged.
 
     node_modules/
-    |-- <pkg> -> .plz/<key>/node_modules/<pkg>          the "link"
+    |-- <pkg> -> .plz/<entry>/node_modules/<pkg>        the "link"
     `-- .plz/
-        `-- <key>/node_modules/
+        `-- <entry>/node_modules/
             |-- <pkg>/                                   real files
-            `-- <dep> -> ../../<depkey>/node_modules/<dep>
+            `-- <dep> -> ../../<dep-entry>/node_modules/<dep>
 
-The rules here stay deliberately thin. Every path in that tree is relative and
-several depend on how deeply an alias nests, so the arithmetic lives in
-please_js where it is tested, not in a shell command where it is not.
+The rules stay thin. Every path in that tree is relative and several depend on
+how deeply a name nests, so the arithmetic lives in please_js where it is
+tested, not in a shell command where it is not.
 """
 
 
-def npm_repo(name:str, pkg:str="", version:str="", key:str="", deps:dict={},
+def npm_repo(name:str, pkg:str="", version:str="", deps:list=[],
              hashes:list=None, visibility:list=["PUBLIC"], labels:list=[]):
     """One npm package version, fetched and described.
 
-    One rule per package, as go_repo and rust_repo do: per-package
-    configuration is a rule argument rather than an entry in a dict on a rule
-    that owns the whole lockfile.
-
-    The rule fetches and describes; it does not shape the store. What a package
-    is -- its name, version, resolution key, dependencies and executables -- is
-    recorded beside it, and npm_link assembles trees from those descriptions.
+    One rule per package, as go_repo and rust_repo do: per-package configuration
+    is a rule argument rather than an entry in a dict on a rule owning the whole
+    lockfile.
 
     Args:
-        name: Target name.
+        name: Target name, and the entry's identity in the store. The generator
+              folds any peer resolution into it and Please enforces uniqueness,
+              so two resolutions of one package cannot collide.
         pkg: npm package name. Defaults to name.
         version: Exact version to fetch.
-        key: Store key. Defaults to pkg@version. Pass the resolution-carrying
-             key where a package's dependencies change its identity, so two
-             resolutions of one package coexist.
-        deps: Map of import name -> npm_repo target it resolves to.
+        deps: Names of the entries belonging in this package's node_modules.
+
+              Names, not labels, and deliberately so. npm permits dependency
+              cycles -- @babel/core and @babel/helper-module-transforms require
+              each other, as do browserslist and update-browserslist-db -- and
+              Please rejects a cyclic build graph outright. Go and Rust never
+              meet this because both forbid import cycles. npm_link is handed
+              the whole closure anyway, so edges here would buy nothing.
+
+              The name a dependency is imported under comes from that
+              dependency's own description, exactly as go_library takes a list
+              of deps and please_go builds the importconfig from what each one
+              declares about itself.
         hashes: Download hashes. A lockfile's integrity is sha512 and Please
-                verifies sha1 or sha256, so please_js update records a sha256
-                it computed while checking the sha512.
+                verifies sha1 or sha256, so please_js update records a sha256 it
+                computed while checking the sha512.
         visibility: Visibility specification.
         labels: Additional labels.
     """
     pkg = pkg or name
     if not version:
         fail(f"npm_repo {name}: version is required")
-    key = key or f"{pkg}@{version}"
 
     # Scoped packages live at @scope/name/-/name-version.tgz: the scope is in
     # the path but not in the tarball filename.
@@ -63,29 +69,22 @@ def npm_repo(name:str, pkg:str="", version:str="", key:str="", deps:dict={},
         extract = True,
     )
 
-    srcs = {"pkg": [download]}
-    dep_flags = []
-    for i, alias in enumerate(sorted(deps.keys())):
-        srcs[f"d{i}"] = [deps[alias]]
-        dep_flags += [f'--dep "{alias}=$(cat $SRCS_D{i}/key)"']
+    dep_flags = " ".join([f"--dep {d}" for d in deps])
 
     return build_rule(
         name = name,
-        srcs = srcs,
-        deps = [deps[alias] for alias in sorted(deps.keys())],
+        srcs = [download],
         outs = [name],
         cmd = " && ".join([
             # npm tarballs extract to a package/ directory.
             'mkdir -p "$OUT/pkg"',
-            'cp -R "$SRCS_PKG/package/." "$OUT/pkg/"',
-            # The key is exposed as a file so a dependent can name it without
-            # the rule having to be told its dependencies' keys twice.
-            f'printf %s "{key}" > "$OUT/key"',
+            'cp -R "$SRCS/package/." "$OUT/pkg/"',
             " ".join([
                 "$TOOL describe",
-                f'--package "{pkg}" --version "{version}" --key "{key}"',
+                f"--name {name} --package {pkg} --version {version}",
                 '--dir "$OUT/pkg" --out "$OUT/meta.json"',
-            ] + dep_flags),
+                dep_flags,
+            ]),
         ]),
         tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
         visibility = visibility,
@@ -94,36 +93,67 @@ def npm_repo(name:str, pkg:str="", version:str="", key:str="", deps:dict={},
     )
 
 
-def npm_link(name:str, packages:dict, store:list=[], visibility:list=["PUBLIC"]):
+def npm_alias(name:str, pkg:str, of:str, visibility:list=["PUBLIC"]):
+    """Makes a package importable under another name.
+
+    npm lets a manifest bind a package under a different name, as
+    "my-react": "npm:react@18". That is a rebinding rather than a dependency, so
+    it gets its own entry instead of a dict entry somewhere -- which is what
+    keeps deps a plain list.
+
+    The alias holds no files: it points at the entry it rebinds, so the package
+    is present exactly once. Two copies would be two module instances, which is
+    how a duplicated React produces an invalid hook call.
+
+    Args:
+        name: Target name; the entry's identity.
+        pkg: The name to import the package under.
+        of: Name of the entry being rebound.
+        visibility: Visibility specification.
+    """
+    return build_rule(
+        name = name,
+        outs = [name],
+        cmd = " && ".join([
+            'mkdir -p "$OUT"',
+            f"$TOOL describe --name {name} --package {pkg} --alias-of {of}" + ' --out "$OUT/meta.json"',
+        ]),
+        tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
+        visibility = visibility,
+        labels = [f"npm_alias:{pkg}"],
+    )
+
+
+def npm_link(name:str, packages:list, store:list=[], visibility:list=["PUBLIC"]):
     """Assembles a node_modules tree from npm_repo targets.
 
     Args:
         name: Target name; the output directory is the node_modules root.
-        packages: Map of import name -> npm_repo target to link at top level.
-                  The import name is not always the package name: a lockfile
-                  can bind one package under several aliases at once.
-        store: Every npm_repo target in the transitive closure, including those
-               not linked at top level.
+        packages: The entries to expose at the top level, as labels. Each is
+                  exposed under its own package name; to expose one under a
+                  different name, link an npm_alias instead.
+        store: Every entry in the transitive closure, including those not
+               exposed at the top level.
 
-               This is passed explicitly rather than derived. needs_transitive_deps
-               stages only direct srcs, so an entry reachable only through
-               another package's dependency link never lands and that link
-               dangles; exported_deps would carry the closure and is what
-               produced the hash oscillation and 100x warm-cache slowdown in the
-               previous implementation. Computing it is the resolver's job, as
-               npm_link_all_packages does in aspect_rules_js.
+               This is passed explicitly rather than derived.
+               needs_transitive_deps stages only direct srcs, so an entry
+               reachable only through another package's dependency link never
+               lands and that link dangles; exported_deps would carry the
+               closure and is what produced the hash oscillation and 100x
+               warm-cache slowdown in the previous implementation. Computing it
+               is the resolver's job, as npm_link_all_packages does in
+               aspect_rules_js.
         visibility: Visibility specification.
     """
+    all_targets = store + [p for p in packages if p not in store]
     srcs = {}
     source_flags = []
-    for i, target in enumerate(store):
+    for i, target in enumerate(all_targets):
         srcs[f"s{i}"] = [target]
         source_flags += [f'--source "$SRCS_S{i}/meta.json:$SRCS_S{i}/pkg"']
 
-    link_flags = []
-    for i, alias in enumerate(sorted(packages.keys())):
-        srcs[f"p{i}"] = [packages[alias]]
-        link_flags += [f'--link "{alias}=$(cat $SRCS_P{i}/key)"']
+    link_names = [p.split(":")[-1] for p in packages]
+    link_flags = [f"--link {n}" for n in link_names]
 
     return build_rule(
         name = name,

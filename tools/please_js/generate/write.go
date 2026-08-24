@@ -29,13 +29,10 @@ func WriteBUILD(path string, plan *Plan, subincludePath string, sums []string) e
 		}
 		str(call, "version", e.Version)
 
-		// Only emit a key when it differs from the default the rule derives,
-		// so a lockfile without peer resolution produces a quiet BUILD file.
-		if e.Key != e.Package+"@"+e.Version {
-			str(call, "key", e.Key)
-		}
+		// Dependencies are names rather than labels: npm permits cycles and
+		// Please does not, and npm_link is given the whole closure anyway.
 		if len(e.Deps) > 0 {
-			dict(call, "deps", targetLabels(e.Deps))
+			list(call, "deps", sortedValues(e.Deps))
 		}
 		if i < len(sums) && sums[i] != "" {
 			list(call, "hashes", []string{sums[i]})
@@ -43,6 +40,14 @@ func WriteBUILD(path string, plan *Plan, subincludePath string, sums []string) e
 		// Executables are deliberately not recorded here. The lockfile's
 		// hasBin says only that some exist; the names and paths live in the
 		// package's own manifest, which npm_repo reads at build time.
+		f.Stmt = append(f.Stmt, call)
+	}
+
+	for _, a := range plan.Aliases {
+		call := &build.CallExpr{X: &build.Ident{Name: "npm_alias"}, ForceMultiLine: true}
+		str(call, "name", a.Target)
+		str(call, "pkg", a.Package)
+		str(call, "of", a.Of)
 		f.Stmt = append(f.Stmt, call)
 	}
 
@@ -59,7 +64,7 @@ func WriteBUILD(path string, plan *Plan, subincludePath string, sums []string) e
 		call := &build.CallExpr{X: &build.Ident{Name: "npm_link"}, ForceMultiLine: true}
 		str(call, "name", linkName(path))
 		list(call, "store", labels(closure))
-		dict(call, "packages", targetLabels(plan.Direct[path]))
+		list(call, "packages", labels(sortedValues(plan.Direct[path])))
 		list(call, "visibility", []string{"PUBLIC"})
 		f.Stmt = append(f.Stmt, call)
 	}
@@ -96,11 +101,12 @@ func sortedKeys(m map[string][]string) []string {
 	return out
 }
 
-func targetLabels(deps map[string]string) map[string]string {
-	out := make(map[string]string, len(deps))
-	for alias, target := range deps {
-		out[alias] = ":" + target
+func sortedValues(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for _, v := range m {
+		out = append(out, v)
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -125,25 +131,3 @@ func list(call *build.CallExpr, name string, values []string) {
 	})
 }
 
-func dict(call *build.CallExpr, name string, m map[string]string) {
-	if len(m) == 0 {
-		return
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	entries := make([]*build.KeyValueExpr, len(keys))
-	for i, k := range keys {
-		entries[i] = &build.KeyValueExpr{
-			Key:   &build.StringExpr{Value: k},
-			Value: &build.StringExpr{Value: m[k]},
-		}
-	}
-	call.List = append(call.List, &build.AssignExpr{
-		LHS: &build.Ident{Name: name}, Op: "=",
-		RHS: &build.DictExpr{List: entries, ForceMultiLine: len(entries) > 1},
-	})
-}
