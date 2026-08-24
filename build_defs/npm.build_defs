@@ -1,0 +1,153 @@
+"""npm dependencies as a pnpm-style symlinked package store.
+
+Every package version lives once, at a content-keyed path under a store root,
+and everything that needs it is a symlink into that one copy. Node's resolution
+algorithm walks up node_modules directories, so a package placed at
+<store>/node_modules/<pkg> with its own dependencies as siblings resolves
+correctly with no resolver patching -- which is what makes it possible to run
+npm-provided tools that do their own module resolution.
+
+    node_modules/
+    |-- <pkg> -> .plz/<key>/node_modules/<pkg>          the "link"
+    `-- .plz/
+        `-- <key>/node_modules/
+            |-- <pkg>/                                   real files
+            `-- <dep> -> ../../<depkey>/node_modules/<dep>
+
+The store key carries the resolution that produced the package, so two versions
+of one dependency coexist without conflict. See
+https://pnpm.io/symlinked-node-modules-structure for the model this follows.
+"""
+
+# Store root, under node_modules so a stray tool that scans node_modules sees a
+# dotfile rather than a package.
+STORE_ROOT = ".plz"
+
+
+def npm_repo(name:str, pkg:str="", version:str="", key:str="", deps:dict={},
+             hashes:list=None, visibility:list=["PUBLIC"], labels:list=[]):
+    """One npm package version in the store, with symlinks to its own deps.
+
+    One rule per package, matching go_repo and rust_repo: per-package
+    configuration is a rule argument rather than a dict entry in a rule that
+    owns the whole lockfile.
+
+    Args:
+        name: Target name.
+        pkg: npm package name. Defaults to name.
+        version: Exact version to fetch.
+        key: Store key. Defaults to pkg@version. Pass one carrying the peer
+             resolution where a package's dependencies change its identity.
+        deps: Map of import name -> npm_repo target it resolves to.
+        hashes: Download hashes, from the lockfile's integrity field.
+        visibility: Visibility specification.
+        labels: Additional labels.
+    """
+    pkg = pkg or name
+    if not version:
+        fail(f"npm_repo {name}: version is required")
+
+    key = _store_key(key or f"{pkg}@{version}")
+
+    # Scoped packages live at @scope/name/-/name-version.tgz: the scope appears
+    # in the path but not in the tarball filename.
+    basename = pkg.split("/")[-1]
+
+    download = remote_file(
+        name = tag(name, "download"),
+        url = f"{CONFIG.JS.NPM_REGISTRY}/{pkg}/-/{basename}-{version}.tgz",
+        out = tag(name, "tgz"),
+        hashes = hashes,
+        extract = True,
+    )
+
+    # npm tarballs extract to a package/ directory.
+    cmds = [
+        f'mkdir -p "$(dirname "$OUT/{key}/node_modules/{pkg}")"',
+        f'cp -R "$SRCS_PKG/package" "$OUT/{key}/node_modules/{pkg}"',
+    ]
+
+    srcs = {"pkg": [download]}
+    for i, alias in enumerate(sorted(deps.keys())):
+        srcs[f"d{i}"] = [deps[alias]]
+        # Climb out of this package's node_modules, across the store, into the
+        # dependency's own entry. A scoped alias sits one directory deeper, so
+        # the climb is two levels plus one per separator in the alias.
+        up = "../" * (2 + alias.count("/"))
+        cmds += [
+            f'DEPKEY=$(basename $(find "$SRCS_D{i}" -mindepth 1 -maxdepth 1 -type d | head -1))',
+            f'mkdir -p "$(dirname "$OUT/{key}/node_modules/{alias}")"',
+            f'ln -s "{up}$DEPKEY/node_modules/{alias}" "$OUT/{key}/node_modules/{alias}"',
+        ]
+
+    return build_rule(
+        name = name,
+        srcs = srcs,
+        deps = [deps[alias] for alias in sorted(deps.keys())],
+        outs = [name],
+        cmd = " && ".join(cmds),
+        visibility = visibility,
+        labels = labels + [f"npm:{pkg}@{version}"],
+        building_description = "Fetching npm package...",
+    )
+
+
+def npm_link(name:str, packages:dict, store:list=[], visibility:list=["PUBLIC"]):
+    """Materialises a node_modules tree from store entries.
+
+    Args:
+        name: Target name; the output directory is the node_modules root.
+        packages: Map of import name -> npm_repo target to link at top level.
+        store: Every npm_repo target in the transitive closure, including those
+               not linked at top level.
+
+               This has to be passed explicitly. needs_transitive_deps stages
+               only direct srcs, so an entry reachable only through another
+               package's dep symlink never lands and the link dangles.
+               exported_deps would propagate the closure, and is what produced
+               the hash oscillation and 100x warm-cache slowdown recorded in
+               js-rules' history. Computing this list from the lockfile is the
+               resolver's job, as npm_link_all_packages does in aspect_rules_js.
+        visibility: Visibility specification.
+    """
+    srcs = {"store": store}
+    link_cmds = []
+    for i, alias in enumerate(sorted(packages.keys())):
+        srcs[f"p{i}"] = [packages[alias]]
+        link_cmds += [
+            f'KEY=$(basename $(find "$SRCS_P{i}" -mindepth 1 -maxdepth 1 -type d | head -1))',
+            # The link alias is not always the package name: a lockfile can bind
+            # one package under several names, so read the name from the store
+            # entry rather than assuming it matches.
+            f'PKG=$(cd "$SRCS_P{i}/$KEY/node_modules" && find . -mindepth 1 -maxdepth 2 -name package.json -printf "%h\\n" | head -1 | sed "s|^\\./||")',
+            f'mkdir -p "$(dirname "$OUT/{alias}")"',
+            f'ln -s "{STORE_ROOT}/$KEY/node_modules/$PKG" "$OUT/{alias}"',
+        ]
+
+    cmds = [
+        f'mkdir -p "$OUT/{STORE_ROOT}"',
+        # -mindepth 2 keeps the output directory out of the match: it is named
+        # node_modules too, and its dirname is the build root, which would copy
+        # the whole staging area into the store.
+        'for nm in $(find . -mindepth 2 -type d -name node_modules -not -path "./$OUT/*"); do '
+        f'cp -R "$(dirname "$nm")" "$OUT/{STORE_ROOT}/"; done',
+    ] + link_cmds
+
+    return build_rule(
+        name = name,
+        srcs = srcs,
+        outs = [name],
+        cmd = " && ".join(cmds),
+        visibility = visibility,
+        building_description = "Linking node_modules...",
+    )
+
+
+def _store_key(key:str):
+    """Flattens a store key into a single directory name.
+
+    A scoped package's key carries a path separator, which would otherwise nest
+    the entry a level deeper than every path referencing it. pnpm and
+    aspect_rules_js both map the separator to '+' for this reason.
+    """
+    return key.replace("/", "+")

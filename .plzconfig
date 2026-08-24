@@ -1,0 +1,21 @@
+[please]
+version = >=17.27.0
+
+[PluginDefinition]
+name = js
+
+[PluginConfig "node_tool"]
+ConfigKey = NodeTool
+DefaultValue = ///js//third_party/node:node|node
+Help = Build label for the Node.js binary. Defaults to a toolchain from node-rules.
+Inherit = true
+
+[PluginConfig "npm_registry"]
+ConfigKey = NpmRegistry
+DefaultValue = https://registry.npmjs.org
+Help = Registry that npm_repo fetches package tarballs from.
+Inherit = true
+
+[Plugin "node"]
+Target = //plugins:node
+NodeTool = //third_party/node:node|node

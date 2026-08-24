@@ -1,0 +1,79 @@
+"""Running JavaScript under Please.
+
+js_run_binary is the keystone: every compiler, bundler and test runner above
+this layer is a thin wrapper over it. A tool is staged with a real node_modules
+beside its sources and run with that directory as its working directory, so the
+tool's own module resolution -- which a build system cannot intercept -- simply
+works.
+
+Please gives each target its own directory and runs the command there, so none
+of the output-tree machinery aspect_rules_js needs (BAZEL_BINDIR, copy_to_bin
+on every source, the runfiles reconciliation) arises here.
+"""
+
+
+def js_run_binary(name:str, node_modules:str, bin:str, srcs:list=[], outs:list=[],
+                  out_dirs:list=[], args:list=[], env:dict={}, chdir:str=None,
+                  visibility:list=None, labels:list=[], test_only:bool&testonly=False):
+    """Runs a binary provided by an npm package as a build action.
+
+    Args:
+        name: Target name.
+        node_modules: npm_link target providing the tree the tool resolves through.
+        bin: Path to the binary within node_modules, e.g. "typescript/bin/tsc".
+        srcs: Input files, staged alongside the tool.
+        outs: Files the tool is expected to produce.
+        out_dirs: Directories the tool is expected to produce.
+        args: Arguments passed to the binary.
+        env: Environment variables set for the action.
+        chdir: Directory to run in, relative to the staged root. Defaults to the
+               package directory, so args are written relative to the BUILD file
+               the way a developer expects. node_modules sits at the staged root
+               and is still found, because node's resolution walks up.
+        visibility: Visibility specification.
+        labels: Additional labels.
+        test_only: If True, only visible to test rules.
+    """
+    if not outs and not out_dirs:
+        fail(f"js_run_binary {name}: declare outs or out_dirs, or the action has no effect")
+
+    run_dir = "_run"
+    chdir = package_name() if chdir == None else chdir
+    workdir = f"{run_dir}/{chdir}" if chdir else run_dir
+    env_prefix = " ".join([f"{k}={v}" for k, v in sorted(env.items())])
+    arg_str = " ".join(args)
+
+    # Outputs are collected by name from the run directory rather than by moving
+    # the whole tree, so a tool that writes more than it declares does not
+    # silently smuggle files into the output.
+    collect = [
+        # Outputs are declared relative to the package and produced in the
+        # working directory, so they are collected from there by name -- not by
+        # moving the whole tree, so a tool writing more than it declares cannot
+        # smuggle files into the output.
+        f'for o in $OUTS; do cp -R "{workdir}/$o" "$o"; done',
+    ] if outs or out_dirs else []
+
+    return build_rule(
+        name = name,
+        srcs = {"modules": [node_modules], "srcs": srcs},
+        outs = outs + out_dirs,
+        output_dirs = out_dirs,
+        cmd = " && ".join([
+            f"mkdir -p {run_dir}/node_modules",
+            f"cp -R $SRCS_MODULES/. {run_dir}/node_modules/",
+            f'for s in $SRCS_SRCS; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
+            # node and the tool are resolved to absolute paths before the
+            # working directory changes; node_modules stays at the staged root
+            # and is still found from any subdirectory, because resolution walks up.
+            f'NODE=$(readlink -f "$TOOLS_NODE")',
+            f'BIN=$(readlink -f "{run_dir}/node_modules/{bin}")',
+            f'cd "{workdir}" && {env_prefix} "$NODE" "$BIN" {arg_str}'.replace("  ", " "),
+            "cd $TMP_DIR",
+        ] + collect),
+        tools = {"node": [CONFIG.JS.NODE_TOOL]},
+        visibility = visibility,
+        labels = labels,
+        test_only = test_only,
+        building_description = "Running...",
+    )
