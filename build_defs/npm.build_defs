@@ -25,7 +25,8 @@ STORE_ROOT = ".plz"
 
 
 def npm_repo(name:str, pkg:str="", version:str="", key:str="", deps:dict={},
-             hashes:list=None, visibility:list=["PUBLIC"], labels:list=[]):
+             hashes:list=None, has_bin:bool=False, visibility:list=["PUBLIC"],
+             labels:list=[]):
     """One npm package version in the store, with symlinks to its own deps.
 
     One rule per package, matching go_repo and rust_repo: per-package
@@ -39,7 +40,11 @@ def npm_repo(name:str, pkg:str="", version:str="", key:str="", deps:dict={},
         key: Store key. Defaults to pkg@version. Pass one carrying the peer
              resolution where a package's dependencies change its identity.
         deps: Map of import name -> npm_repo target it resolves to.
-        hashes: Download hashes, from the lockfile's integrity field.
+        hashes: Download hashes. A lockfile's integrity is sha512 and Please
+                verifies sha1 or sha256, so please_js records a sha256 it
+                computed while checking the sha512 -- see its update command.
+        has_bin: Whether the package publishes executables. Recorded so the
+                 bin targets can be generated without re-reading package.json.
         visibility: Visibility specification.
         labels: Additional labels.
     """
@@ -65,19 +70,26 @@ def npm_repo(name:str, pkg:str="", version:str="", key:str="", deps:dict={},
     cmds = [
         f'mkdir -p "$(dirname "$OUT/{key}/node_modules/{pkg}")"',
         f'cp -R "$SRCS_PKG/package" "$OUT/{key}/node_modules/{pkg}"',
+        # The package name is recorded beside the entry rather than rediscovered
+        # from the tree: a scoped package sits a directory deeper than an
+        # unscoped one, and a package shipping its own nested node_modules puts
+        # more than one package.json within reach of any fixed search depth.
+        f'printf %s "{pkg}" > "$OUT/{key}/.npm_pkg"',
     ]
 
     srcs = {"pkg": [download]}
     for i, alias in enumerate(sorted(deps.keys())):
         srcs[f"d{i}"] = [deps[alias]]
-        # Climb out of this package's node_modules, across the store, into the
-        # dependency's own entry. A scoped alias sits one directory deeper, so
-        # the climb is two levels plus one per separator in the alias.
-        up = "../" * (2 + alias.count("/"))
+        # The link climbs out of this package's node_modules, across the store,
+        # into the dependency's own entry. The relative path is computed rather
+        # than counted: a scoped alias sits a directory deeper, and getting that
+        # wrong yields a link that silently resolves somewhere plausible.
         cmds += [
             f'DEPKEY=$(basename $(find "$SRCS_D{i}" -mindepth 1 -maxdepth 1 -type d | head -1))',
-            f'mkdir -p "$(dirname "$OUT/{key}/node_modules/{alias}")"',
-            f'ln -s "{up}$DEPKEY/node_modules/{alias}" "$OUT/{key}/node_modules/{alias}"',
+            f'LINK="$OUT/{key}/node_modules/{alias}"',
+            f'mkdir -p "$(dirname "$LINK")"',
+            f'REL=$(realpath -m --relative-to="$(dirname "$LINK")" "$OUT/$DEPKEY/node_modules/{alias}")',
+            f'ln -s "$REL" "$LINK"',
         ]
 
     return build_rule(
@@ -87,7 +99,7 @@ def npm_repo(name:str, pkg:str="", version:str="", key:str="", deps:dict={},
         outs = [name],
         cmd = " && ".join(cmds),
         visibility = visibility,
-        labels = labels + [f"npm:{pkg}@{version}"],
+        labels = labels + [f"npm:{pkg}@{version}"] + (["npm_bin"] if has_bin else []),
         building_description = "Fetching npm package...",
     )
 
@@ -117,11 +129,17 @@ def npm_link(name:str, packages:dict, store:list=[], visibility:list=["PUBLIC"])
         link_cmds += [
             f'KEY=$(basename $(find "$SRCS_P{i}" -mindepth 1 -maxdepth 1 -type d | head -1))',
             # The link alias is not always the package name: a lockfile can bind
-            # one package under several names, so read the name from the store
-            # entry rather than assuming it matches.
-            f'PKG=$(cd "$SRCS_P{i}/$KEY/node_modules" && find . -mindepth 1 -maxdepth 2 -name package.json -printf "%h\\n" | head -1 | sed "s|^\\./||")',
+            # one package under several names, so read the name npm_repo
+            # recorded rather than assuming the alias matches.
+            f'PKG=$(cat "$SRCS_P{i}/$KEY/.npm_pkg")',
             f'mkdir -p "$(dirname "$OUT/{alias}")"',
-            f'ln -s "{STORE_ROOT}/$KEY/node_modules/$PKG" "$OUT/{alias}"',
+            # The relative path is computed rather than counted: a scoped alias
+            # sits a directory deeper than an unscoped one, and getting that
+            # arithmetic wrong produces a link that silently resolves inside the
+            # scope directory instead of at the store root.
+            f'TARGET="$OUT/{STORE_ROOT}/$KEY/node_modules/$PKG"',
+            f'REL=$(realpath --relative-to="$(dirname "$OUT/{alias}")" "$TARGET")',
+            f'ln -s "$REL" "$OUT/{alias}"',
         ]
 
     cmds = [

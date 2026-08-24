@@ -1,0 +1,12 @@
+subinclude("///go//build_defs:go")
+
+go_binary(
+    name = "please_js",
+    srcs = ["main.go"],
+    visibility = ["PUBLIC"],
+    deps = [
+        "//third_party/go:go-flags",
+        "//tools/please_js/generate",
+        "//tools/please_js/lockfile",
+    ],
+)

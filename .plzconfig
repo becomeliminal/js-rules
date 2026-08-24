@@ -16,6 +16,10 @@ DefaultValue = https://registry.npmjs.org
 Help = Registry that npm_repo fetches package tarballs from.
 Inherit = true
 
+[Plugin "go"]
+Target = //plugins:go
+gotool = //third_party/go:gotool|go
+
 [Plugin "node"]
 Target = //plugins:node
 NodeTool = //third_party/node:node|node
