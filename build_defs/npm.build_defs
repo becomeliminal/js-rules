@@ -20,6 +20,11 @@ tested, not in a shell command where it is not.
 """
 
 
+def _shell_quote(v:str):
+    """Single-quotes a value so a shell will not reinterpret it."""
+    return "'" + v.replace("'", "'\\''") + "'"
+
+
 def _env_prefix(env:dict):
     """Renders an environment as assignments a shell will not reinterpret.
 
@@ -33,7 +38,7 @@ def _env_prefix(env:dict):
 
 
 def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
-             os:list=[], cpu:list=[], run_hooks:bool=False,
+             os:list=[], cpu:list=[], bins:dict={}, run_hooks:bool=False,
              postinstall:str="", postinstall_env:dict={},
              visibility:list=["PUBLIC"], labels:list=[]):
     """One npm package version, fetched and described.
@@ -66,6 +71,17 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             megabytes of compilers that cannot run here. A package excluded by
             its constraints still gets a target, so the build file is the same
             on every platform, but nothing is fetched and nothing is placed.
+        bins: Executables the package's own manifest omits, as name -> path
+              within the package.
+
+            Some packages ship a runnable file and never declare it, because
+            their install script would have made the link. Nothing here runs
+            install scripts unless asked, so such a package cannot be run at
+            all -- and js_run_binary's error says exactly that, listing what the
+            package does publish.
+
+            Patched into the package's manifest rather than kept alongside it,
+            so everything downstream sees one story.
         run_hooks: Run the install scripts this package declares -- preinstall,
                    install and postinstall, in npm's order.
 
@@ -121,6 +137,9 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
 
     # Rendered here because the build language's f-strings take names, not calls.
     hook_env = _env_prefix(postinstall_env)
+    bin_flags = " ".join([
+        "--bin " + _shell_quote(k + "=" + v) for k, v in sorted(bins.items())
+    ])
     hook_env_flags = " ".join([
         "--env " + k + "='" + v.replace("'", "'\\''") + "'"
         for k, v in sorted(postinstall_env.items())
@@ -175,6 +194,7 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             " ".join([
                 "$TOOLS_PLEASE_JS describe",
                 f"--name {name} --package {pkg} --version {version}",
+                bin_flags,
                 '--dir "$OUT/pkg" --out "$OUT/meta.json"',
             ]),
         ]),

@@ -502,3 +502,70 @@ func describeOrigin(s Source) string {
 	}
 	return s.Dir
 }
+
+// DeclareBins adds executables to a package's manifest.
+//
+// Some packages ship a runnable file and never declare it, usually because
+// their own install script would have created the link. Nothing here runs
+// install scripts by default, and a package that publishes no executables
+// cannot be run at all -- so the declaration has to come from somewhere, and
+// the honest place is the package's own manifest, patched.
+//
+// npm allows "bin" to be a bare string, meaning one executable named after the
+// package. Merging into that form has to widen it to an object first, or the
+// package ends up with one of its two executables silently discarded.
+func DeclareBins(dir string, bins map[string]string) error {
+	if len(bins) == 0 {
+		return nil
+	}
+	path := filepath.Join(dir, "package.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	var manifest map[string]json.RawMessage
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+
+	existing := map[string]string{}
+	if raw, ok := manifest["bin"]; ok {
+		if err := json.Unmarshal(raw, &existing); err != nil {
+			// The bare-string form: one executable, named after the package.
+			var single string
+			if err := json.Unmarshal(raw, &single); err != nil {
+				return fmt.Errorf("%s has a bin field that is neither an object nor a string", path)
+			}
+			var name struct {
+				Name string `json:"name"`
+			}
+			_ = json.Unmarshal(data, &name)
+			existing = map[string]string{path_Base(name.Name): single}
+		}
+	}
+	for k, v := range bins {
+		existing[k] = v
+	}
+
+	raw, err := json.Marshal(existing)
+	if err != nil {
+		return err
+	}
+	manifest["bin"] = raw
+
+	out, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
+}
+
+// path_Base is filepath.Base, named apart so the scoped-package case reads
+// clearly: "@scope/thing" publishes an executable called "thing".
+func path_Base(pkg string) string {
+	if i := strings.LastIndex(pkg, "/"); i >= 0 {
+		return pkg[i+1:]
+	}
+	return pkg
+}
