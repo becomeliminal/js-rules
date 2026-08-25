@@ -20,8 +20,21 @@ tested, not in a shell command where it is not.
 """
 
 
+def _env_prefix(env:dict):
+    """Renders an environment as assignments a shell will not reinterpret.
+
+    Single-quoted, so a value containing a space, a dollar or a backtick reaches
+    the command as written. The inner replacement is the standard way to carry a
+    single quote through single quotes: close, escape one, reopen.
+    """
+    return " ".join([
+        k + "='" + v.replace("'", "'\\''") + "'" for k, v in sorted(env.items())
+    ])
+
+
 def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
-             os:list=[], cpu:list=[], visibility:list=["PUBLIC"], labels:list=[]):
+             os:list=[], cpu:list=[], postinstall:str="", postinstall_env:dict={},
+             visibility:list=["PUBLIC"], labels:list=[]):
     """One npm package version, fetched and described.
 
     One rule per package, as go_repo and rust_repo do, and with the same small
@@ -52,6 +65,19 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             megabytes of compilers that cannot run here. A package excluded by
             its constraints still gets a target, so the build file is the same
             on every platform, but nothing is fetched and nothing is placed.
+        postinstall: A command run inside the fetched package after extraction
+                     and before it is described, with the package directory as
+                     its working directory and the node toolchain on PATH.
+
+            This is the deliberate half of what npm calls a lifecycle hook: a
+            command this repo chose, not one the package brought with it.
+            Nothing runs unless it is written here, which is the property worth
+            keeping -- a package's own install script is arbitrary code from a
+            third party, and running it because the package asked is how a
+            supply chain attack succeeds.
+        postinstall_env: Environment for that command. Only what is named here
+                         is set; the build's own environment is not inherited,
+                         so a command cannot quietly depend on the machine.
         visibility: Visibility specification.
         labels: Additional labels.
     """
@@ -66,7 +92,7 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             cmd = " && ".join([
                 'mkdir -p "$OUT"',
                 " ".join([
-                    "$TOOL describe",
+                    "$TOOLS_TOOL describe",
                     f"--name {name} --package {pkg} --version {version}",
                     " ".join([f"--os {o}" for o in os]),
                     " ".join([f"--cpu {c}" for c in cpu]),
@@ -78,6 +104,9 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             labels = labels + [f"npm:{pkg}@{version}", "npm_unsupported"],
             building_description = "Skipping (other platform)...",
         )
+
+    # Rendered here because the build language's f-strings take names, not calls.
+    hook_env = _env_prefix(postinstall_env)
 
     # Scoped packages live at @scope/name/-/name-version.tgz: the scope is in
     # the path but not in the tarball filename.
@@ -107,13 +136,29 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             ' elif [ "$(ls -1 "$SRCS" | wc -l)" = 1 ] && [ -d "$SRCS/$(ls -1 "$SRCS")" ];' +
             ' then ROOT="$SRCS/$(ls -1 "$SRCS")"; else ROOT="$SRCS"; fi',
             'cp -R "$ROOT/." "$OUT/pkg/"',
+        ] + ([
+            # Before describe, so a command that writes a bin/ or a
+            # package.json field is reflected in what the store records.
+            #
+            # node is put on PATH rather than passed as a variable because an
+            # install script is written to be run by npm, and npm puts it there.
+            # Anything else means editing every script that shells out to node.
+            'NODEDIR=$(dirname "$(readlink -f "$TOOLS_NODE")")',
+            f'cd "$OUT/pkg" && PATH="$NODEDIR:$PATH" {hook_env} {postinstall}',
+            'cd "$TMP_DIR"',
+        ] if postinstall else []) + [
             " ".join([
-                "$TOOL describe",
+                "$TOOLS_TOOL describe",
                 f"--name {name} --package {pkg} --version {version}",
                 '--dir "$OUT/pkg" --out "$OUT/meta.json"',
             ]),
         ]),
-        tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
+        tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]} if not postinstall else {
+            "tool": [CONFIG.JS.PLEASE_JS_TOOL],
+            # Only when something will run: an npm_repo that just unpacks a
+            # tarball has no reason to depend on a toolchain.
+            "node": [CONFIG.JS.NODE_TOOL],
+        },
         visibility = visibility,
         labels = labels + [f"npm:{pkg}@{version}"],
         building_description = "Fetching npm package...",
