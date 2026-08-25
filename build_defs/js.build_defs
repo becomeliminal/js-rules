@@ -153,7 +153,7 @@ def js_run_binary(name:str, package:str, bin:str="", node_modules:str="", srcs:l
         output_dirs = out_dirs,
         cmd = " && ".join([
             f"mkdir -p {run_dir}/node_modules",
-            f'[ -n "$SRCS_MODULES" ] && cp -R $SRCS_MODULES/. {run_dir}/node_modules/ || true',
+            f'[ -n "${{SRCS_MODULES:-}}" ] && cp -R $SRCS_MODULES/. {run_dir}/node_modules/ || true',
             f'for s in $SRCS_SRCS; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
             'NODE=$(readlink -f "$TOOLS_NODE")',
             f'BIN=$(readlink -f "$("$TOOLS_TOOL" resolve-bin --tree {run_dir}/node_modules --package {package}' + (f' --bin {bin}' if bin else '') + ')")',
@@ -206,7 +206,10 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # lib.json rather than meta.json: a third-party package writes the
             # latter, and the two are placed differently.
             'LIBS=$(for m in $(find . -name lib.json); do printf -- "--lib %s:%s " "$m" "$(dirname "$m")/pkg"; done)',
-            '"$TOOL" overlay --tree "$SRCS_MODULES" --out "$OUT/node_modules" $LIBS',
+            # A repo whose first-party code has no third-party dependencies has
+            # no tree to overlay onto, and the overlay makes an empty one. The
+            # variable is unset rather than empty in that case.
+            '"$TOOL" overlay --tree "${SRCS_MODULES:-}" --out "$OUT/node_modules" $LIBS',
             'cp "$SRCS_ENTRY" "$OUT/' + entry_name + '"',  # a fixed name, so a label works
         ]),
         tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
