@@ -39,6 +39,10 @@ type Meta struct {
 	Version string            `json:"version"`
 	Name    string            `json:"name"` // this entry's identity: its target name
 	Bins    map[string]string `json:"bins,omitempty"`
+	// Unsupported marks a package whose os/cpu constraints exclude this
+	// platform. The target still exists so the build file stays the same
+	// everywhere, but nothing was fetched and nothing is placed.
+	Unsupported bool `json:"unsupported,omitempty"`
 }
 
 // Ref is one entry appearing in a node_modules directory, under the name source
@@ -95,6 +99,9 @@ func Build(root string, sources []Source, links []Ref) error {
 
 	// Every package's files, once, at a path keyed by its identity.
 	for _, s := range sources {
+		if s.Meta.Unsupported {
+			continue
+		}
 		dst := filepath.Join(root, StoreRoot, StoreDir(s.Meta.Name), "node_modules", s.Meta.Package)
 		if err := copyTree(s.Dir, dst); err != nil {
 			return fmt.Errorf("staging %s: %w", s.Meta.Name, err)
@@ -106,10 +113,18 @@ func Build(root string, sources []Source, links []Ref) error {
 	// this is what makes a dependency reachable from inside the package without
 	// any resolver hook.
 	for _, s := range sources {
+		if s.Meta.Unsupported {
+			continue
+		}
 		for _, ref := range s.Deps {
 			dep, err := find(ref.Entry)
 			if err != nil {
 				return fmt.Errorf("%s depends on %w", s.Meta.Name, err)
+			}
+			// A dependency excluded by its own constraints is simply absent.
+			// npm records these as optional precisely so a package copes.
+			if dep.Meta.Unsupported {
+				continue
 			}
 			from := filepath.Join(root, StoreRoot, StoreDir(s.Meta.Name), "node_modules", ref.As)
 			to := filepath.Join(root, StoreRoot, StoreDir(dep.Meta.Name), "node_modules", dep.Meta.Package)
@@ -128,6 +143,9 @@ func Build(root string, sources []Source, links []Ref) error {
 		entry, err := find(ref.Entry)
 		if err != nil {
 			return err
+		}
+		if entry.Meta.Unsupported {
+			continue
 		}
 		if prev, dup := taken[ref.As]; dup {
 			return fmt.Errorf("%s and %s would both be imported as %q", prev, ref.Entry, ref.As)
@@ -299,13 +317,19 @@ func Overlay(root string, libs []Source) error {
 // It is generated, never authored. Node finds index.js without one, but not
 // "types" or "exports" -- so the build system writes the resolution metadata,
 // exactly as please_go writes an importconfig rather than asking for one.
-func WritePackageJSON(path, name, main, types string) error {
-	manifest := map[string]string{"name": name, "version": "0.0.0"}
+func WritePackageJSON(path, name, main, types string, extra map[string]any) error {
+	// map[string]any rather than map[string]string: "type": "module" is a
+	// string, but "sideEffects" and "exports" are not, and a manifest that
+	// cannot express them would have to be hand-written instead of generated.
+	manifest := map[string]any{"name": name, "version": "0.0.0"}
 	if main != "" {
 		manifest["main"] = main
 	}
 	if types != "" {
 		manifest["types"] = types
+	}
+	for k, v := range extra {
+		manifest[k] = v
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {

@@ -38,6 +38,10 @@ var opts = struct {
 		Name    string   `long:"name" required:"true" description:"this entry's identity, its target name"`
 		Package string   `long:"package" required:"true" description:"npm package name"`
 		Version string   `long:"version" description:"exact version"`
+		OS      []string `long:"os" description:"operating systems this package supports; empty means any"`
+		CPU     []string `long:"cpu" description:"architectures this package supports; empty means any"`
+		Types   string   `long:"types" description:"declarations entry, for the generated package.json"`
+		Set     []string `long:"set" description:"an extra package.json field, as key=value"`
 		Main    string   `long:"main" description:"entry file, for the generated package.json of a first-party library"`
 		Dir     string   `long:"dir" description:"the fetched package directory"`
 		Out     string   `long:"out" required:"true" description:"description file to write"`
@@ -153,6 +157,16 @@ func update() error {
 func describe() error {
 	o := opts.Describe
 
+	// A package whose constraints exclude this platform is described but not
+	// placed. Every fast JavaScript tool now ships as a small wrapper plus one
+	// native binary per platform -- TypeScript 7 has twenty -- so fetching the
+	// whole set would mean hundreds of megabytes of compilers that cannot run.
+	if !generate.HostPlatform().Supports(o.OS, o.CPU) {
+		return store.WriteMeta(o.Out, store.Meta{
+			Name: o.Name, Package: o.Package, Version: o.Version, Unsupported: true,
+		})
+	}
+
 	// Executables come from the package's own manifest, which is where npm puts
 	// them -- the lockfile only records that some exist.
 	var bins map[string]string
@@ -163,12 +177,21 @@ func describe() error {
 		}
 	}
 
+	extra := map[string]any{}
+	for _, kv := range o.Set {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("--set %q is not key=value", kv)
+		}
+		extra[k] = v
+	}
+
 	// A first-party library needs a manifest for node to resolve it as a
 	// directory. It is generated here rather than authored, the way please_go
 	// writes an importconfig rather than asking for one.
 	if o.Main != "" && o.Dir != "" {
 		if err := store.WritePackageJSON(
-			filepath.Join(o.Dir, "package.json"), o.Package, o.Main, ""); err != nil {
+			filepath.Join(o.Dir, "package.json"), o.Package, o.Main, o.Types, extra); err != nil {
 			return err
 		}
 	}

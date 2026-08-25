@@ -161,3 +161,35 @@ func TestMissingClosureMemberIsAnError(t *testing.T) {
 		t.Errorf("the error should say what is missing and why; got: %v", err)
 	}
 }
+
+// A package excluded by its own os/cpu constraints is described but never
+// placed, and a dependency on it simply vanishes -- npm records these as
+// optional precisely so a package copes with their absence. Twenty native
+// compilers ship with TypeScript 7 and nineteen of them cannot run here.
+func TestUnsupportedPlatformIsDescribedButNotPlaced(t *testing.T) {
+	root := t.TempDir()
+	tree := filepath.Join(root, "node_modules")
+
+	wrapper := pkg(t, root, "typescript_7", "typescript", "7.0.2",
+		ref("@ts/linux-x64", "ts_linux"), ref("@ts/darwin-arm64", "ts_darwin"))
+	linux := pkg(t, root, "ts_linux", "@ts/linux-x64", "7.0.2")
+	darwin := store.Source{Meta: store.Meta{
+		Package: "@ts/darwin-arm64", Name: "ts_darwin", Unsupported: true,
+	}}
+
+	if err := store.Build(tree, []store.Source{wrapper, linux, darwin},
+		[]store.Ref{ref("typescript", "typescript_7")}); err != nil {
+		t.Fatal(err)
+	}
+
+	base := filepath.Join(tree, store.StoreRoot, store.StoreDir("typescript_7"), "node_modules")
+	if !resolves(t, filepath.Join(base, "@ts/linux-x64", "package.json")) {
+		t.Error("the usable platform binary should be linked")
+	}
+	if _, err := os.Lstat(filepath.Join(base, "@ts/darwin-arm64")); err == nil {
+		t.Error("a link was made to a package that was never fetched")
+	}
+	if _, err := os.Stat(filepath.Join(tree, store.StoreRoot, store.StoreDir("ts_darwin"))); err == nil {
+		t.Error("an unsupported package took up a store entry")
+	}
+}

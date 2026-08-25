@@ -29,6 +29,15 @@ func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums 
 		}
 		str(call, "version", e.Version)
 
+		// Platform constraints are emitted so the same build file works
+		// everywhere: the rule decides what to fetch, not the generator.
+		if len(e.OS) > 0 {
+			list(call, "os", e.OS)
+		}
+		if len(e.CPU) > 0 {
+			list(call, "cpu", e.CPU)
+		}
+
 		// No dependencies here. Which packages a package needs, and the names
 		// it imports them under, are in the lockfile, and npm_link reads it --
 		// so this file stays as small as a go_repo call.
