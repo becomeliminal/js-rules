@@ -15,8 +15,9 @@ name.
 """
 
 
-def js_library(name:str, srcs:list, deps:list=[], package:str="",
-               visibility:list=None, test_only:bool&testonly=False, labels:list=[]):
+def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
+               package:str="", visibility:list=None,
+               test_only:bool&testonly=False, labels:list=[]):
     """A first-party JavaScript library.
 
     Runs no actions beyond arranging its sources: compilation belongs to
@@ -30,6 +31,19 @@ def js_library(name:str, srcs:list, deps:list=[], package:str="",
               this library also gets the libraries it needs -- affordable here
               because a first-party graph is tens of targets, where carrying a
               third-party closure the same way cost 50s of warm build.
+        types: Declaration files this library ships, kept separate from srcs.
+
+            A .d.ts is read by a compiler and by nothing else: a bundler never
+            looks at one, and neither does node. Recording them apart is what
+            lets a type-check depend on them while a bundle does not, so
+            editing a declaration stops invalidating a bundle that could not
+            have been affected by it.
+        data: Files the library needs at runtime but no compiler should see --
+              a JSON fixture, an image, a template. Copied in verbatim.
+
+            Separate from srcs for the same reason and the opposite direction:
+            a data file appearing among a compiler's inputs is a cache
+            invalidation nobody asked for.
         package: The name source code imports this by. Defaults to the package
                  path, as Go derives an import path from the directory:
                  //common/js/components is imported as "common/js/components".
@@ -41,14 +55,19 @@ def js_library(name:str, srcs:list, deps:list=[], package:str="",
     check_package_name(package, name)
     entry = "index.js"
 
+    strip = package_name() + "/"
+
     return build_rule(
         name = name,
-        srcs = srcs,
+        srcs = {"srcs": srcs, "types": types, "data": data},
         outs = [name],
         cmd = " && ".join([
             'mkdir -p "$OUT/pkg"',
-            'for s in $SRCS; do mkdir -p "$OUT/pkg/$(dirname "${s#' + package_name() + '/}")" && ' +
-            'cp "$s" "$OUT/pkg/${s#' + package_name() + '/}"; done',
+            # One placement for all three: they differ in what may read them,
+            # not in where they land. A consumer sees one package.
+            'for s in ${SRCS_SRCS:-} ${SRCS_TYPES:-} ${SRCS_DATA:-}; do ' +
+            'mkdir -p "$OUT/pkg/$(dirname "${s#' + strip + '}")" && ' +
+            'cp "$s" "$OUT/pkg/${s#' + strip + '}"; done',
             " ".join([
                 "$TOOLS_PLEASE_JS describe",
                 f"--name {name} --package {package} --version 0.0.0",

@@ -5,9 +5,11 @@ subinclude("//build_defs:js")
 js_library(
     name = "lib",
     package = "@test/tool-lib",
-    srcs = [
-        "index.d.ts",
-        "index.js",
-    ],
+    srcs = ["index.js"],
+    # Declarations recorded apart from sources: a compiler reads them, a bundler
+    # and node never do.
+    types = ["index.d.ts"],
+    # And a runtime file no compiler should see at all.
+    data = ["table.json"],
     visibility = ["//test/..."],
 )
