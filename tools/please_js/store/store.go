@@ -71,6 +71,11 @@ type Source struct {
 	Dir  string // directory holding the package's files
 	Meta Meta
 	Deps []Ref // what belongs in this package's own node_modules
+	// Origin says where this came from, for diagnostics only. A first-party
+	// package and a fetched one are indistinguishable once placed -- which is
+	// the design -- so the only time the difference matters is when two of them
+	// collide and someone has to be told which is which.
+	Origin string
 }
 
 // Build assembles a node_modules tree at root.
@@ -82,8 +87,14 @@ type Source struct {
 func Build(root string, sources []Source, links []Ref) error {
 	byName := make(map[string]Source, len(sources))
 	for _, s := range sources {
-		if _, dup := byName[s.Meta.Name]; dup {
-			return fmt.Errorf("two store entries are both named %q", s.Meta.Name)
+		if prev, dup := byName[s.Meta.Name]; dup {
+			// Deliberate and visible, never order-dependent. A first-party
+			// package shadowing a registry one is a reasonable thing to want
+			// and a terrible thing to get by accident, so it is an error that
+			// names both rather than a silent last-one-wins.
+			return fmt.Errorf("two packages are both %q: %s and %s. "+
+				"If one is meant to replace the other, remove the one it replaces",
+				s.Meta.Name, describeOrigin(prev), describeOrigin(s))
 		}
 		byName[s.Meta.Name] = s
 	}
@@ -483,4 +494,11 @@ func Publish(dir, version string, fields map[string]any) error {
 		return err
 	}
 	return os.WriteFile(path, append(out, '\n'), 0o644)
+}
+
+func describeOrigin(s Source) string {
+	if s.Origin != "" {
+		return s.Origin
+	}
+	return s.Dir
 }

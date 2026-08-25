@@ -14,7 +14,7 @@ npm_link(
     name = "node_modules",
     lock = "pnpm-lock.yaml",
     packages = [":ms_2.1.3"],
-    workspace = {"@test/shared": "//test/workspace/shared"},
+    workspace = {"@test/shared": "//test/workspace/shared:published"},
 )
 
 js_test(
