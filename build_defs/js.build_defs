@@ -86,7 +86,9 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
 
 
 def js_binary(name:str, entry_point:str, deps:list=[], node_modules:str="",
-              node_options:list=[], visibility:list=None, labels:list=[]):
+              node_options:list=[], env:dict={},
+              fixed_args:list=[], chdir:str="",
+              visibility:list=None, labels:list=[]):
     """A JavaScript program run under node.
 
     Args:
@@ -96,15 +98,33 @@ def js_binary(name:str, entry_point:str, deps:list=[], node_modules:str="",
         node_modules: The third-party tree, from npm_link. Defaults to the
                       NodeModules config, so a single-tree repo never names it.
         node_options: Flags passed to node.
+        env: Environment for the program, set before it starts.
+
+            There is deliberately no env_inherit here, though rules_js has one.
+            It has nothing to do in Please: `plz run` already passes the
+            caller's whole environment through, and `plz test` passes none of
+            it and gives the launcher nothing to re-export. Bazel needs the
+            argument because Bazel scrubs the environment; a no-op argument
+            that looks like it does something is worse than its absence.
+        fixed_args: Arguments the program always receives, before any the caller
+                    gives. That ordering is what makes them fixed -- a wrapper's
+                    own arguments cannot be displaced by whoever runs it.
+        chdir: Directory to run in, relative to the repo root. Node resolves
+               from the entry point rather than the working directory, so this
+               changes where the program looks for files and not what it can
+               import.
         visibility: Visibility specification.
         labels: Additional labels.
     """
     return _js_run(name, entry_point, deps, node_modules, node_options,
-                   test = False, visibility = visibility, labels = labels)
+                   test = False, visibility = visibility, labels = labels,
+                   env = env, fixed_args = fixed_args, chdir = chdir)
 
 
 def js_test(name:str, entry_point:str, deps:list=[], node_modules:str="",
-            node_options:list=[], visibility:list=None, labels:list=[],
+            node_options:list=[], env:dict={},
+            fixed_args:list=[], chdir:str="", expected_exit_code:int=0,
+            visibility:list=None, labels:list=[],
             timeout:int=0, flaky:bool|int=0, size:str=None):
     """A JavaScript program run under `plz test`.
 
@@ -114,6 +134,15 @@ def js_test(name:str, entry_point:str, deps:list=[], node_modules:str="",
         deps: js_library targets whose packages this test imports.
         node_modules: The third-party tree, from npm_link.
         node_options: Flags passed to node.
+        env: Environment for the test, set before it starts. A test gets a
+             clean environment from Please, so this is the whole of it.
+        fixed_args: Arguments the test always receives.
+        chdir: Directory to run in, relative to the repo root.
+        expected_exit_code: The status the program is expected to exit with.
+
+            How a command line tool's failure paths get tested: a program that
+            exits 1 because it correctly rejected its input has passed, and one
+            that exits 0 has not.
         visibility: Visibility specification.
         labels: Additional labels.
         timeout: Test timeout in seconds.
@@ -122,6 +151,8 @@ def js_test(name:str, entry_point:str, deps:list=[], node_modules:str="",
     """
     return _js_run(name, entry_point, deps, node_modules, node_options,
                    test = True, visibility = visibility, labels = labels,
+                   env = env, fixed_args = fixed_args, chdir = chdir,
+                   expected_exit_code = expected_exit_code,
                    timeout = timeout, flaky = flaky, size = size)
 
 
@@ -284,7 +315,8 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
 
 
 def _js_run(name, entry_point, deps, node_modules, node_options, test,
-            visibility, labels, timeout=0, flaky=0, size=None):
+            visibility, labels, env={}, fixed_args=[],
+            chdir="", expected_exit_code=0, timeout=0, flaky=0, size=None):
     """Shared implementation of js_binary and js_test.
 
     The third-party tree and the first-party libraries are assembled separately
@@ -343,6 +375,33 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # looks for each thing in both places and says so if it finds neither.
     node_rel = _staged_path(CONFIG.JS.NODE_TOOL) + "/bin/node"
     run_rel = package_name() + "/" + run_dir + "/" + entry_name
+
+    # Exported before exec, single-quoted so a value carrying a space or a
+    # dollar reaches the program as written.
+    env_lines = [
+        "export " + k + "='" + v.replace("'", "'\\''") + "'"
+        for k, v in sorted(env.items())
+    ]
+
+    # After the paths are resolved, since they are found relative to where the
+    # launcher started.
+    chdir_lines = [f'cd "$ROOT/{chdir}"'] if chdir else []
+
+    # fixed_args come before the caller's, which is what makes them fixed: a
+    # wrapper's own arguments cannot be displaced by whoever runs it.
+    call = '"$NODE" @OPTS@ "$MAIN" ' + " ".join(
+        ["'" + a.replace("'", "'\\''") + "'" for a in fixed_args]) + ' "$@"'
+    if expected_exit_code:
+        # Inverted: the program is expected to fail, so succeeding is the
+        # failure. Only ever set on a test.
+        exec_line = "\n".join([
+            call + " && status=0 || status=$?",
+            f'[ "$status" = "{expected_exit_code}" ] || {{',
+            f'    echo "js_test: expected exit {expected_exit_code}, got $status" >&2',
+            "    exit 1; }",
+        ])
+    else:
+        exec_line = "exec " + call
     launcher = "\n".join([
         "#!/bin/sh",
         "set -eu",
@@ -361,7 +420,8 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         'MAIN=$(find_one "$HERE/@RUNDIR@/@ENTRY@" "$ROOT/@RUN@" "$ROOT/plz-out/gen/@RUN@") || {',
         '    echo "js_binary: no runtime directory for this program" >&2; exit 1; }',
         "",
-        'exec "$NODE" @OPTS@ "$MAIN" "$@"',
+    ] + env_lines + chdir_lines + [
+        exec_line,
     ])
     launcher = (launcher
         .replace("@NODE@", node_rel)
