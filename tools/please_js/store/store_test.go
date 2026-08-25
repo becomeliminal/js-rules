@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -191,5 +192,49 @@ func TestUnsupportedPlatformIsDescribedButNotPlaced(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tree, store.StoreRoot, store.StoreDir("ts_darwin"))); err == nil {
 		t.Error("an unsupported package took up a store entry")
+	}
+}
+
+// CommonJS honours "main"; ESM does not. Without an "exports" map node refuses
+// a directory import with ERR_UNSUPPORTED_DIR_IMPORT, so a library that emits
+// modules cannot be imported by name at all.
+func TestGeneratedManifestIsImportableAsESM(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	if err := store.WritePackageJSON(path, "scope/thing", "index.js", "index.d.ts",
+		map[string]any{"type": "module"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var m map[string]any
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	exports, ok := m["exports"].(map[string]any)
+	if !ok {
+		t.Fatal("no exports map; an ESM consumer cannot import this package by name")
+	}
+	root, ok := exports["."].(map[string]any)
+	if !ok {
+		t.Fatal(`exports has no "." entry`)
+	}
+	if root["default"] != "./index.js" {
+		t.Errorf(`exports["."].default = %v, want ./index.js`, root["default"])
+	}
+	if root["types"] != "./index.d.ts" {
+		t.Errorf(`exports["."].types = %v, want ./index.d.ts`, root["types"])
+	}
+	// exports is an allowlist, so declaring it without a wildcard would stop
+	// every subpath import of the package from resolving.
+	if exports["./*"] != "./*" {
+		t.Error("no subpath wildcard; declaring exports would break pkg/sub imports")
+	}
+	if m["type"] != "module" {
+		t.Errorf("extra fields should survive; type = %v", m["type"])
 	}
 }

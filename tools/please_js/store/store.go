@@ -328,6 +328,22 @@ func WritePackageJSON(path, name, main, types string, extra map[string]any) erro
 	if types != "" {
 		manifest["types"] = types
 	}
+
+	// CommonJS honours "main"; ESM does not. Node's ESM resolver refuses a
+	// directory import outright -- ERR_UNSUPPORTED_DIR_IMPORT -- so a library
+	// without "exports" cannot be imported by name at all once it emits
+	// modules. The conditional form serves both, and the "./*" entry is there
+	// because "exports" is an allowlist: declaring it would otherwise make
+	// every subpath import of this package stop resolving.
+	if main != "" {
+		root := map[string]any{"default": "./" + main}
+		if types != "" {
+			// Ahead of "default", which node takes as the fallback and so must
+			// come last.
+			root = map[string]any{"types": "./" + types, "default": "./" + main}
+		}
+		manifest["exports"] = map[string]any{".": root, "./*": "./*"}
+	}
 	for k, v := range extra {
 		manifest[k] = v
 	}
