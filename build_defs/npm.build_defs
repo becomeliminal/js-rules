@@ -96,9 +96,17 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
         srcs = [download],
         outs = [name],
         cmd = " && ".join([
-            # npm tarballs extract to a package/ directory.
+            # An npm tarball conventionally holds a single package/ directory,
+            # but the convention is not universal: DefinitelyTyped ships
+            # @types/node rooted at "node v22.18", space and all. So the root is
+            # discovered rather than assumed -- package/ when it is there, the
+            # sole top-level directory when it is not, and the tarball itself
+            # when it has no wrapper at all.
             'mkdir -p "$OUT/pkg"',
-            'cp -R "$SRCS/package/." "$OUT/pkg/"',
+            'if [ -d "$SRCS/package" ]; then ROOT="$SRCS/package";' +
+            ' elif [ "$(ls -1 "$SRCS" | wc -l)" = 1 ] && [ -d "$SRCS/$(ls -1 "$SRCS")" ];' +
+            ' then ROOT="$SRCS/$(ls -1 "$SRCS")"; else ROOT="$SRCS"; fi',
+            'cp -R "$ROOT/." "$OUT/pkg/"',
             " ".join([
                 "$TOOL describe",
                 f"--name {name} --package {pkg} --version {version}",

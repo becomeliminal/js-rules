@@ -65,6 +65,15 @@ check("two versions of one dep coexist", () => {
     return `${newSees} and ${oldSees} side by side`;
 });
 
+// A tarball that does not follow the package/ convention. DefinitelyTyped ships
+// @types/node rooted at "node v22.18" -- a directory with a space in it -- so
+// assuming the convention silently produced an empty package.
+check("a package with an unconventional tarball root", () => {
+    const pkg = require("@types/node/package.json");
+    assert.equal(pkg.name, "@types/node");
+    return `@types/node ${pkg.version} unpacked correctly`;
+});
+
 for (const [status, name, detail] of results) {
     console.log(`${status}  ${name}${detail ? "  -- " + detail : ""}`);
 }
