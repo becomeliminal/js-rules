@@ -9,6 +9,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -317,6 +318,40 @@ func Overlay(root string, libs []Source) error {
 // It is generated, never authored. Node finds index.js without one, but not
 // "types" or "exports" -- so the build system writes the resolution metadata,
 // exactly as please_go writes an importconfig rather than asking for one.
+// ordered is a JSON object that keeps the order it was written in.
+//
+// Almost nothing in a manifest cares, but conditional exports do: node walks
+// the conditions in file order and takes the first it recognises, so "default"
+// must be last or it shadows every condition after it. encoding/json sorts a
+// map's keys, and "default" sorts before "types".
+type ordered []struct {
+	K string
+	V any
+}
+
+func (o ordered) MarshalJSON() ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, kv := range o {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		k, err := json.Marshal(kv.K)
+		if err != nil {
+			return nil, err
+		}
+		v, err := json.Marshal(kv.V)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(k)
+		b.WriteByte(':')
+		b.Write(v)
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
+}
+
 func WritePackageJSON(path, name, main, types string, extra map[string]any) error {
 	// map[string]any rather than map[string]string: "type": "module" is a
 	// string, but "sideEffects" and "exports" are not, and a manifest that
@@ -336,13 +371,15 @@ func WritePackageJSON(path, name, main, types string, extra map[string]any) erro
 	// because "exports" is an allowlist: declaring it would otherwise make
 	// every subpath import of this package stop resolving.
 	if main != "" {
-		root := map[string]any{"default": "./" + main}
+		// Ordered, not a map: conditions are matched in the order they appear in
+		// the file, and "default" is the fallback, so it has to come last. A Go
+		// map cannot express that -- encoding/json sorts keys, which puts
+		// "default" first and makes "types" unreachable.
+		root := ordered{{"default", "./" + main}}
 		if types != "" {
-			// Ahead of "default", which node takes as the fallback and so must
-			// come last.
-			root = map[string]any{"types": "./" + types, "default": "./" + main}
+			root = ordered{{"types", "./" + types}, {"default", "./" + main}}
 		}
-		manifest["exports"] = map[string]any{".": root, "./*": "./*"}
+		manifest["exports"] = ordered{{".", root}, {"./*", "./*"}}
 	}
 	for k, v := range extra {
 		manifest[k] = v
