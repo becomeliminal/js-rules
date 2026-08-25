@@ -1,6 +1,13 @@
 subinclude("//build_defs:npm")
 
 npm_repo(
+    name = "types_node_22.18.13",
+    hashes = ["5401b90ad750c7420467cb4d66fa7118fef1c5074c35b2e1546e0537f863bf06"],
+    pkg = "@types/node",
+    version = "22.18.13",
+)
+
+npm_repo(
     name = "typescript_typescript-aix-ppc64_7.0.2",
     cpu = ["ppc64"],
     hashes = ["b6e558bbdc9206b7b99f6f4f4ce4fa4f6157640ab580cc7d563703767d43d8cc"],
@@ -236,6 +243,13 @@ npm_repo(
     version = "7.0.2",
 )
 
+npm_repo(
+    name = "undici-types_6.21.0",
+    hashes = ["cfa1a9a5e18988850e548f4f6b629c58da32dc32bebb116e58ea301e516fd16d"],
+    pkg = "undici-types",
+    version = "6.21.0",
+)
+
 npm_link(
     name = "node_modules",
     lock = "pnpm-lock.yaml",
@@ -247,6 +261,7 @@ npm_link(
         ":react-dom_18.3.1_a723868c",
         ":react_18.3.1",
         ":scheduler_0.23.2",
+        ":types_node_22.18.13",
         ":typescript_7.0.2",
         ":typescript_typescript-aix-ppc64_7.0.2",
         ":typescript_typescript-darwin-arm64_7.0.2",
@@ -268,6 +283,7 @@ npm_link(
         ":typescript_typescript-sunos-x64_7.0.2",
         ":typescript_typescript-win32-arm64_7.0.2",
         ":typescript_typescript-win32-x64_7.0.2",
+        ":undici-types_6.21.0",
     ],
     visibility = ["PUBLIC"],
 )
