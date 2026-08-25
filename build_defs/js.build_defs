@@ -314,7 +314,7 @@ def check_package_name(package:str, target:str):
         return
     parts = package.split("/")
     suggestion = "@" + parts[0] + "/" + "-".join(parts[1:])
-    fail(f"js_library {target}: `{package}` is not a package name node can " +
+    fail(f"{target}: `{package}` is not a package name node can " +
          "resolve. npm allows one segment, or a scope and one segment -- " +
          "CommonJS hides this by falling back to directories, but ESM reads " +
          f"it as a subpath and fails. Set package, for instance `{suggestion}`.")
