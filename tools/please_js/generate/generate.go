@@ -96,7 +96,7 @@ type Plan struct {
 }
 
 // Build derives the plan from a lockfile.
-func Build(lock *lockfile.Lockfile) (*Plan, error) {
+func Build(lock *lockfile.Lockfile, scope Scope) (*Plan, error) {
 	plan := &Plan{
 		Closure:   map[string][]string{},
 		Direct:    map[string]map[string]string{},
@@ -153,7 +153,7 @@ func Build(lock *lockfile.Lockfile) (*Plan, error) {
 	for path, imp := range lock.Importers {
 		direct := map[string]string{}
 		workspace := map[string]string{}
-		for alias, dep := range allImporterDeps(imp) {
+		for alias, dep := range scope.roots(imp) {
 			if lockfile.IsLink(dep.Version) {
 				// The repo's own package, resolved through the workspace rather
 				// than the registry, so nothing is fetched. Recorded rather than
@@ -175,14 +175,14 @@ func Build(lock *lockfile.Lockfile) (*Plan, error) {
 		plan.Workspace[path] = workspace
 
 		seen := map[string]bool{}
-		for _, dep := range allImporterDeps(imp) {
+		for _, dep := range scope.roots(imp) {
 			key := dep.Version
 			if _, ok := lock.Snapshots[key]; !ok {
 				continue
 			}
 			collect(lock, key, targets, seen)
 		}
-		for alias, dep := range allImporterDeps(imp) {
+		for alias, dep := range scope.roots(imp) {
 			key := alias + "@" + dep.Version
 			if _, ok := lock.Snapshots[key]; ok {
 				collect(lock, key, targets, seen)
@@ -228,16 +228,31 @@ func allDeps(s lockfile.Snapshot) map[string]string {
 	return out
 }
 
-func allImporterDeps(i lockfile.Importer) map[string]lockfile.ImporterDep {
+// Scope decides which of an importer's dependency groups count as roots.
+//
+// Filtering roots and recomputing is the only correct way to do this. Filtering
+// the finished closure instead would drop a package that a production
+// dependency also reaches, because the same package can be both a devDependency
+// at the top level and a transitive dependency of something shipped.
+type Scope struct {
+	NoDev      bool
+	NoOptional bool
+}
+
+func (s Scope) roots(i lockfile.Importer) map[string]lockfile.ImporterDep {
 	out := map[string]lockfile.ImporterDep{}
 	for k, v := range i.Dependencies {
 		out[k] = v
 	}
-	for k, v := range i.DevDependencies {
-		out[k] = v
+	if !s.NoDev {
+		for k, v := range i.DevDependencies {
+			out[k] = v
+		}
 	}
-	for k, v := range i.OptionalDependencies {
-		out[k] = v
+	if !s.NoOptional {
+		for k, v := range i.OptionalDependencies {
+			out[k] = v
+		}
 	}
 	return out
 }

@@ -13,7 +13,7 @@ import (
 // Emission goes through the same AST Please parses with, so the output is
 // stable against plz fmt and a regenerated file diffs only where the lockfile
 // actually changed.
-func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums []string) error {
+func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums []string, scope Scope) error {
 	f := &build.File{Path: path, Type: build.TypeBuild}
 
 	f.Stmt = append(f.Stmt, &build.CallExpr{
@@ -69,6 +69,21 @@ func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums 
 		}
 		call := &build.CallExpr{X: &build.Ident{Name: "npm_link"}, ForceMultiLine: true}
 		str(call, "name", linkName(path))
+		// Emitted onto the rule as well as used here: the link step recomputes
+		// the closure and has to reach the same answer, or it fails on an entry
+		// the package list does not contain.
+		for _, f := range []struct {
+			name string
+			on   bool
+		}{{"no_dev", scope.NoDev}, {"no_optional", scope.NoOptional}} {
+			if f.on {
+				call.List = append(call.List, &build.AssignExpr{
+					LHS: &build.Ident{Name: f.name},
+					Op:  "=",
+					RHS: &build.Ident{Name: "True"},
+				})
+			}
+		}
 		str(call, "lock", lockLabel)
 		if path != "." && path != "" {
 			str(call, "project", path)

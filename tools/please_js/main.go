@@ -33,6 +33,8 @@ var opts = struct {
 		LockLabel      string `long:"lock-label" default:"//:pnpm-lock.yaml" description:"label the generated npm_link rules read the lockfile from"`
 		Registry       string `long:"registry" default:"https://registry.npmjs.org" description:"npm registry"`
 		Workers        int    `long:"workers" default:"8" description:"concurrent downloads while hashing"`
+		NoDev          bool     `long:"no-dev" description:"leave devDependencies out of the tree"`
+		NoOptional     bool     `long:"no-optional" description:"leave optionalDependencies out of the tree"`
 		LifecycleHooks []string `long:"lifecycle-hooks" description:"a package whose own install scripts may run; repeatable, and nothing runs without it"`
 		SkipHashes     bool   `long:"skip-hashes" description:"do not fetch tarballs to record hashes; the result is unverified"`
 	} `command:"update" description:"Translate a pnpm lockfile into npm_repo targets"`
@@ -52,7 +54,9 @@ var opts = struct {
 	} `command:"describe" description:"Record what a fetched package is, for npm_link to assemble"`
 
 	Link struct {
-		Workspace []string `long:"workspace" description:"a workspace package this repo builds, as npm-name:directory"`
+		NoDev      bool     `long:"no-dev" description:"leave devDependencies out; must match how the build file was generated"`
+		NoOptional bool     `long:"no-optional" description:"leave optionalDependencies out; must match how the build file was generated"`
+		Workspace  []string `long:"workspace" description:"a workspace package this repo builds, as npm-name:directory"`
 		Lockfile string   `long:"lock" required:"true" description:"the pnpm lockfile describing the graph"`
 		Project  string   `long:"project" default:"." description:"which pnpm workspace project's tree to build"`
 		Source   []string `long:"source" description:"a staged package, as metadata-path:package-dir"`
@@ -180,7 +184,10 @@ func update() error {
 		return err
 	}
 
-	plan, err := generate.Build(lock)
+	plan, err := generate.Build(lock, generate.Scope{
+		NoDev:      opts.Update.NoDev,
+		NoOptional: opts.Update.NoOptional,
+	})
 	if err != nil {
 		return err
 	}
@@ -205,7 +212,7 @@ func update() error {
 		}
 	}
 
-	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, opts.Update.LockLabel, sums); err != nil {
+	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, opts.Update.LockLabel, sums, generate.Scope{NoDev: opts.Update.NoDev, NoOptional: opts.Update.NoOptional}); err != nil {
 		return err
 	}
 
@@ -303,7 +310,13 @@ func link() error {
 	if err != nil {
 		return err
 	}
-	plan, err := generate.Build(lock)
+	// The same scope the build file was generated with. A tree assembled from a
+	// wider closure than its package list would fail on a missing entry; a
+	// narrower one would quietly stage packages nobody asked for.
+	plan, err := generate.Build(lock, generate.Scope{
+		NoDev:      opts.Link.NoDev,
+		NoOptional: opts.Link.NoOptional,
+	})
 	if err != nil {
 		return err
 	}

@@ -211,6 +211,7 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
 
 
 def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str=".",
+             no_dev:bool=False, no_optional:bool=False,
              visibility:list=["PUBLIC"]):
     """Assembles a node_modules tree for one pnpm workspace project.
 
@@ -246,6 +247,19 @@ def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str="
             A link: the lockfile records and nothing here supplies is an error
             rather than a dangling symlink, because a dangling symlink fails at
             import time and names nothing useful.
+        no_dev: Leave devDependencies out of the tree.
+        no_optional: Leave optionalDependencies out.
+
+            Both must match how the build file was generated, and
+            `please_js update` writes them onto this rule for that reason. The
+            closure is recomputed here, so a tree assembled under a different
+            scope than its package list either fails on a missing entry or
+            quietly stages packages nobody asked for.
+
+            They filter the roots and recompute rather than filtering the
+            result, because the same package can be a devDependency at the top
+            level and a transitive dependency of something shipped -- dropping
+            it from the finished closure would break production.
         project: Which project in the pnpm workspace this tree is for.
         visibility: Visibility specification.
     """
@@ -278,6 +292,8 @@ def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str="
             discover,
             '$TOOLS_PLEASE_JS link --out "$OUT" --lock "$SRCS_LOCK"',
             f"--project {project}",
+            "--no-dev" if no_dev else "",
+            "--no-optional" if no_optional else "",
         ] + source_flags),
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         visibility = visibility,
