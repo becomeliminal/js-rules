@@ -10,6 +10,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -37,6 +38,7 @@ var opts = struct {
 		Name    string   `long:"name" required:"true" description:"this entry's identity, its target name"`
 		Package string   `long:"package" required:"true" description:"npm package name"`
 		Version string   `long:"version" description:"exact version"`
+		Main    string   `long:"main" description:"entry file, for the generated package.json of a first-party library"`
 		Dir     string   `long:"dir" description:"the fetched package directory"`
 		Out     string   `long:"out" required:"true" description:"description file to write"`
 	} `command:"describe" description:"Record what a fetched package is, for npm_link to assemble"`
@@ -47,6 +49,18 @@ var opts = struct {
 		Source   []string `long:"source" description:"a staged package, as metadata-path:package-dir"`
 		Out      string   `long:"out" required:"true" description:"node_modules root to build"`
 	} `command:"link" description:"Assemble a node_modules tree from staged packages"`
+
+	Overlay struct {
+		Tree string   `long:"tree" required:"true" description:"an existing node_modules tree"`
+		Lib  []string `long:"lib" description:"a first-party library, as metadata-path:directory"`
+		Out  string   `long:"out" required:"true" description:"node_modules root to write"`
+	} `command:"overlay" description:"Add first-party libraries to a node_modules tree"`
+
+	ResolveBin struct {
+		Tree    string `long:"tree" required:"true" description:"a node_modules tree"`
+		Package string `long:"package" required:"true" description:"the package publishing the executable"`
+		Bin     string `long:"bin" description:"which executable; needed only when the package publishes several"`
+	} `command:"resolve-bin" description:"Print the path to an executable a package publishes"`
 }{
 	Usage: `
 please_js translates a pnpm lockfile into Please targets.
@@ -81,6 +95,8 @@ func main() {
 		"update":   update,
 		"describe": describe,
 		"link":     link,
+		"overlay":  overlay,
+		"resolve-bin": resolveBin,
 	}[parser.Active.Name]
 	if run == nil {
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", parser.Active.Name)
@@ -147,6 +163,16 @@ func describe() error {
 		}
 	}
 
+	// A first-party library needs a manifest for node to resolve it as a
+	// directory. It is generated here rather than authored, the way please_go
+	// writes an importconfig rather than asking for one.
+	if o.Main != "" && o.Dir != "" {
+		if err := store.WritePackageJSON(
+			filepath.Join(o.Dir, "package.json"), o.Package, o.Main, ""); err != nil {
+			return err
+		}
+	}
+
 	return store.WriteMeta(o.Out, store.Meta{
 		Name:    o.Name,
 		Package: o.Package,
@@ -200,4 +226,45 @@ func projects(plan *generate.Plan) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// overlay adds first-party libraries to a third-party tree.
+//
+// The two are kept apart because they are resolved differently: third-party
+// packages come from the lockfile and live in the store, where two versions can
+// coexist; a first-party library is named by its location and has nothing to
+// disambiguate.
+func overlay() error {
+	if err := copyTreeInto(opts.Overlay.Tree, opts.Overlay.Out); err != nil {
+		return err
+	}
+	var libs []store.Source
+	for _, l := range opts.Overlay.Lib {
+		metaPath, dir, ok := strings.Cut(l, ":")
+		if !ok {
+			return fmt.Errorf("--lib %q is not metadata-path:directory", l)
+		}
+		meta, err := store.ReadMeta(metaPath)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", metaPath, err)
+		}
+		libs = append(libs, store.Source{Dir: dir, Meta: meta})
+	}
+	return store.Overlay(opts.Overlay.Out, libs)
+}
+
+func copyTreeInto(src, dst string) error {
+	if src == "" {
+		return os.MkdirAll(dst, 0o755)
+	}
+	return store.CopyTree(src, dst)
+}
+
+func resolveBin() error {
+	path, err := store.ResolveBin(opts.ResolveBin.Tree, opts.ResolveBin.Package, opts.ResolveBin.Bin)
+	if err != nil {
+		return err
+	}
+	fmt.Println(path)
+	return nil
 }

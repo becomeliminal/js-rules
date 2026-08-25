@@ -1,37 +1,138 @@
 """Running JavaScript under Please.
 
-js_run_binary is the keystone: every compiler, bundler and test runner above
-this layer is a thin wrapper over it. A tool is staged with a real node_modules
-beside its sources and run with that directory as its working directory, so the
-tool's own module resolution -- which a build system cannot intercept -- simply
-works.
+The rules here mirror the shape every Please plugin has: npm_repo for a
+third-party package, js_library for a first-party one, js_binary for something
+that runs -- the same triple as go_repo/go_library/go_binary and
+rust_repo/rust_library/rust_binary.
 
-Please gives each target its own directory and runs the command there, so none
-of the output-tree machinery aspect_rules_js needs (BAZEL_BINDIR, copy_to_bin
-on every source, the runfiles reconciliation) arises here.
+One thing JavaScript makes harder than Go or Rust. Both of those name a
+first-party library and hand the compiler a table mapping that name to a path:
+an importconfig for `go tool compile`, `--extern` flags for rustc. Node accepts
+no such table -- it resolves only by walking the filesystem -- so the table has
+to be the directory. A first-party library is therefore named by where it lives,
+as a Go import path mirrors its directory, and placed in the tree under that
+name.
 """
 
 
-def js_run_binary(name:str, bin:str, node_modules:str="", srcs:list=[], outs:list=[],
-                  out_dirs:list=[], args:list=[], env:dict={}, chdir:str=None,
-                  visibility:list=None, labels:list=[], test_only:bool&testonly=False):
-    """Runs a binary provided by an npm package as a build action.
+def js_library(name:str, srcs:list, deps:list=[], package:str="",
+               visibility:list=None, test_only:bool&testonly=False, labels:list=[]):
+    """A first-party JavaScript library.
+
+    Runs no actions beyond arranging its sources: compilation belongs to
+    ts-rules, so a library of plain JavaScript costs nothing to declare.
 
     Args:
         name: Target name.
-        node_modules: npm_link target providing the tree the tool resolves
-                      through. Optional: a self-contained tool needs no tree,
-                      which is how pnpm itself can be run before any tree exists.
-        bin: Path to the binary within node_modules, e.g. "typescript/bin/tsc".
-        srcs: Input files, staged alongside the tool.
+        srcs: Source files.
+        deps: Other js_library targets, and npm_repo targets for third-party
+              packages. First-party deps are exported, so a binary depending on
+              this library also gets the libraries it needs -- affordable here
+              because a first-party graph is tens of targets, where carrying a
+              third-party closure the same way cost 50s of warm build.
+        package: The name source code imports this by. Defaults to the package
+                 path, as Go derives an import path from the directory:
+                 //common/js/components is imported as "common/js/components".
+        visibility: Visibility specification.
+        test_only: If True, only visible to test rules.
+        labels: Additional labels.
+    """
+    package = package or package_name()
+    entry = "index.js"
+
+    return build_rule(
+        name = name,
+        srcs = srcs,
+        outs = [name],
+        cmd = " && ".join([
+            'mkdir -p "$OUT/pkg"',
+            'for s in $SRCS; do mkdir -p "$OUT/pkg/$(dirname "${s#' + package_name() + '/}")" && ' +
+            'cp "$s" "$OUT/pkg/${s#' + package_name() + '/}"; done',
+            " ".join([
+                "$TOOL describe",
+                f"--name {name} --package {package} --version 0.0.0",
+                f"--main {entry}",
+                '--dir "$OUT/pkg" --out "$OUT/lib.json"',
+            ]),
+        ]),
+        tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
+        deps = deps,
+        exported_deps = deps,
+        visibility = visibility,
+        test_only = test_only,
+        labels = labels + [f"js_library:{package}"],
+        building_description = "Arranging...",
+    )
+
+
+def js_binary(name:str, entry_point:str, deps:list=[], node_modules:str="",
+              node_options:list=[], visibility:list=None, labels:list=[]):
+    """A JavaScript program run under node.
+
+    Args:
+        name: Target name.
+        entry_point: The file node runs, relative to this package.
+        deps: js_library targets whose packages this program imports.
+        node_modules: The third-party tree, from npm_link. Defaults to the
+                      NodeModules config, so a single-tree repo never names it.
+        node_options: Flags passed to node.
+        visibility: Visibility specification.
+        labels: Additional labels.
+    """
+    return _js_run(name, entry_point, deps, node_modules, node_options,
+                   test = False, visibility = visibility, labels = labels)
+
+
+def js_test(name:str, entry_point:str, deps:list=[], node_modules:str="",
+            node_options:list=[], visibility:list=None, labels:list=[],
+            timeout:int=0, flaky:bool|int=0, size:str=None):
+    """A JavaScript program run under `plz test`.
+
+    Args:
+        name: Target name.
+        entry_point: The file node runs, relative to this package.
+        deps: js_library targets whose packages this test imports.
+        node_modules: The third-party tree, from npm_link.
+        node_options: Flags passed to node.
+        visibility: Visibility specification.
+        labels: Additional labels.
+        timeout: Test timeout in seconds.
+        flaky: True to mark the test flaky, or an integer for reruns.
+        size: Test size.
+    """
+    return _js_run(name, entry_point, deps, node_modules, node_options,
+                   test = True, visibility = visibility, labels = labels,
+                   timeout = timeout, flaky = flaky, size = size)
+
+
+def js_run_binary(name:str, package:str, bin:str="", node_modules:str="", srcs:list=[], outs:list=[],
+                  out_dirs:list=[], args:list=[], env:dict={}, chdir:str=None,
+                  visibility:list=None, labels:list=[], test_only:bool&testonly=False):
+    """Runs an executable published by an npm package as a build action.
+
+    The keystone: every compiler, bundler and test runner above this layer is a
+    wrapper over it. The tool runs with node_modules staged beside its sources,
+    so the tool's own module resolution -- which a build system cannot intercept
+    -- works unchanged.
+
+    Args:
+        name: Target name.
+        package: The npm package publishing the executable.
+        bin: Which executable, as the package's own package.json declares it.
+             Needed only where a package publishes several. Looked up rather
+             than given as a path, so a typo fails the build with a message
+             listing what the package does publish.
+        node_modules: The tree the tool resolves through. Optional: a
+                      self-contained tool needs none, which is how pnpm itself
+                      runs before any tree exists.
+        srcs: Input files, staged alongside.
         outs: Files the tool is expected to produce.
         out_dirs: Directories the tool is expected to produce.
-        args: Arguments passed to the binary.
-        env: Environment variables set for the action.
-        chdir: Directory to run in, relative to the staged root. Defaults to the
-               package directory, so args are written relative to the BUILD file
-               the way a developer expects. node_modules sits at the staged root
-               and is still found, because node's resolution walks up.
+        args: Arguments passed to the executable.
+        env: Environment variables for the action.
+        chdir: Directory to run in. Defaults to the package directory, so args
+               read relative to the BUILD file. node_modules sits at the staged
+               root and is still found, because node's resolution walks up.
         visibility: Visibility specification.
         labels: Additional labels.
         test_only: If True, only visible to test rules.
@@ -39,22 +140,11 @@ def js_run_binary(name:str, bin:str, node_modules:str="", srcs:list=[], outs:lis
     if not outs and not out_dirs:
         fail(f"js_run_binary {name}: declare outs or out_dirs, or the action has no effect")
 
+    node_modules = node_modules or CONFIG.JS.NODE_MODULES
     run_dir = "_run"
     chdir = package_name() if chdir == None else chdir
     workdir = f"{run_dir}/{chdir}" if chdir else run_dir
     env_prefix = " ".join([f"{k}={v}" for k, v in sorted(env.items())])
-    arg_str = " ".join(args)
-
-    # Outputs are collected by name from the run directory rather than by moving
-    # the whole tree, so a tool that writes more than it declares does not
-    # silently smuggle files into the output.
-    collect = [
-        # Outputs are declared relative to the package and produced in the
-        # working directory, so they are collected from there by name -- not by
-        # moving the whole tree, so a tool writing more than it declares cannot
-        # smuggle files into the output.
-        f'for o in $OUTS; do cp -R "{workdir}/$o" "$o"; done',
-    ] if outs or out_dirs else []
 
     return build_rule(
         name = name,
@@ -65,17 +155,133 @@ def js_run_binary(name:str, bin:str, node_modules:str="", srcs:list=[], outs:lis
             f"mkdir -p {run_dir}/node_modules",
             f'[ -n "$SRCS_MODULES" ] && cp -R $SRCS_MODULES/. {run_dir}/node_modules/ || true',
             f'for s in $SRCS_SRCS; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
-            # node and the tool are resolved to absolute paths before the
-            # working directory changes; node_modules stays at the staged root
-            # and is still found from any subdirectory, because resolution walks up.
-            f'NODE=$(readlink -f "$TOOLS_NODE")',
-            f'BIN=$(readlink -f "{run_dir}/node_modules/{bin}")',
-            f'cd "{workdir}" && {env_prefix} "$NODE" "$BIN" {arg_str}'.replace("  ", " "),
+            'NODE=$(readlink -f "$TOOLS_NODE")',
+            f'BIN=$(readlink -f "$("$TOOLS_TOOL" resolve-bin --tree {run_dir}/node_modules --package {package}' + (f' --bin {bin}' if bin else '') + ')")',
+            f'cd "{workdir}" && {env_prefix} "$NODE" "$BIN" ' + " ".join(args),
             "cd $TMP_DIR",
-        ] + collect),
-        tools = {"node": [CONFIG.JS.NODE_TOOL]},
+            f'for o in $OUTS; do cp -R "{workdir}/$o" "$o"; done',
+        ]),
+        tools = {
+            "node": [CONFIG.JS.NODE_TOOL],
+            "tool": [CONFIG.JS.PLEASE_JS_TOOL],
+        },
         visibility = visibility,
         labels = labels,
         test_only = test_only,
         building_description = "Running...",
     )
+
+
+def _js_run(name, entry_point, deps, node_modules, node_options, test,
+            visibility, labels, timeout=0, flaky=0, size=None):
+    """Shared implementation of js_binary and js_test.
+
+    The third-party tree and the first-party libraries are assembled separately
+    because they resolve differently: a package from the lockfile lives in the
+    store, where two resolutions of it can coexist; a library named by its
+    location has nothing to disambiguate. Both land in one directory beside the
+    entry point, so node resolves by walking up from the entry to the
+    node_modules next to it -- no NODE_PATH and no launcher computing paths.
+
+    That directory is a runtime_deps of the launcher rather than an output of
+    it: `plz run` refuses a target with more than one output, and data is staged
+    beside the binary for `plz test` but not for `plz run`.
+    """
+    node_modules = node_modules or CONFIG.JS.NODE_MODULES
+    run_dir = "_" + name + "_run"
+    entry_name = entry_point.split("/")[-1]
+
+    runtime = build_rule(
+        name = name,
+        tag = "runtime",
+        srcs = {"entry": [entry_point], "modules": [node_modules] if node_modules else []},
+        outs = [run_dir],
+        cmd = " && ".join([
+            'TOOL=$(readlink -f "$TOOLS_TOOL")',
+            # Every first-party library staged here describes itself, so the set
+            # is collected by shape rather than by naming each one twice.
+            # lib.json rather than meta.json: a third-party package writes the
+            # latter, and the two are placed differently.
+            'LIBS=$(for m in $(find . -name lib.json); do printf -- "--lib %s:%s " "$m" "$(dirname "$m")/pkg"; done)',
+            '"$TOOL" overlay --tree "$SRCS_MODULES" --out "$OUT/node_modules" $LIBS',
+            'cp "$SRCS_ENTRY" "$OUT/' + entry_name + '"',
+        ]),
+        tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
+        deps = deps,
+        needs_transitive_deps = True,
+        test_only = test,
+    )
+
+    # Runtime deps stage flat beside the launcher, under their output names --
+    # not at their package paths, which is where data lands.
+    # Please stages a target's dependencies two ways, and a binary meets both.
+    # Under `plz run` the working directory is the repo root, non-binary
+    # runtime_deps are copied beside the launcher, and a binary dependency is
+    # left where it already lives, in plz-out/bin. Under `plz test` the working
+    # directory is a staging directory and data lands there at package-relative
+    # paths. Neither layout is wrong; they are just different, so the launcher
+    # looks for each thing in both places and says so if it finds neither.
+    node_rel = _staged_path(CONFIG.JS.NODE_TOOL) + "/bin/node"
+    run_rel = package_name() + "/" + run_dir + "/" + entry_name
+    launcher = "\n".join([
+        "#!/bin/sh",
+        "set -eu",
+        "ROOT=$(pwd -P)",
+        'HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)',
+        "",
+        "find_one() {",
+        '    for c in "$@"; do',
+        '        [ -e "$c" ] && { printf %s "$c"; return 0; }',
+        "    done",
+        "    return 1",
+        "}",
+        "",
+        'NODE=$(find_one "$ROOT/@NODE@" "$ROOT/plz-out/bin/@NODE@") || {',
+        '    echo "js_binary: no node toolchain at @NODE@" >&2; exit 1; }',
+        'MAIN=$(find_one "$HERE/@RUNDIR@/@ENTRY@" "$ROOT/@RUN@" "$ROOT/plz-out/gen/@RUN@") || {',
+        '    echo "js_binary: no runtime directory for this program" >&2; exit 1; }',
+        "",
+        'exec "$NODE" @OPTS@ "$MAIN" "$@"',
+    ])
+    launcher = (launcher
+        .replace("@NODE@", node_rel)
+        .replace("@RUNDIR@", run_dir)
+        .replace("@RUN@", run_rel)
+        .replace("@ENTRY@", entry_name)
+        .replace("@OPTS@", " ".join(node_options)))
+
+    return build_rule(
+        name = name,
+        outs = [name + ".sh"],
+        cmd = "cat > $OUT <<'PLZ_LAUNCHER'\n" + launcher + "\nPLZ_LAUNCHER\nchmod +x $OUT",
+        # data for the test layout, runtime_deps for the run layout.
+        data = [runtime, CONFIG.JS.NODE_TOOL.split("|")[0]] if test else None,
+        runtime_deps = None if test else [runtime, CONFIG.JS.NODE_TOOL.split("|")[0]],
+        binary = True,
+        test = test,
+        no_test_output = test,
+        visibility = visibility,
+        labels = labels,
+        test_timeout = timeout if test else 0,
+        flaky = flaky if test else 0,
+        size = size if test else None,
+        building_description = "Preparing...",
+    )
+
+
+def _staged_path(label:str):
+    """Where a data dependency lands, relative to a binary's own directory.
+
+    A label names a target; data is staged at the target's package path. The
+    launcher needs the latter, and deriving it here keeps the generated script
+    free of path arithmetic -- which is where every symlink bug in this plugin
+    has come from.
+    """
+    target = label.split("|")[0].lstrip("/")
+    # A subrepo label carries its repo ahead of the package, as
+    # ///js//third_party/node:node, but data stages at the package path either
+    # way, so anything before the last separator is dropped.
+    if "//" in target:
+        target = target.split("//")[-1]
+    package, _, name = target.partition(":")
+    return package + "/" + name

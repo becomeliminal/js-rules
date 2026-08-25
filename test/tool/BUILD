@@ -6,8 +6,8 @@ subinclude("//build_defs:js")
 # here is a build failure.
 js_run_binary(
     name = "compile",
-    node_modules = "//third_party/js:node_modules",
-    bin = "typescript/bin/tsc",
+    package = "typescript",
+    bin = "tsc",
     srcs = ["hello.ts"],
     outs = ["hello.js"],
     args = ["hello.ts", "--target", "es2022", "--module", "esnext"],
