@@ -33,7 +33,8 @@ def _env_prefix(env:dict):
 
 
 def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
-             os:list=[], cpu:list=[], postinstall:str="", postinstall_env:dict={},
+             os:list=[], cpu:list=[], run_hooks:bool=False,
+             postinstall:str="", postinstall_env:dict={},
              visibility:list=["PUBLIC"], labels:list=[]):
     """One npm package version, fetched and described.
 
@@ -65,6 +66,19 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             megabytes of compilers that cannot run here. A package excluded by
             its constraints still gets a target, so the build file is the same
             on every platform, but nothing is fetched and nothing is placed.
+        run_hooks: Run the install scripts this package declares -- preinstall,
+                   install and postinstall, in npm's order.
+
+            Off by default and never inferred, which is the whole design. A
+            large part of the ecosystem needs these: a package that compiles
+            native code, downloads a binary or generates a file does it here.
+            They are also arbitrary code from a third party, and running one
+            because the package asked for it is how a supply chain attack
+            succeeds. So a package runs its scripts because someone wrote its
+            name down, not because it declared them.
+
+            please_js update --lifecycle-hooks is how that list becomes build
+            files; nothing scans the registry and decides for you.
         postinstall: A command run inside the fetched package after extraction
                      and before it is described, with the package directory as
                      its working directory and the node toolchain on PATH.
@@ -107,6 +121,10 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
 
     # Rendered here because the build language's f-strings take names, not calls.
     hook_env = _env_prefix(postinstall_env)
+    hook_env_flags = " ".join([
+        "--env " + k + "='" + v.replace("'", "'\\''") + "'"
+        for k, v in sorted(postinstall_env.items())
+    ])
 
     # Scoped packages live at @scope/name/-/name-version.tgz: the scope is in
     # the path but not in the tarball filename.
@@ -146,14 +164,21 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             'NODEDIR=$(dirname "$(readlink -f "$TOOLS_NODE")")',
             f'cd "$OUT/pkg" && PATH="$NODEDIR:$PATH" {hook_env} {postinstall}',
             'cd "$TMP_DIR"',
-        ] if postinstall else []) + [
+        ] if postinstall else []) + ([
+            # After this repo's own command, not before it. npm applies patches
+            # before it runs scripts, and for the same reason: a command written
+            # here is usually what makes the package's own script able to run at
+            # all, so the script should see the package as this repo left it.
+            'NODEDIR=$(dirname "$(readlink -f "$TOOLS_NODE")")',
+            f'PATH="$NODEDIR:$PATH" "$TOOLS_PLEASE_JS" hooks --dir "$OUT/pkg" {hook_env_flags}',
+        ] if run_hooks else []) + [
             " ".join([
                 "$TOOLS_PLEASE_JS describe",
                 f"--name {name} --package {pkg} --version {version}",
                 '--dir "$OUT/pkg" --out "$OUT/meta.json"',
             ]),
         ]),
-        tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]} if not postinstall else {
+        tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]} if not (postinstall or run_hooks) else {
             "please_js": [CONFIG.JS.PLEASE_JS_TOOL],
             # Only when something will run: an npm_repo that just unpacks a
             # tarball has no reason to depend on a toolchain.

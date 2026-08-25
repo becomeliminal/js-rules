@@ -32,6 +32,50 @@ type Entry struct {
 	HasBin    bool
 	OS        []string
 	CPU       []string
+
+	// RunHooks is set from an allowlist a person wrote, never from anything the
+	// lockfile or the package says. A package declaring install scripts is not a
+	// reason to run them -- that is the decision, and it belongs to whoever owns
+	// the repo rather than to whoever published the package.
+	RunHooks bool
+}
+
+// AllowHooks marks the named packages as permitted to run their own install
+// scripts.
+//
+// Names are npm package names rather than target names, because that is what a
+// person reads in a lockfile and what the ecosystem talks about -- and because
+// one package can resolve to several targets under different peers, all of
+// which should be allowed together or not at all.
+//
+// A name that matches nothing is an error. The alternative is a silent no-op,
+// and the thing it silently fails to do is run a build step the package needs,
+// which surfaces much later as a missing file.
+func (p *Plan) AllowHooks(packages []string) error {
+	if len(packages) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(packages))
+	for _, name := range packages {
+		want[name] = true
+	}
+	seen := make(map[string]bool, len(packages))
+	for i := range p.Entries {
+		if want[p.Entries[i].Package] {
+			p.Entries[i].RunHooks = true
+			seen[p.Entries[i].Package] = true
+		}
+	}
+	var missing []string
+	for _, name := range packages {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("--lifecycle-hooks names %v, which the lockfile does not resolve", missing)
+	}
+	return nil
 }
 
 // Plan is everything derived from one lockfile.

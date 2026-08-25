@@ -16,10 +16,31 @@ npm_repo(
     version = "2.1.3",
 )
 
+# The package's own scripts, which is the other half. ms declares none, so this
+# repo's command gives it one first -- which is exactly the ordering being
+# asserted: a command written here runs before the package's scripts, the way
+# npm applies patches before it runs them, because the command is usually what
+# makes the script able to run at all.
+#
+# Contrived, and deliberately so. Every real package with an observable hook is
+# hundreds of kilobytes and most only print a banner; this is 6KB and the effect
+# is a file either present or absent.
+npm_repo(
+    name = "ms_with_hook",
+    hashes = ["f6616e15e530ed552f9daa2d3ce71963947c6bc7c98c9b64fd3e673fd02622c6"],
+    pkg = "ms",
+    postinstall = "node -e 'const f=require(\"fs\"),m=JSON.parse(f.readFileSync(\"package.json\"));m.scripts={preinstall:\"echo first >> order\",postinstall:\"echo third >> order\",install:\"echo second >> order\"};f.writeFileSync(\"package.json\",JSON.stringify(m))'",
+    run_hooks = True,
+    version = "2.1.3",
+)
+
 build_rule(
     name = "postinstall_test",
     srcs = ["check.sh"],
-    data = [":ms"],
+    data = [
+        ":ms",
+        ":ms_with_hook",
+    ],
     outs = ["postinstall_test"],
     cmd = "cp $SRCS $OUT",
     binary = True,

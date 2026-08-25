@@ -28,6 +28,13 @@ func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums 
 			str(call, "pkg", e.Package)
 		}
 		str(call, "version", e.Version)
+		if e.RunHooks {
+			call.List = append(call.List, &build.AssignExpr{
+				LHS: &build.Ident{Name: "run_hooks"},
+				Op:  "=",
+				RHS: &build.Ident{Name: "True"},
+			})
+		}
 
 		// Platform constraints are emitted so the same build file works
 		// everywhere: the rule decides what to fetch, not the generator.
