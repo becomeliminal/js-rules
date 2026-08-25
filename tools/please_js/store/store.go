@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -158,6 +159,10 @@ func symlink(from, to string) error {
 	return os.Symlink(rel, from)
 }
 
+// CopyTree copies a directory, preserving symlinks rather than following them
+// out of the tree.
+func CopyTree(src, dst string) error { return copyTree(src, dst) }
+
 func copyTree(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -253,4 +258,97 @@ func ReadBins(dir, pkgName string) (map[string]string, error) {
 		return map[string]string{name: asString}, nil
 	}
 	return nil, fmt.Errorf("%s: \"bin\" is neither a string nor an object", dir)
+}
+
+// Overlay copies first-party libraries into an existing tree.
+//
+// A first-party library is named by where it lives, the way a Go import path
+// mirrors its directory, so //common/js/components is imported as
+// "common/js/components". Node resolves a multi-segment name by path, so
+// placing it at node_modules/common/js/components makes the import work with no
+// aliasing, no tsconfig paths and no workspace protocol.
+//
+// These are copied rather than linked into the store: a first-party library has
+// no resolution to disambiguate, so it needs no entry of its own.
+func Overlay(root string, libs []Source) error {
+	taken := map[string]string{}
+	for _, lib := range libs {
+		if prev, dup := taken[lib.Meta.Package]; dup {
+			return fmt.Errorf(
+				"%s and %s are both imported as %q; set `package` on one of them",
+				prev, lib.Meta.Name, lib.Meta.Package)
+		}
+		taken[lib.Meta.Package] = lib.Meta.Name
+
+		dst := filepath.Join(root, lib.Meta.Package)
+		if _, err := os.Stat(dst); err == nil {
+			return fmt.Errorf(
+				"%s is imported as %q, which a third-party package already occupies",
+				lib.Meta.Name, lib.Meta.Package)
+		}
+		if err := copyTree(lib.Dir, dst); err != nil {
+			return fmt.Errorf("overlaying %s: %w", lib.Meta.Name, err)
+		}
+	}
+	return nil
+}
+
+// WritePackageJSON emits the manifest node needs to resolve a directory as a
+// package.
+//
+// It is generated, never authored. Node finds index.js without one, but not
+// "types" or "exports" -- so the build system writes the resolution metadata,
+// exactly as please_go writes an importconfig rather than asking for one.
+func WritePackageJSON(path, name, main, types string) error {
+	manifest := map[string]string{"name": name, "version": "0.0.0"}
+	if main != "" {
+		manifest["main"] = main
+	}
+	if types != "" {
+		manifest["types"] = types
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+// ResolveBin returns the path to an executable a package publishes, relative to
+// the tree root.
+//
+// The executable is named as the package's own package.json declares it, and
+// looked up here rather than given as a path, so a typo fails the build with a
+// message listing what the package does publish.
+func ResolveBin(tree, pkg, bin string) (string, error) {
+	dir := filepath.Join(tree, pkg)
+	bins, err := ReadBins(dir, pkg)
+	if err != nil {
+		return "", err
+	}
+	if len(bins) == 0 {
+		return "", fmt.Errorf("%s publishes no executables", pkg)
+	}
+	if bin == "" {
+		if len(bins) == 1 {
+			for _, path := range bins {
+				return filepath.Join(dir, path), nil
+			}
+		}
+		return "", fmt.Errorf("%s publishes %s; say which with `bin`", pkg, names(bins))
+	}
+	path, ok := bins[bin]
+	if !ok {
+		return "", fmt.Errorf("%s publishes no executable %q; it publishes %s", pkg, bin, names(bins))
+	}
+	return filepath.Join(dir, path), nil
+}
+
+func names(m map[string]string) string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
 }

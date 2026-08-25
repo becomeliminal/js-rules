@@ -16,6 +16,13 @@ DefaultValue = //tools/please_js
 Help = Build label for the please_js companion tool.
 Inherit = true
 
+[PluginConfig "node_modules"]
+ConfigKey = NodeModules
+DefaultValue = //third_party/js:node_modules
+Help = Build label for the third-party node_modules tree, from npm_link. Rules take it by default so a single-tree repo never names it.
+Optional = true
+Inherit = true
+
 [PluginConfig "npm_registry"]
 ConfigKey = NpmRegistry
 DefaultValue = https://registry.npmjs.org
@@ -29,3 +36,10 @@ gotool = //third_party/go:gotool|go
 [Plugin "node"]
 Target = //plugins:node
 NodeTool = //third_party/node:node|node
+
+# This repo is the js plugin, so its own defaults would point at a subrepo
+# self-reference. Point them at the local targets instead.
+[Plugin "js"]
+NodeTool = //third_party/node:node|node
+PleaseJsTool = //tools/please_js
+NodeModules = //third_party/js:node_modules
