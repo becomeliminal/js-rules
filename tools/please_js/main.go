@@ -305,7 +305,10 @@ func link() error {
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", metaPath, err)
 		}
-		sources = append(sources, store.Source{Dir: dir, Meta: meta, Deps: refs[meta.Name]})
+		sources = append(sources, store.Source{
+			Dir: dir, Meta: meta, Deps: refs[meta.Name],
+			Origin: "the lockfile, as " + meta.Package + "@" + meta.Version,
+		})
 	}
 
 	// Workspace packages are the repo's own, resolved through the lockfile as
@@ -321,9 +324,10 @@ func link() error {
 			return fmt.Errorf("--workspace %q is not npm-name:directory", w)
 		}
 		sources = append(sources, store.Source{
-			Dir:  dir,
-			Meta: store.Meta{Name: name, Package: name},
-			Deps: refs[name],
+			Dir:    dir,
+			Meta:   store.Meta{Name: name, Package: name},
+			Deps:   refs[name],
+			Origin: "this repo, via workspace = {\"" + name + "\": ...}",
 		})
 		links = append(links, store.Ref{As: name, Entry: name})
 		provided[name] = true

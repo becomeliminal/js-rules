@@ -212,9 +212,10 @@ def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str="
                   stages only direct srcs, and carrying it through exported_deps
                   is what made a warm build take 50s instead of 270ms.
         workspace: The repo's own packages, as npm name -> the target building
-                   it. A pnpm workspace resolves these with link: rather than
-                   from the registry, so nothing is fetched for them and the
-                   build graph supplies them instead.
+                   it: a js_library, a ts_library, or an npm_package for one
+                   that is also published. A pnpm workspace resolves these with
+                   link: rather than from the registry, so nothing is fetched
+                   for them and the build graph supplies them instead.
 
             They enter the tree exactly as a fetched package does, and nothing
             downstream can tell the difference -- which is the point: source
@@ -234,17 +235,27 @@ def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str="
         srcs[f"s{i}"] = [target]
         source_flags += [f'--source "$SRCS_S{i}/meta.json:$SRCS_S{i}/pkg"']
 
-    # A first-party library outputs <name>/pkg beside its lib.json, the same
-    # shape a fetched package has, so it needs no special placement here.
+    # A library outputs <name>/pkg beside its lib.json; an npm_package outputs
+    # the package directly, because that is what a registry receives. Both are a
+    # directory with a package.json in it, so the shape is discovered rather
+    # than assumed -- the same problem npm_repo has with tarball roots.
     for i, alias in enumerate(sorted(workspace.keys())):
         srcs[f"w{i}"] = [workspace[alias]]
-        source_flags += [f'--workspace "{alias}:$SRCS_W{i}/pkg"']
+        source_flags += [f'--workspace "{alias}:$(_pkg_dir "$SRCS_W{i}")"']
+
+    discover = " ".join([
+        "_pkg_dir() {",
+        'if [ -f "$1/pkg/package.json" ]; then printf %s "$1/pkg";',
+        'elif [ -f "$1/package.json" ]; then printf %s "$1";',
+        'else echo "npm_link: $1 has no package.json; is it a library or an npm_package?" >&2; return 1; fi; };',
+    ])
 
     return build_rule(
         name = name,
         srcs = srcs,
         outs = [name],
         cmd = " ".join([
+            discover,
             '$TOOLS_PLEASE_JS link --out "$OUT" --lock "$SRCS_LOCK"',
             f"--project {project}",
         ] + source_flags),

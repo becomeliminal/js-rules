@@ -285,3 +285,25 @@ func TestResolveBinSaysWhichMistakeWasMade(t *testing.T) {
 		t.Errorf("a package with no bins should say so, got: %v", err)
 	}
 }
+
+// A first-party package replacing a registry one is reasonable to want and
+// terrible to get by accident, so it is an error naming both rather than a
+// silent last-one-wins that depends on staging order.
+func TestTwoPackagesWithOneNameNameBoth(t *testing.T) {
+	dir := t.TempDir()
+	src := func(origin string) store.Source {
+		d := filepath.Join(dir, strings.ReplaceAll(origin, " ", "_"))
+		os.MkdirAll(d, 0o755)
+		return store.Source{Dir: d, Meta: store.Meta{Name: "clash", Package: "clash"}, Origin: origin}
+	}
+	err := store.Build(filepath.Join(dir, "out"),
+		[]store.Source{src("the lockfile"), src("this repo")}, nil)
+	if err == nil {
+		t.Fatal("expected a collision")
+	}
+	for _, want := range []string{"clash", "the lockfile", "this repo"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+}
