@@ -92,14 +92,14 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             cmd = " && ".join([
                 'mkdir -p "$OUT"',
                 " ".join([
-                    "$TOOLS_TOOL describe",
+                    "$TOOLS_PLEASE_JS describe",
                     f"--name {name} --package {pkg} --version {version}",
                     " ".join([f"--os {o}" for o in os]),
                     " ".join([f"--cpu {c}" for c in cpu]),
                     '--out "$OUT/meta.json"',
                 ]),
             ]),
-            tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
+            tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
             visibility = visibility,
             labels = labels + [f"npm:{pkg}@{version}", "npm_unsupported"],
             building_description = "Skipping (other platform)...",
@@ -148,13 +148,13 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             'cd "$TMP_DIR"',
         ] if postinstall else []) + [
             " ".join([
-                "$TOOLS_TOOL describe",
+                "$TOOLS_PLEASE_JS describe",
                 f"--name {name} --package {pkg} --version {version}",
                 '--dir "$OUT/pkg" --out "$OUT/meta.json"',
             ]),
         ]),
-        tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]} if not postinstall else {
-            "tool": [CONFIG.JS.PLEASE_JS_TOOL],
+        tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]} if not postinstall else {
+            "please_js": [CONFIG.JS.PLEASE_JS_TOOL],
             # Only when something will run: an npm_repo that just unpacks a
             # tarball has no reason to depend on a toolchain.
             "node": [CONFIG.JS.NODE_TOOL],
@@ -200,10 +200,10 @@ def npm_link(name:str, lock:str, packages:list, project:str=".",
         srcs = srcs,
         outs = [name],
         cmd = " ".join([
-            '$TOOL link --out "$OUT" --lock "$SRCS_LOCK"',
+            '$TOOLS_PLEASE_JS link --out "$OUT" --lock "$SRCS_LOCK"',
             f"--project {project}",
         ] + source_flags),
-        tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
+        tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         visibility = visibility,
         building_description = "Linking node_modules...",
     )
