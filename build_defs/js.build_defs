@@ -50,13 +50,13 @@ def js_library(name:str, srcs:list, deps:list=[], package:str="",
             'for s in $SRCS; do mkdir -p "$OUT/pkg/$(dirname "${s#' + package_name() + '/}")" && ' +
             'cp "$s" "$OUT/pkg/${s#' + package_name() + '/}"; done',
             " ".join([
-                "$TOOL describe",
+                "$TOOLS_PLEASE_JS describe",
                 f"--name {name} --package {package} --version 0.0.0",
                 f"--main {entry}",
                 '--dir "$OUT/pkg" --out "$OUT/lib.json"',
             ]),
         ]),
-        tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
+        tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         deps = deps,
         exported_deps = deps,
         visibility = visibility,
@@ -183,7 +183,7 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
         outs = outs + out_dirs,
         output_dirs = out_dirs,
         cmd = " && ".join([
-            'TOOL=$(readlink -f "$TOOLS_TOOL")',
+            'PLEASE_JS=$(readlink -f "$TOOLS_PLEASE_JS")',
             # Collected by shape, before the sources are staged: every
             # first-party library describes itself in a lib.json, so nothing has
             # to be named twice. node_modules is pruned because a staged tree
@@ -194,21 +194,21 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
             # third-party dependencies has no tree to overlay onto and the
             # overlay makes an empty one, so this path does not need a special
             # case for it.
-            f'"$TOOL" overlay --tree "${{SRCS_MODULES:-}}" --out {run_dir}/node_modules $LIBS',
+            f'"$PLEASE_JS" overlay --tree "${{SRCS_MODULES:-}}" --out {run_dir}/node_modules $LIBS',
             f'for s in $SRCS_SRCS; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
         ] + ([
             f'mkdir -p {tool_dir}',
             f'cp -R $SRCS_TOOL/. {tool_dir}/',
         ] if tool_modules else []) + [
             'NODE=$(readlink -f "$TOOLS_NODE")',
-            f'BIN=$(readlink -f "$("$TOOL" resolve-bin --tree {bin_tree} --package {package}' + (f' --bin {bin}' if bin else '') + ')")',
+            f'BIN=$(readlink -f "$("$PLEASE_JS" resolve-bin --tree {bin_tree} --package {package}' + (f' --bin {bin}' if bin else '') + ')")',
             f'cd "{workdir}" && {env_prefix} "$NODE" "$BIN" ' + " ".join(args),
             "cd $TMP_DIR",
             f'for o in $OUTS; do cp -R "{workdir}/$o" "$o"; done',
         ]),
         tools = {
             "node": [CONFIG.JS.NODE_TOOL],
-            "tool": [CONFIG.JS.PLEASE_JS_TOOL],
+            "please_js": [CONFIG.JS.PLEASE_JS_TOOL],
         },
         deps = deps,
         needs_transitive_deps = True,
@@ -247,7 +247,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         srcs = {"entry": [entry_point], "modules": [node_modules] if node_modules else []},
         outs = [run_dir],
         cmd = " && ".join([
-            'TOOL=$(readlink -f "$TOOLS_TOOL")',
+            'PLEASE_JS=$(readlink -f "$TOOLS_PLEASE_JS")',
             # Every first-party library staged here describes itself, so the set
             # is collected by shape rather than by naming each one twice.
             # lib.json rather than meta.json: a third-party package writes the
@@ -259,10 +259,10 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # A repo whose first-party code has no third-party dependencies has
             # no tree to overlay onto, and the overlay makes an empty one. The
             # variable is unset rather than empty in that case.
-            '"$TOOL" overlay --tree "${SRCS_MODULES:-}" --out "$OUT/node_modules" $LIBS',
+            '"$PLEASE_JS" overlay --tree "${SRCS_MODULES:-}" --out "$OUT/node_modules" $LIBS',
             'cp "$SRCS_ENTRY" "$OUT/' + entry_name + '"',  # a fixed name, so a label works
         ]),
-        tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
+        tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         deps = deps,
         needs_transitive_deps = True,
         test_only = test,
