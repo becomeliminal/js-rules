@@ -38,6 +38,7 @@ def js_library(name:str, srcs:list, deps:list=[], package:str="",
         labels: Additional labels.
     """
     package = package or package_name()
+    check_package_name(package, name)
     entry = "index.js"
 
     return build_rule(
@@ -291,3 +292,29 @@ def _staged_path(label:str):
         target = target.split("//")[-1]
     package, _, name = target.partition(":")
     return package + "/" + name
+
+
+def check_package_name(package:str, target:str):
+    """Rejects a name node cannot resolve as a package.
+
+    A library is imported by name, and npm's rules for a name are narrower than
+    a path: a single segment, or a scope and one segment. CommonJS is lenient
+    enough to hide this -- it falls back to walking directories, so
+    node_modules/a/b/c resolves -- but ESM is not. There, `a/b/c` means package
+    `a`, subpath `./b/c`, and node fails with ERR_UNSUPPORTED_DIR_IMPORT.
+
+    So the Go convention of naming a library after its directory does not carry
+    over, and defaulting to the package path is only safe one directory deep.
+    Failing here is much cheaper than discovering it the day a library starts
+    emitting modules.
+    """
+    if "/" not in package:
+        return
+    if package.startswith("@") and package.count("/") == 1:
+        return
+    parts = package.split("/")
+    suggestion = "@" + parts[0] + "/" + "-".join(parts[1:])
+    fail(f"{target}: `{package}` is not a package name node can " +
+         "resolve. npm allows one segment, or a scope and one segment -- " +
+         "CommonJS hides this by falling back to directories, but ESM reads " +
+         f"it as a subpath and fails. Set package, for instance `{suggestion}`.")

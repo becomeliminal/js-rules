@@ -1,4 +1,4 @@
-const { greet } = require("test/library/greeter");
+const { greet } = require("@test/greeter");
 const out = greet("please");
 if (!out.startsWith("hello please (react 18.3.1")) {
     console.error(`unexpected: ${out}`);
