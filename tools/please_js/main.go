@@ -10,6 +10,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/thought-machine/go-flags"
@@ -26,6 +27,7 @@ var opts = struct {
 		Lockfile       string `short:"l" long:"lockfile" default:"pnpm-lock.yaml" description:"pnpm-lock.yaml to translate"`
 		Out            string `short:"o" long:"out" default:"third_party/js/BUILD" description:"BUILD file to write"`
 		Subinclude     string `long:"subinclude" default:"///js//build_defs:npm" description:"subinclude path for the generated file"`
+		LockLabel      string `long:"lock-label" default:"//:pnpm-lock.yaml" description:"label the generated npm_link rules read the lockfile from"`
 		Registry       string `long:"registry" default:"https://registry.npmjs.org" description:"npm registry"`
 		Workers        int    `long:"workers" default:"8" description:"concurrent downloads while hashing"`
 		SkipHashes     bool   `long:"skip-hashes" description:"do not fetch tarballs to record hashes; the result is unverified"`
@@ -35,16 +37,15 @@ var opts = struct {
 		Name    string   `long:"name" required:"true" description:"this entry's identity, its target name"`
 		Package string   `long:"package" required:"true" description:"npm package name"`
 		Version string   `long:"version" description:"exact version"`
-		AliasOf string   `long:"alias-of" description:"the entry this one rebinds, for an npm alias"`
-		Dep     []string `long:"dep" description:"name of an entry in this package's node_modules"`
 		Dir     string   `long:"dir" description:"the fetched package directory"`
 		Out     string   `long:"out" required:"true" description:"description file to write"`
 	} `command:"describe" description:"Record what a fetched package is, for npm_link to assemble"`
 
 	Link struct {
-		Source []string `long:"source" description:"a staged package, as metadata-path:package-dir"`
-		LinkTo []string `long:"link" description:"name of an entry to expose at the top level"`
-		Out    string   `long:"out" required:"true" description:"node_modules root to build"`
+		Lockfile string   `long:"lock" required:"true" description:"the pnpm lockfile describing the graph"`
+		Project  string   `long:"project" default:"." description:"which pnpm workspace project's tree to build"`
+		Source   []string `long:"source" description:"a staged package, as metadata-path:package-dir"`
+		Out      string   `long:"out" required:"true" description:"node_modules root to build"`
 	} `command:"link" description:"Assemble a node_modules tree from staged packages"`
 }{
 	Usage: `
@@ -115,7 +116,7 @@ func update() error {
 		}
 	}
 
-	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, sums); err != nil {
+	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, opts.Update.LockLabel, sums); err != nil {
 		return err
 	}
 
@@ -150,14 +151,32 @@ func describe() error {
 		Name:    o.Name,
 		Package: o.Package,
 		Version: o.Version,
-		AliasOf: o.AliasOf,
-		Deps:    o.Dep,
 		Bins:    bins,
 	})
 }
 
-// link assembles a node_modules tree from staged packages.
+// link assembles a node_modules tree.
+//
+// The graph comes from the lockfile rather than from the rules: which packages
+// a package needs, and the names it imports them under, are already recorded
+// there, so npm_repo does not restate them and there is nothing to keep in
+// sync. It also means an npm alias needs no special rule -- it is simply a
+// reference whose name differs from the package's own.
 func link() error {
+	lock, err := lockfile.Parse(opts.Link.Lockfile)
+	if err != nil {
+		return err
+	}
+	plan, err := generate.Build(lock)
+	if err != nil {
+		return err
+	}
+	if _, ok := plan.Direct[opts.Link.Project]; !ok {
+		return fmt.Errorf("%s has no project %q; it has %s",
+			opts.Link.Lockfile, opts.Link.Project, strings.Join(projects(plan), ", "))
+	}
+	refs := plan.Refs()
+
 	var sources []store.Source
 	for _, s := range opts.Link.Source {
 		metaPath, dir, ok := strings.Cut(s, ":")
@@ -168,8 +187,17 @@ func link() error {
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", metaPath, err)
 		}
-		sources = append(sources, store.Source{Dir: dir, Meta: meta})
+		sources = append(sources, store.Source{Dir: dir, Meta: meta, Deps: refs[meta.Name]})
 	}
 
-	return store.Build(opts.Link.Out, sources, opts.Link.LinkTo)
+	return store.Build(opts.Link.Out, sources, plan.Links(opts.Link.Project))
+}
+
+func projects(plan *generate.Plan) []string {
+	out := make([]string, 0, len(plan.Direct))
+	for p := range plan.Direct {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }

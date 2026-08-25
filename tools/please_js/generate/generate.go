@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"tools/please_js/lockfile"
+	"tools/please_js/store"
 )
 
 // Package store target names try to stay readable, so a store path is
@@ -33,20 +34,9 @@ type Entry struct {
 	CPU       []string
 }
 
-// Alias is a package a project imports under a name that is not its own.
-// npm allows this ("my-react": "npm:react@18"), and it becomes its own entry
-// rather than a name recorded against a dependency -- which is what lets a
-// package's dependencies stay a plain list.
-type Alias struct {
-	Target  string // the alias entry's target name
-	Package string // the name it is imported under
-	Of      string // the entry it rebinds
-}
-
 // Plan is everything derived from one lockfile.
 type Plan struct {
 	Entries []Entry
-	Aliases []Alias
 	// Closure maps an importer path to every target reachable from it. The
 	// link rule needs this in full: an entry reachable only through another
 	// package's dep symlink still has to be staged, or the symlink dangles.
@@ -110,14 +100,6 @@ func Build(lock *lockfile.Lockfile) (*Plan, error) {
 		})
 	}
 
-	// Every entry's package name, so an import bound under a different name can
-	// be recognised.
-	pkgOf := map[string]string{}
-	for _, e := range plan.Entries {
-		pkgOf[e.Target] = e.Package
-	}
-	aliases := map[string]Alias{}
-
 	for path, imp := range lock.Importers {
 		direct := map[string]string{}
 		for alias, dep := range allImporterDeps(imp) {
@@ -133,15 +115,7 @@ func Build(lock *lockfile.Lockfile) (*Plan, error) {
 			if _, ok := lock.Snapshots[key]; !ok {
 				continue
 			}
-			target := targets[key]
-			if pkgOf[target] != alias {
-				// Imported under a name that is not the package's own, so the
-				// rebinding gets an entry of its own.
-				aliasTarget := TargetName(alias + "@alias") + "_" + shortHash(target)
-				aliases[aliasTarget] = Alias{Target: aliasTarget, Package: alias, Of: target}
-				target = aliasTarget
-			}
-			direct[alias] = target
+			direct[alias] = targets[key]
 		}
 		plan.Direct[path] = direct
 
@@ -167,20 +141,9 @@ func Build(lock *lockfile.Lockfile) (*Plan, error) {
 		plan.Closure[path] = closure
 	}
 
-	for _, name := range sortedAliasNames(aliases) {
-		plan.Aliases = append(plan.Aliases, aliases[name])
-	}
 	return plan, nil
 }
 
-func sortedAliasNames(m map[string]Alias) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
 
 // collect walks a snapshot's dependencies, recording every target reachable
 // from it.
@@ -268,4 +231,39 @@ func truncate(s string) string {
 func shortHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])[:hashLength]
+}
+
+// Refs returns what belongs in each package's own node_modules, keyed by the
+// entry it belongs to. The name a dependency appears under comes from the
+// lockfile, which is also where an npm alias is recorded.
+func (p *Plan) Refs() map[string][]store.Ref {
+	out := make(map[string][]store.Ref, len(p.Entries))
+	for _, e := range p.Entries {
+		refs := make([]store.Ref, 0, len(e.Deps))
+		for _, as := range sortedKeysOf(e.Deps) {
+			refs = append(refs, store.Ref{As: as, Entry: e.Deps[as]})
+		}
+		out[e.Target] = refs
+	}
+	return out
+}
+
+// Links returns the packages a project imports at its top level, under the
+// names its source code uses.
+func (p *Plan) Links(project string) []store.Ref {
+	direct := p.Direct[project]
+	refs := make([]store.Ref, 0, len(direct))
+	for _, as := range sortedKeysOf(direct) {
+		refs = append(refs, store.Ref{As: as, Entry: direct[as]})
+	}
+	return refs
+}
+
+func sortedKeysOf(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -1,15 +1,4 @@
-subinclude("//build_defs:npm", "//build_defs:js")
-
-npm_link(
-    name = "node_modules",
-    store = [
-        "//third_party/js:typescript",
-        "//third_party/js:typescript_linux_x64",
-    ],
-    packages = [
-        "//third_party/js:typescript",
-    ],
-)
+subinclude("//build_defs:js")
 
 # The keystone. tsc is an npm-provided binary that does its own module
 # resolution to find its platform-specific compiler; running it as a build
@@ -17,7 +6,7 @@ npm_link(
 # here is a build failure.
 js_run_binary(
     name = "compile",
-    node_modules = ":node_modules",
+    node_modules = "//third_party/js:node_modules",
     bin = "typescript/bin/tsc",
     srcs = ["hello.ts"],
     outs = ["hello.js"],

@@ -12,14 +12,16 @@ on every source, the runfiles reconciliation) arises here.
 """
 
 
-def js_run_binary(name:str, node_modules:str, bin:str, srcs:list=[], outs:list=[],
+def js_run_binary(name:str, bin:str, node_modules:str="", srcs:list=[], outs:list=[],
                   out_dirs:list=[], args:list=[], env:dict={}, chdir:str=None,
                   visibility:list=None, labels:list=[], test_only:bool&testonly=False):
     """Runs a binary provided by an npm package as a build action.
 
     Args:
         name: Target name.
-        node_modules: npm_link target providing the tree the tool resolves through.
+        node_modules: npm_link target providing the tree the tool resolves
+                      through. Optional: a self-contained tool needs no tree,
+                      which is how pnpm itself can be run before any tree exists.
         bin: Path to the binary within node_modules, e.g. "typescript/bin/tsc".
         srcs: Input files, staged alongside the tool.
         outs: Files the tool is expected to produce.
@@ -56,12 +58,12 @@ def js_run_binary(name:str, node_modules:str, bin:str, srcs:list=[], outs:list=[
 
     return build_rule(
         name = name,
-        srcs = {"modules": [node_modules], "srcs": srcs},
+        srcs = {"modules": [node_modules] if node_modules else [], "srcs": srcs},
         outs = outs + out_dirs,
         output_dirs = out_dirs,
         cmd = " && ".join([
             f"mkdir -p {run_dir}/node_modules",
-            f"cp -R $SRCS_MODULES/. {run_dir}/node_modules/",
+            f'[ -n "$SRCS_MODULES" ] && cp -R $SRCS_MODULES/. {run_dir}/node_modules/ || true',
             f'for s in $SRCS_SRCS; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
             # node and the tool are resolved to absolute paths before the
             # working directory changes; node_modules stays at the staged root

@@ -11,5 +11,6 @@ go_library(
     deps = [
         "//third_party/go:buildtools",
         "//tools/please_js/lockfile",
+        "//tools/please_js/store",
     ],
 )

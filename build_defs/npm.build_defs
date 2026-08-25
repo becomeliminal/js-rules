@@ -20,13 +20,19 @@ tested, not in a shell command where it is not.
 """
 
 
-def npm_repo(name:str, pkg:str="", version:str="", deps:list=[],
-             hashes:list=None, visibility:list=["PUBLIC"], labels:list=[]):
+def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
+             visibility:list=["PUBLIC"], labels:list=[]):
     """One npm package version, fetched and described.
 
-    One rule per package, as go_repo and rust_repo do: per-package configuration
-    is a rule argument rather than an entry in a dict on a rule owning the whole
-    lockfile.
+    One rule per package, as go_repo and rust_repo do, and with the same small
+    surface: what to fetch and what it should hash to.
+
+    There is deliberately no deps argument. Which packages this one needs, and
+    the names it imports them under, are already recorded in the lockfile, and
+    npm_link reads it -- so nothing is restated here and there is nothing to
+    keep in sync. It also keeps the build graph sparse, which matters: carrying
+    the dependency closure through exported_deps is what made a warm build take
+    50s instead of 270ms in the previous implementation.
 
     Args:
         name: Target name, and the entry's identity in the store. The generator
@@ -34,19 +40,6 @@ def npm_repo(name:str, pkg:str="", version:str="", deps:list=[],
               so two resolutions of one package cannot collide.
         pkg: npm package name. Defaults to name.
         version: Exact version to fetch.
-        deps: Names of the entries belonging in this package's node_modules.
-
-              Names, not labels, and deliberately so. npm permits dependency
-              cycles -- @babel/core and @babel/helper-module-transforms require
-              each other, as do browserslist and update-browserslist-db -- and
-              Please rejects a cyclic build graph outright. Go and Rust never
-              meet this because both forbid import cycles. npm_link is handed
-              the whole closure anyway, so edges here would buy nothing.
-
-              The name a dependency is imported under comes from that
-              dependency's own description, exactly as go_library takes a list
-              of deps and please_go builds the importconfig from what each one
-              declares about itself.
         hashes: Download hashes. A lockfile's integrity is sha512 and Please
                 verifies sha1 or sha256, so please_js update records a sha256 it
                 computed while checking the sha512.
@@ -69,8 +62,6 @@ def npm_repo(name:str, pkg:str="", version:str="", deps:list=[],
         extract = True,
     )
 
-    dep_flags = " ".join([f"--dep {d}" for d in deps])
-
     return build_rule(
         name = name,
         srcs = [download],
@@ -83,7 +74,6 @@ def npm_repo(name:str, pkg:str="", version:str="", deps:list=[],
                 "$TOOL describe",
                 f"--name {name} --package {pkg} --version {version}",
                 '--dir "$OUT/pkg" --out "$OUT/meta.json"',
-                dep_flags,
             ]),
         ]),
         tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
@@ -93,73 +83,44 @@ def npm_repo(name:str, pkg:str="", version:str="", deps:list=[],
     )
 
 
-def npm_alias(name:str, pkg:str, of:str, visibility:list=["PUBLIC"]):
-    """Makes a package importable under another name.
+def npm_link(name:str, lock:str, packages:list, project:str=".",
+             visibility:list=["PUBLIC"]):
+    """Assembles a node_modules tree for one pnpm workspace project.
 
-    npm lets a manifest bind a package under a different name, as
-    "my-react": "npm:react@18". That is a rebinding rather than a dependency, so
-    it gets its own entry instead of a dict entry somewhere -- which is what
-    keeps deps a plain list.
-
-    The alias holds no files: it points at the entry it rebinds, so the package
-    is present exactly once. Two copies would be two module instances, which is
-    how a duplicated React produces an invalid hook call.
-
-    Args:
-        name: Target name; the entry's identity.
-        pkg: The name to import the package under.
-        of: Name of the entry being rebound.
-        visibility: Visibility specification.
-    """
-    return build_rule(
-        name = name,
-        outs = [name],
-        cmd = " && ".join([
-            'mkdir -p "$OUT"',
-            f"$TOOL describe --name {name} --package {pkg} --alias-of {of}" + ' --out "$OUT/meta.json"',
-        ]),
-        tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
-        visibility = visibility,
-        labels = [f"npm_alias:{pkg}"],
-    )
-
-
-def npm_link(name:str, packages:list, store:list=[], visibility:list=["PUBLIC"]):
-    """Assembles a node_modules tree from npm_repo targets.
+    This is the JavaScript equivalent of go-rules aggregating .importconfig
+    fragments, with one difference that shapes everything: `go tool compile` and
+    rustc accept a resolution table as a flag, and node does not. Node resolves
+    only by walking the filesystem, so the table has to *be* the directory. That
+    is why the tree is built rather than a config file written, and why it is
+    the interface every layer above this one consumes.
 
     Args:
         name: Target name; the output directory is the node_modules root.
-        packages: The entries to expose at the top level, as labels. Each is
-                  exposed under its own package name; to expose one under a
-                  different name, link an npm_alias instead.
-        store: Every entry in the transitive closure, including those not
-               exposed at the top level.
-
-               This is passed explicitly rather than derived.
-               needs_transitive_deps stages only direct srcs, so an entry
-               reachable only through another package's dependency link never
-               lands and that link dangles; exported_deps would carry the
-               closure and is what produced the hash oscillation and 100x
-               warm-cache slowdown in the previous implementation. Computing it
-               is the resolver's job, as npm_link_all_packages does in
-               aspect_rules_js.
+        lock: The pnpm lockfile. The graph is read from here rather than
+              restated across the npm_repo rules.
+        packages: Every entry in the project's transitive closure, as labels.
+                  An entry reachable only through another package's dependency
+                  link still has to be staged, or that link dangles -- and the
+                  closure cannot come from the build graph: needs_transitive_deps
+                  stages only direct srcs, and carrying it through exported_deps
+                  is what made a warm build take 50s instead of 270ms.
+        project: Which project in the pnpm workspace this tree is for.
         visibility: Visibility specification.
     """
-    all_targets = store + [p for p in packages if p not in store]
-    srcs = {}
+    srcs = {"lock": [lock]}
     source_flags = []
-    for i, target in enumerate(all_targets):
+    for i, target in enumerate(packages):
         srcs[f"s{i}"] = [target]
         source_flags += [f'--source "$SRCS_S{i}/meta.json:$SRCS_S{i}/pkg"']
-
-    link_names = [p.split(":")[-1] for p in packages]
-    link_flags = [f"--link {n}" for n in link_names]
 
     return build_rule(
         name = name,
         srcs = srcs,
         outs = [name],
-        cmd = " ".join(['$TOOL link --out "$OUT"'] + source_flags + link_flags),
+        cmd = " ".join([
+            '$TOOL link --out "$OUT" --lock "$SRCS_LOCK"',
+            f"--project {project}",
+        ] + source_flags),
         tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
         visibility = visibility,
         building_description = "Linking node_modules...",
