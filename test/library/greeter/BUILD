@@ -4,6 +4,7 @@ subinclude("//build_defs:js")
 # its directory: //test/library/greeter is imported as "test/library/greeter".
 js_library(
     name = "greeter",
+    package = "@test/greeter",
     srcs = ["index.js"],
     deps = ["//third_party/js:react_18.3.1"],
     visibility = ["//test/..."],
