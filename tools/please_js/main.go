@@ -44,6 +44,7 @@ var opts = struct {
 		OS      []string `long:"os" description:"operating systems this package supports; empty means any"`
 		CPU     []string `long:"cpu" description:"architectures this package supports; empty means any"`
 		Types   string   `long:"types" description:"declarations entry, for the generated package.json"`
+		Bin     []string `long:"bin" description:"an executable the package's own manifest omits, as name=path"`
 		Set     []string `long:"set" description:"an extra package.json field, as key=value"`
 		Main    string   `long:"main" description:"entry file, for the generated package.json of a first-party library"`
 		Dir     string   `long:"dir" description:"the fetched package directory"`
@@ -233,6 +234,24 @@ func describe() error {
 		return store.WriteMeta(o.Out, store.Meta{
 			Name: o.Name, Package: o.Package, Version: o.Version, Unsupported: true,
 		})
+	}
+
+	// Declared executables are patched into the package's manifest before it is
+	// read, so everything downstream sees one story. A package that ships a
+	// runnable file and never declares it cannot otherwise be run, because
+	// nothing here runs the install script that would have made the link.
+	if o.Dir != "" && len(o.Bin) > 0 {
+		declared := map[string]string{}
+		for _, kv := range o.Bin {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok {
+				return fmt.Errorf("--bin %q is not name=path", kv)
+			}
+			declared[k] = v
+		}
+		if err := store.DeclareBins(o.Dir, declared); err != nil {
+			return err
+		}
 	}
 
 	// Executables come from the package's own manifest, which is where npm puts

@@ -307,3 +307,59 @@ func TestTwoPackagesWithOneNameNameBoth(t *testing.T) {
 		}
 	}
 }
+
+// Some packages ship a runnable file and never declare it, because their own
+// install script would have made the link. Nothing runs install scripts by
+// default, so the declaration has to come from somewhere.
+func TestDeclareBinsAddsToAManifest(t *testing.T) {
+	dir := t.TempDir()
+	write := func(manifest string) {
+		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() map[string]string {
+		data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m struct {
+			Bin map[string]string `json:"bin"`
+		}
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("%v: %s", err, data)
+		}
+		return m.Bin
+	}
+
+	write(`{"name":"thing","version":"1.0.0"}`)
+	if err := store.DeclareBins(dir, map[string]string{"thing": "cli.js"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got["thing"] != "cli.js" {
+		t.Errorf("got %v", got)
+	}
+
+	// npm allows a bare string, meaning one executable named after the package.
+	// Merging into that has to widen it first, or the existing one is discarded.
+	write(`{"name":"@scope/thing","bin":"./main.js"}`)
+	if err := store.DeclareBins(dir, map[string]string{"extra": "extra.js"}); err != nil {
+		t.Fatal(err)
+	}
+	got := read()
+	if got["thing"] != "./main.js" {
+		t.Errorf("the package's own executable was discarded: %v", got)
+	}
+	if got["extra"] != "extra.js" {
+		t.Errorf("the declared executable is missing: %v", got)
+	}
+}
+
+func TestDeclareBinsRefusesAManifestItCannotUnderstand(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"bin":42}`), 0o644)
+	err := store.DeclareBins(dir, map[string]string{"a": "b"})
+	if err == nil || !strings.Contains(err.Error(), "neither an object nor a string") {
+		t.Errorf("got %v", err)
+	}
+}
