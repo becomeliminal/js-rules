@@ -21,7 +21,7 @@ tested, not in a shell command where it is not.
 
 
 def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
-             visibility:list=["PUBLIC"], labels:list=[]):
+             os:list=[], cpu:list=[], visibility:list=["PUBLIC"], labels:list=[]):
     """One npm package version, fetched and described.
 
     One rule per package, as go_repo and rust_repo do, and with the same small
@@ -43,12 +43,41 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
         hashes: Download hashes. A lockfile's integrity is sha512 and Please
                 verifies sha1 or sha256, so please_js update records a sha256 it
                 computed while checking the sha512.
+        os: Operating systems the package supports; empty means any.
+        cpu: Architectures it supports; empty means any.
+
+            Every fast JavaScript tool now ships as a small wrapper plus one
+            native binary per platform -- TypeScript 7 has twenty, at ~28MB
+            each -- so a tree that fetched them all would carry hundreds of
+            megabytes of compilers that cannot run here. A package excluded by
+            its constraints still gets a target, so the build file is the same
+            on every platform, but nothing is fetched and nothing is placed.
         visibility: Visibility specification.
         labels: Additional labels.
     """
     pkg = pkg or name
     if not version:
         fail(f"npm_repo {name}: version is required")
+
+    if not _supported(os, cpu):
+        return build_rule(
+            name = name,
+            outs = [name],
+            cmd = " && ".join([
+                'mkdir -p "$OUT"',
+                " ".join([
+                    "$TOOL describe",
+                    f"--name {name} --package {pkg} --version {version}",
+                    " ".join([f"--os {o}" for o in os]),
+                    " ".join([f"--cpu {c}" for c in cpu]),
+                    '--out "$OUT/meta.json"',
+                ]),
+            ]),
+            tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
+            visibility = visibility,
+            labels = labels + [f"npm:{pkg}@{version}", "npm_unsupported"],
+            building_description = "Skipping (other platform)...",
+        )
 
     # Scoped packages live at @scope/name/-/name-version.tgz: the scope is in
     # the path but not in the tarball filename.
@@ -125,3 +154,37 @@ def npm_link(name:str, lock:str, packages:list, project:str=".",
         visibility = visibility,
         building_description = "Linking node_modules...",
     )
+
+
+def _supported(os:list, cpu:list):
+    """Whether a package's npm platform constraints admit this machine.
+
+    Please spells the architecture the way Go does and npm does not: amd64
+    against x64. The operating system agrees.
+    """
+    arch = "x64" if CONFIG.ARCH == "amd64" else CONFIG.ARCH
+    return _admits(os, CONFIG.OS) and _admits(cpu, arch)
+
+
+def _admits(constraints:list, actual:str):
+    """Whether a constraint list admits a value.
+
+    Empty admits anything. A list of negations reads as a denylist; any
+    positive entry makes it an allowlist.
+    """
+    if not constraints:
+        return True
+    denied = False
+    allowed = False
+    positive = False
+    for c in constraints:
+        if c.startswith("!"):
+            if c[1:] == actual:
+                denied = True
+        else:
+            positive = True
+            if c == actual:
+                allowed = True
+    if denied:
+        return False
+    return allowed or not positive

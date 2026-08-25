@@ -189,7 +189,10 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     """
     node_modules = node_modules or CONFIG.JS.NODE_MODULES
     run_dir = "_" + name + "_run"
-    entry_name = entry_point.split("/")[-1]
+    # The entry may be a label naming a file some other target produced, in
+    # which case splitting the attribute on "/" yields "pkg:main.js" rather than
+    # a filename. The staged path is the truth, so the name is read from it.
+    entry_name = "main.js"
 
     runtime = build_rule(
         name = name,
@@ -204,7 +207,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # latter, and the two are placed differently.
             'LIBS=$(for m in $(find . -name lib.json); do printf -- "--lib %s:%s " "$m" "$(dirname "$m")/pkg"; done)',
             '"$TOOL" overlay --tree "$SRCS_MODULES" --out "$OUT/node_modules" $LIBS',
-            'cp "$SRCS_ENTRY" "$OUT/' + entry_name + '"',
+            'cp "$SRCS_ENTRY" "$OUT/' + entry_name + '"',  # a fixed name, so a label works
         ]),
         tools = {"tool": [CONFIG.JS.PLEASE_JS_TOOL]},
         deps = deps,
