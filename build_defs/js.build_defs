@@ -106,7 +106,8 @@ def js_test(name:str, entry_point:str, deps:list=[], node_modules:str="",
                    timeout = timeout, flaky = flaky, size = size)
 
 
-def js_run_binary(name:str, package:str, bin:str="", deps:list=[], node_modules:str="",
+def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
+                  deps:list=[], node_modules:str="",
                   srcs:list=[], outs:list=[],
                   out_dirs:list=[], args:list=[], env:dict={}, chdir:str=None,
                   visibility:list=None, labels:list=[], test_only:bool&testonly=False):
@@ -124,6 +125,14 @@ def js_run_binary(name:str, package:str, bin:str="", deps:list=[], node_modules:
              Needed only where a package publishes several. Looked up rather
              than given as a path, so a typo fails the build with a message
              listing what the package does publish.
+        tool_modules: The tree publishing the executable, when that is not the
+                      same tree the sources resolve through. A bundler is the
+                      case that forces this: it is itself an npm package, and so
+                      are the packages it bundles, but a tree cannot hold two
+                      entries claiming one name -- and every consumer bundling a
+                      real application has their own copy of it. Defaults to
+                      node_modules, which is right for a tool a repo installed
+                      itself.
         deps: js_library and ts_library targets the tool should be able to
               import, overlaid onto the third-party tree. A bundler, a test
               runner and a linter all need to see first-party code, and without
@@ -148,6 +157,12 @@ def js_run_binary(name:str, package:str, bin:str="", deps:list=[], node_modules:
 
     node_modules = node_modules or CONFIG.JS.NODE_MODULES
     run_dir = "_run"
+    # Kept apart on disk, not merged. The store already makes each tree resolve
+    # correctly on its own: a package's dependencies are siblings inside its own
+    # store entry, so a tool resolving from its own path never walks up into the
+    # sources' tree, and the sources resolve upward from where they are staged.
+    tool_dir = "_tool/node_modules"
+    bin_tree = tool_dir if tool_modules else run_dir + "/node_modules"
     chdir = package_name() if chdir == None else chdir
     workdir = f"{run_dir}/{chdir}" if chdir else run_dir
     # Single-quoted, so a value containing a space, a $ or a backtick reaches
@@ -160,7 +175,11 @@ def js_run_binary(name:str, package:str, bin:str="", deps:list=[], node_modules:
 
     return build_rule(
         name = name,
-        srcs = {"modules": [node_modules] if node_modules else [], "srcs": srcs},
+        srcs = {
+            "modules": [node_modules] if node_modules else [],
+            "tool": [tool_modules] if tool_modules else [],
+            "srcs": srcs,
+        },
         outs = outs + out_dirs,
         output_dirs = out_dirs,
         cmd = " && ".join([
@@ -177,8 +196,12 @@ def js_run_binary(name:str, package:str, bin:str="", deps:list=[], node_modules:
             # case for it.
             f'"$TOOL" overlay --tree "${{SRCS_MODULES:-}}" --out {run_dir}/node_modules $LIBS',
             f'for s in $SRCS_SRCS; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
+        ] + ([
+            f'mkdir -p {tool_dir}',
+            f'cp -R $SRCS_TOOL/. {tool_dir}/',
+        ] if tool_modules else []) + [
             'NODE=$(readlink -f "$TOOLS_NODE")',
-            f'BIN=$(readlink -f "$("$TOOL" resolve-bin --tree {run_dir}/node_modules --package {package}' + (f' --bin {bin}' if bin else '') + ')")',
+            f'BIN=$(readlink -f "$("$TOOL" resolve-bin --tree {bin_tree} --package {package}' + (f' --bin {bin}' if bin else '') + ')")',
             f'cd "{workdir}" && {env_prefix} "$NODE" "$BIN" ' + " ".join(args),
             "cd $TMP_DIR",
             f'for o in $OUTS; do cp -R "{workdir}/$o" "$o"; done',

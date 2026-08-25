@@ -399,6 +399,13 @@ func WritePackageJSON(path, name, main, types string, extra map[string]any) erro
 // message listing what the package does publish.
 func ResolveBin(tree, pkg, bin string) (string, error) {
 	dir := filepath.Join(tree, pkg)
+	// A package that is absent from the tree and one that publishes nothing look
+	// identical to ReadBins, which treats a missing manifest as "no executables".
+	// They need different messages: the second is a mistake about the package,
+	// the first is almost always a mistake about which tree was passed.
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return "", fmt.Errorf("no package %s in %s; is that the tree publishing it?", pkg, tree)
+	}
 	bins, err := ReadBins(dir, pkg)
 	if err != nil {
 		return "", err
