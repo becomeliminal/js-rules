@@ -8,6 +8,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,6 +70,12 @@ var opts = struct {
 		List bool     `long:"list" description:"print what the package declares without running it"`
 	} `command:"hooks" description:"Run the install scripts a package brought with it"`
 
+	Publish struct {
+		Dir     string   `long:"dir" required:"true" description:"the built package"`
+		Version string   `long:"version" required:"true" description:"the version to publish as"`
+		Set     []string `long:"set" description:"a package.json field, as key=value; JSON values are kept as JSON"`
+	} `command:"publish" description:"Patch a built package's manifest for release"`
+
 	ResolveBin struct {
 		Tree    string `long:"tree" required:"true" description:"a node_modules tree"`
 		Package string `long:"package" required:"true" description:"the package publishing the executable"`
@@ -110,6 +117,7 @@ func main() {
 		"link":        link,
 		"overlay":     overlay,
 		"hooks":       runHooks,
+		"publish":     publish,
 		"resolve-bin": resolveBin,
 	}[parser.Active.Name]
 	if run == nil {
@@ -140,6 +148,29 @@ func runHooks() error {
 	}
 	env := append([]string{"PATH=" + os.Getenv("PATH")}, opts.Hooks.Env...)
 	return hooks.Run(opts.Hooks.Dir, env, os.Stdout)
+}
+
+// publish patches rather than regenerates, so the exports map the library
+// already produced survives intact -- getting that wrong makes a package either
+// unimportable or untyped, and neither failure happens until someone installs it.
+func publish() error {
+	fields := map[string]any{}
+	for _, kv := range opts.Publish.Set {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("--set %q is not key=value", kv)
+		}
+		// A value that parses as JSON is kept as JSON, so repository and
+		// keywords can be objects and lists rather than strings that look like
+		// them. Anything else is a plain string.
+		var parsed any
+		if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+			fields[k] = parsed
+		} else {
+			fields[k] = v
+		}
+	}
+	return store.Publish(opts.Publish.Dir, opts.Publish.Version, fields)
 }
 
 func update() error {
