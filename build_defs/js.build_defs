@@ -106,7 +106,8 @@ def js_test(name:str, entry_point:str, deps:list=[], node_modules:str="",
                    timeout = timeout, flaky = flaky, size = size)
 
 
-def js_run_binary(name:str, package:str, bin:str="", node_modules:str="", srcs:list=[], outs:list=[],
+def js_run_binary(name:str, package:str, bin:str="", deps:list=[], node_modules:str="",
+                  srcs:list=[], outs:list=[],
                   out_dirs:list=[], args:list=[], env:dict={}, chdir:str=None,
                   visibility:list=None, labels:list=[], test_only:bool&testonly=False):
     """Runs an executable published by an npm package as a build action.
@@ -123,6 +124,10 @@ def js_run_binary(name:str, package:str, bin:str="", node_modules:str="", srcs:l
              Needed only where a package publishes several. Looked up rather
              than given as a path, so a typo fails the build with a message
              listing what the package does publish.
+        deps: js_library and ts_library targets the tool should be able to
+              import, overlaid onto the third-party tree. A bundler, a test
+              runner and a linter all need to see first-party code, and without
+              this they can only see what the lockfile provides.
         node_modules: The tree the tool resolves through. Optional: a
                       self-contained tool needs none, which is how pnpm itself
                       runs before any tree exists.
@@ -145,7 +150,13 @@ def js_run_binary(name:str, package:str, bin:str="", node_modules:str="", srcs:l
     run_dir = "_run"
     chdir = package_name() if chdir == None else chdir
     workdir = f"{run_dir}/{chdir}" if chdir else run_dir
-    env_prefix = " ".join([f"{k}={v}" for k, v in sorted(env.items())])
+    # Single-quoted, so a value containing a space, a $ or a backtick reaches
+    # the tool as written rather than being split or expanded by the shell. The
+    # inner replacement is the standard way to carry a single quote through
+    # single quotes: close, escape one, reopen.
+    env_prefix = " ".join([
+        k + "='" + v.replace("'", "'\\''") + "'" for k, v in sorted(env.items())
+    ])
 
     return build_rule(
         name = name,
@@ -153,11 +164,21 @@ def js_run_binary(name:str, package:str, bin:str="", node_modules:str="", srcs:l
         outs = outs + out_dirs,
         output_dirs = out_dirs,
         cmd = " && ".join([
-            f"mkdir -p {run_dir}/node_modules",
-            f'[ -n "${{SRCS_MODULES:-}}" ] && cp -R $SRCS_MODULES/. {run_dir}/node_modules/ || true',
+            'TOOL=$(readlink -f "$TOOLS_TOOL")',
+            # Collected by shape, before the sources are staged: every
+            # first-party library describes itself in a lib.json, so nothing has
+            # to be named twice. node_modules is pruned because a staged tree
+            # holds none of them and walking it doubles the work.
+            'LIBS=$(find . -name node_modules -prune -o -name lib.json -print | ' +
+            'while read m; do printf -- "--lib %s:%s " "$m" "$(dirname "$m")/pkg"; done)',
+            # One tree, assembled by the same tool js_binary uses. A repo with no
+            # third-party dependencies has no tree to overlay onto and the
+            # overlay makes an empty one, so this path does not need a special
+            # case for it.
+            f'"$TOOL" overlay --tree "${{SRCS_MODULES:-}}" --out {run_dir}/node_modules $LIBS',
             f'for s in $SRCS_SRCS; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
             'NODE=$(readlink -f "$TOOLS_NODE")',
-            f'BIN=$(readlink -f "$("$TOOLS_TOOL" resolve-bin --tree {run_dir}/node_modules --package {package}' + (f' --bin {bin}' if bin else '') + ')")',
+            f'BIN=$(readlink -f "$("$TOOL" resolve-bin --tree {run_dir}/node_modules --package {package}' + (f' --bin {bin}' if bin else '') + ')")',
             f'cd "{workdir}" && {env_prefix} "$NODE" "$BIN" ' + " ".join(args),
             "cd $TMP_DIR",
             f'for o in $OUTS; do cp -R "{workdir}/$o" "$o"; done',
@@ -166,6 +187,8 @@ def js_run_binary(name:str, package:str, bin:str="", node_modules:str="", srcs:l
             "node": [CONFIG.JS.NODE_TOOL],
             "tool": [CONFIG.JS.PLEASE_JS_TOOL],
         },
+        deps = deps,
+        needs_transitive_deps = True,
         visibility = visibility,
         labels = labels,
         test_only = test_only,
@@ -206,7 +229,10 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # is collected by shape rather than by naming each one twice.
             # lib.json rather than meta.json: a third-party package writes the
             # latter, and the two are placed differently.
-            'LIBS=$(for m in $(find . -name lib.json); do printf -- "--lib %s:%s " "$m" "$(dirname "$m")/pkg"; done)',
+            # node_modules is pruned: a staged tree holds no lib.json of its
+            # own, and walking it covers the whole dependency set a second time.
+            'LIBS=$(find . -name node_modules -prune -o -name lib.json -print | ' +
+            'while read m; do printf -- "--lib %s:%s " "$m" "$(dirname "$m")/pkg"; done)',
             # A repo whose first-party code has no third-party dependencies has
             # no tree to overlay onto, and the overlay makes an empty one. The
             # variable is unset rather than empty in that case.
