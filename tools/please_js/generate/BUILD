@@ -18,7 +18,13 @@ go_library(
 
 go_test(
     name = "generate_test",
-    srcs = ["platform_test.go"],
+    srcs = [
+        "generate_test.go",
+        "platform_test.go",
+    ],
     external = True,
-    deps = [":generate"],
+    deps = [
+        ":generate",
+        "//tools/please_js/lockfile",
+    ],
 )
