@@ -261,3 +261,27 @@ func TestExportConditionsAreOrdered(t *testing.T) {
 		t.Errorf("\"default\" is the fallback and must come last, got:\n%s", got)
 	}
 }
+
+// A package absent from the tree and a package publishing no executables both
+// reach ResolveBin as "no bins", and the difference matters: the second is a
+// mistake about the package, the first is nearly always the wrong tree.
+func TestResolveBinSaysWhichMistakeWasMade(t *testing.T) {
+	tree := t.TempDir()
+	present := filepath.Join(tree, "quiet")
+	if err := os.MkdirAll(present, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(present, "package.json"), []byte(`{"name":"quiet"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := store.ResolveBin(tree, "absent", "")
+	if err == nil || !strings.Contains(err.Error(), "no package absent") {
+		t.Errorf("a package not in the tree should say so, got: %v", err)
+	}
+
+	_, err = store.ResolveBin(tree, "quiet", "")
+	if err == nil || !strings.Contains(err.Error(), "publishes no executables") {
+		t.Errorf("a package with no bins should say so, got: %v", err)
+	}
+}

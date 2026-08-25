@@ -61,3 +61,4 @@ js_test(
     entry_point = ":compile_lib",
     deps = ["//test/tool/lib"],
 )
+
