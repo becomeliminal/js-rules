@@ -238,3 +238,26 @@ func TestGeneratedManifestIsImportableAsESM(t *testing.T) {
 		t.Errorf("extra fields should survive; type = %v", m["type"])
 	}
 }
+
+// A Go map would sort "default" ahead of "types" and node would never reach the
+// declarations, so assert the bytes rather than the decoded object -- decoding
+// into a map is exactly the mistake this guards against.
+func TestExportConditionsAreOrdered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	if err := store.WritePackageJSON(path, "@test/x", "index.js", "index.d.ts", nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	types, def := strings.Index(got, `"types"`), strings.Index(got, `"default"`)
+	if types < 0 || def < 0 {
+		t.Fatalf("expected both conditions, got:\n%s", got)
+	}
+	if types > def {
+		t.Errorf("\"default\" is the fallback and must come last, got:\n%s", got)
+	}
+}
