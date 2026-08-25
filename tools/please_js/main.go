@@ -50,6 +50,7 @@ var opts = struct {
 	} `command:"describe" description:"Record what a fetched package is, for npm_link to assemble"`
 
 	Link struct {
+		Workspace []string `long:"workspace" description:"a workspace package this repo builds, as npm-name:directory"`
 		Lockfile string   `long:"lock" required:"true" description:"the pnpm lockfile describing the graph"`
 		Project  string   `long:"project" default:"." description:"which pnpm workspace project's tree to build"`
 		Source   []string `long:"source" description:"a staged package, as metadata-path:package-dir"`
@@ -257,13 +258,6 @@ func link() error {
 		return err
 	}
 
-	// An allowlist, and only an allowlist. A package declaring install scripts
-	// is not a reason to run them; someone naming the package is. Naming one
-	// that declares none is worth saying out loud rather than ignoring, because
-	// it usually means a typo or a package that changed.
-	if err := plan.AllowHooks(opts.Update.LifecycleHooks); err != nil {
-		return err
-	}
 	if _, ok := plan.Direct[opts.Link.Project]; !ok {
 		return fmt.Errorf("%s has no project %q; it has %s",
 			opts.Link.Lockfile, opts.Link.Project, strings.Join(projects(plan), ", "))
@@ -283,7 +277,47 @@ func link() error {
 		sources = append(sources, store.Source{Dir: dir, Meta: meta, Deps: refs[meta.Name]})
 	}
 
-	return store.Build(opts.Link.Out, sources, plan.Links(opts.Link.Project))
+	// Workspace packages are the repo's own, resolved through the lockfile as
+	// link: rather than fetched. They enter the tree the same way a fetched
+	// package does, so nothing downstream can tell them apart -- which is the
+	// point: source code imports "@scope/thing" without knowing where it came
+	// from.
+	links := plan.Links(opts.Link.Project)
+	provided := map[string]bool{}
+	for _, w := range opts.Link.Workspace {
+		name, dir, ok := strings.Cut(w, ":")
+		if !ok {
+			return fmt.Errorf("--workspace %q is not npm-name:directory", w)
+		}
+		sources = append(sources, store.Source{
+			Dir:  dir,
+			Meta: store.Meta{Name: name, Package: name},
+			Deps: refs[name],
+		})
+		links = append(links, store.Ref{As: name, Entry: name})
+		provided[name] = true
+	}
+
+	// A link: the lockfile records and nobody supplied would dangle, and a
+	// dangling symlink fails at import time rather than here. Say so now.
+	var missing []string
+	for name := range plan.Workspace[opts.Link.Project] {
+		if !provided[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		noun := "it"
+		if len(missing) > 1 {
+			noun = "them"
+		}
+		return fmt.Errorf("%s resolves %s through the workspace, and no target was given for %s; "+
+			"pass workspace = {\"<name>\": \"//path/to:target\"}",
+			opts.Link.Lockfile, strings.Join(missing, ", "), noun)
+	}
+
+	return store.Build(opts.Link.Out, sources, links)
 }
 
 func projects(plan *generate.Plan) []string {
