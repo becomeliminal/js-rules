@@ -88,13 +88,19 @@ type Plan struct {
 	// Direct maps an importer path to the packages linked at its top level,
 	// by the name source code imports them under.
 	Direct map[string]map[string]string
+	// Workspace maps an importer path to the packages it resolves through the
+	// workspace rather than the registry -- pnpm's link: protocol -- by the name
+	// source code imports them under. These are the repo's own packages, so
+	// nothing is fetched for them; the build graph supplies them instead.
+	Workspace map[string]map[string]string
 }
 
 // Build derives the plan from a lockfile.
 func Build(lock *lockfile.Lockfile) (*Plan, error) {
 	plan := &Plan{
-		Closure: map[string][]string{},
-		Direct:  map[string]map[string]string{},
+		Closure:   map[string][]string{},
+		Direct:    map[string]map[string]string{},
+		Workspace: map[string]map[string]string{},
 	}
 
 	// One entry per snapshot: the same package resolved against different
@@ -146,10 +152,14 @@ func Build(lock *lockfile.Lockfile) (*Plan, error) {
 
 	for path, imp := range lock.Importers {
 		direct := map[string]string{}
+		workspace := map[string]string{}
 		for alias, dep := range allImporterDeps(imp) {
 			if lockfile.IsLink(dep.Version) {
-				// Workspace packages are built from source in the consumer's
-				// own repo, so they are not fetched here.
+				// The repo's own package, resolved through the workspace rather
+				// than the registry, so nothing is fetched. Recorded rather than
+				// dropped: the link rule needs to know it was asked for, or a
+				// package nobody supplied dangles silently.
+				workspace[alias] = strings.TrimPrefix(dep.Version, "link:")
 				continue
 			}
 			key := dep.Version
@@ -162,6 +172,7 @@ func Build(lock *lockfile.Lockfile) (*Plan, error) {
 			direct[alias] = targets[key]
 		}
 		plan.Direct[path] = direct
+		plan.Workspace[path] = workspace
 
 		seen := map[string]bool{}
 		for _, dep := range allImporterDeps(imp) {

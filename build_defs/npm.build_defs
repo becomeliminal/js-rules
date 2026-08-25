@@ -190,7 +190,7 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
     )
 
 
-def npm_link(name:str, lock:str, packages:list, project:str=".",
+def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str=".",
              visibility:list=["PUBLIC"]):
     """Assembles a node_modules tree for one pnpm workspace project.
 
@@ -211,6 +211,20 @@ def npm_link(name:str, lock:str, packages:list, project:str=".",
                   closure cannot come from the build graph: needs_transitive_deps
                   stages only direct srcs, and carrying it through exported_deps
                   is what made a warm build take 50s instead of 270ms.
+        workspace: The repo's own packages, as npm name -> the target building
+                   it. A pnpm workspace resolves these with link: rather than
+                   from the registry, so nothing is fetched for them and the
+                   build graph supplies them instead.
+
+            They enter the tree exactly as a fetched package does, and nothing
+            downstream can tell the difference -- which is the point: source
+            code imports "@scope/thing" without knowing where it came from, and
+            a package can move between the registry and the repo without a
+            single import changing.
+
+            A link: the lockfile records and nothing here supplies is an error
+            rather than a dangling symlink, because a dangling symlink fails at
+            import time and names nothing useful.
         project: Which project in the pnpm workspace this tree is for.
         visibility: Visibility specification.
     """
@@ -219,6 +233,12 @@ def npm_link(name:str, lock:str, packages:list, project:str=".",
     for i, target in enumerate(packages):
         srcs[f"s{i}"] = [target]
         source_flags += [f'--source "$SRCS_S{i}/meta.json:$SRCS_S{i}/pkg"']
+
+    # A first-party library outputs <name>/pkg beside its lib.json, the same
+    # shape a fetched package has, so it needs no special placement here.
+    for i, alias in enumerate(sorted(workspace.keys())):
+        srcs[f"w{i}"] = [workspace[alias]]
+        source_flags += [f'--workspace "{alias}:$SRCS_W{i}/pkg"']
 
     return build_rule(
         name = name,
