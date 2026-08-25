@@ -110,6 +110,8 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
                   deps:list=[], node_modules:str="",
                   srcs:list=[], outs:list=[],
                   out_dirs:list=[], args:list=[], env:dict={}, chdir:str=None,
+                  stdout:str="", stderr:str="", exit_code_out:str="",
+                  silent_on_success:bool=False,
                   visibility:list=None, labels:list=[], test_only:bool&testonly=False):
     """Runs an executable published by an npm package as a build action.
 
@@ -145,6 +147,19 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
         out_dirs: Directories the tool is expected to produce.
         args: Arguments passed to the executable.
         env: Environment variables for the action.
+        stdout: Capture the tool's standard output to this file, declared as an
+                output. How you snapshot-test a command line tool.
+        stderr: Capture standard error the same way.
+        exit_code_out: Capture the exit status to this file instead of failing
+                       the action.
+
+            This changes the rule's contract, so it is explicit: without it a
+            non-zero exit is a build failure, which is the right default. With
+            it the tool is expected to fail sometimes and the status is the
+            thing being recorded.
+        silent_on_success: Show the tool's output only if it fails. A large
+                           build's log is worth reading, and most tools are
+                           chatty about succeeding.
         chdir: Directory to run in. Defaults to the package directory, so args
                read relative to the BUILD file. node_modules sits at the staged
                root and is still found, because node's resolution walks up.
@@ -152,9 +167,6 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
         labels: Additional labels.
         test_only: If True, only visible to test rules.
     """
-    if not outs and not out_dirs:
-        fail(f"js_run_binary {name}: declare outs or out_dirs, or the action has no effect")
-
     node_modules = node_modules or CONFIG.JS.NODE_MODULES
     run_dir = "_run"
     # Kept apart on disk, not merged. The store already makes each tree resolve
@@ -169,6 +181,37 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
     # the tool as written rather than being split or expanded by the shell. The
     # inner replacement is the standard way to carry a single quote through
     # single quotes: close, escape one, reopen.
+    # Captured streams are outputs like any other: a file the tool writes and
+    # the rule does not declare is a file Please deletes. Counted before the
+    # guard below, so a rule that captures output and produces nothing else is
+    # still doing something.
+    outs = outs + [f for f in [stdout, stderr, exit_code_out] if f]
+
+    if not outs and not out_dirs:
+        fail(f"js_run_binary {name}: declare outs or out_dirs, or the action has no effect")
+
+    # Buffered when silent, so a successful tool says nothing and a failing one
+    # still says everything -- losing diagnostics on failure is the only way
+    # this could hurt.
+    log = "_run.log"
+    redirect = ""
+    if stdout:
+        redirect += f' > "{stdout}"'
+    elif silent_on_success:
+        redirect += f' > "{log}"'
+    if stderr:
+        redirect += f' 2> "{stderr}"'
+    elif silent_on_success:
+        redirect += f' 2>> "{log}"'
+
+    # Without exit_code_out a non-zero exit fails the action, which is the right
+    # default: a tool that failed did not produce what was asked for.
+    status = ""
+    if exit_code_out:
+        status = f' && echo 0 > "{exit_code_out}" || echo $? > "{exit_code_out}"'
+    elif silent_on_success:
+        status = f' || {{ cat "{log}" >&2; exit 1; }}'
+
     env_prefix = " ".join([
         k + "='" + v.replace("'", "'\\''") + "'" for k, v in sorted(env.items())
     ])
@@ -195,14 +238,16 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
             # overlay makes an empty one, so this path does not need a special
             # case for it.
             f'"$PLEASE_JS" overlay --tree "${{SRCS_MODULES:-}}" --out {run_dir}/node_modules $LIBS',
-            f'for s in $SRCS_SRCS; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
+            f'for s in ${SRCS_SRCS:-}; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
+            # A rule with no sources still needs somewhere to run.
+            f'mkdir -p "{workdir}"',
         ] + ([
             f'mkdir -p {tool_dir}',
             f'cp -R $SRCS_TOOL/. {tool_dir}/',
         ] if tool_modules else []) + [
             'NODE=$(readlink -f "$TOOLS_NODE")',
             f'BIN=$(readlink -f "$("$PLEASE_JS" resolve-bin --tree {bin_tree} --package {package}' + (f' --bin {bin}' if bin else '') + ')")',
-            f'cd "{workdir}" && {env_prefix} "$NODE" "$BIN" ' + " ".join(args),
+            f'cd "{workdir}" && {env_prefix} "$NODE" "$BIN" ' + " ".join(args) + redirect + status,
             "cd $TMP_DIR",
             f'for o in $OUTS; do cp -R "{workdir}/$o" "$o"; done',
         ]),
