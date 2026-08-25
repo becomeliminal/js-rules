@@ -17,6 +17,7 @@ import (
 	"github.com/thought-machine/go-flags"
 
 	"tools/please_js/generate"
+	"tools/please_js/hooks"
 	"tools/please_js/lockfile"
 	"tools/please_js/store"
 )
@@ -31,6 +32,7 @@ var opts = struct {
 		LockLabel      string `long:"lock-label" default:"//:pnpm-lock.yaml" description:"label the generated npm_link rules read the lockfile from"`
 		Registry       string `long:"registry" default:"https://registry.npmjs.org" description:"npm registry"`
 		Workers        int    `long:"workers" default:"8" description:"concurrent downloads while hashing"`
+		LifecycleHooks []string `long:"lifecycle-hooks" description:"a package whose own install scripts may run; repeatable, and nothing runs without it"`
 		SkipHashes     bool   `long:"skip-hashes" description:"do not fetch tarballs to record hashes; the result is unverified"`
 	} `command:"update" description:"Translate a pnpm lockfile into npm_repo targets"`
 
@@ -59,6 +61,12 @@ var opts = struct {
 		Lib  []string `long:"lib" description:"a first-party library, as metadata-path:directory"`
 		Out  string   `long:"out" required:"true" description:"node_modules root to write"`
 	} `command:"overlay" description:"Add first-party libraries to a node_modules tree"`
+
+	Hooks struct {
+		Dir  string   `long:"dir" required:"true" description:"the fetched package"`
+		Env  []string `long:"env" description:"an environment entry, as KEY=value; the hook sees these and nothing else"`
+		List bool     `long:"list" description:"print what the package declares without running it"`
+	} `command:"hooks" description:"Run the install scripts a package brought with it"`
 
 	ResolveBin struct {
 		Tree    string `long:"tree" required:"true" description:"a node_modules tree"`
@@ -96,10 +104,11 @@ func main() {
 	}
 
 	run := map[string]func() error{
-		"update":   update,
-		"describe": describe,
-		"link":     link,
-		"overlay":  overlay,
+		"update":      update,
+		"describe":    describe,
+		"link":        link,
+		"overlay":     overlay,
+		"hooks":       runHooks,
 		"resolve-bin": resolveBin,
 	}[parser.Active.Name]
 	if run == nil {
@@ -113,6 +122,25 @@ func main() {
 	}
 }
 
+// runHooks executes what a package declared, and nothing decides here whether
+// it should: the rule passes an allowlisted package or it does not call this at
+// all. PATH is deliberately carried through from the caller -- an install
+// script that shells out to node expects to find it, because npm puts it there.
+func runHooks() error {
+	if opts.Hooks.List {
+		scripts, err := hooks.Read(opts.Hooks.Dir)
+		if err != nil {
+			return err
+		}
+		for _, s := range scripts {
+			fmt.Printf("%s\t%s\n", s.Name, s.Command)
+		}
+		return nil
+	}
+	env := append([]string{"PATH=" + os.Getenv("PATH")}, opts.Hooks.Env...)
+	return hooks.Run(opts.Hooks.Dir, env, os.Stdout)
+}
+
 func update() error {
 	lock, err := lockfile.Parse(opts.Update.Lockfile)
 	if err != nil {
@@ -121,6 +149,14 @@ func update() error {
 
 	plan, err := generate.Build(lock)
 	if err != nil {
+		return err
+	}
+
+	// An allowlist, and only an allowlist. A package declaring install scripts
+	// is not a reason to run them; someone naming the package is. Naming one
+	// that declares none is worth saying out loud rather than ignoring, because
+	// it usually means a typo or a package that changed.
+	if err := plan.AllowHooks(opts.Update.LifecycleHooks); err != nil {
 		return err
 	}
 
@@ -218,6 +254,14 @@ func link() error {
 	}
 	plan, err := generate.Build(lock)
 	if err != nil {
+		return err
+	}
+
+	// An allowlist, and only an allowlist. A package declaring install scripts
+	// is not a reason to run them; someone naming the package is. Naming one
+	// that declares none is worth saying out loud rather than ignoring, because
+	// it usually means a typo or a package that changed.
+	if err := plan.AllowHooks(opts.Update.LifecycleHooks); err != nil {
 		return err
 	}
 	if _, ok := plan.Direct[opts.Link.Project]; !ok {
