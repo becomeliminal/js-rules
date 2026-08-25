@@ -38,7 +38,8 @@ def _env_prefix(env:dict):
 
 
 def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
-             os:list=[], cpu:list=[], bins:dict={}, run_hooks:bool=False,
+             os:list=[], cpu:list=[], patch:list=[], bins:dict={},
+             run_hooks:bool=False,
              postinstall:str="", postinstall_env:dict={},
              visibility:list=["PUBLIC"], labels:list=[]):
     """One npm package version, fetched and described.
@@ -71,6 +72,19 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             megabytes of compilers that cannot run here. A package excluded by
             its constraints still gets a target, so the build file is the same
             on every platform, but nothing is fetched and nothing is placed.
+        patch: Patch files applied to the package after it is unpacked, in the
+               order given.
+
+            Editing a broken third-party package is routine in JavaScript, and
+            the alternative is forking it. Named `patch` rather than `patches`
+            to match go_repo and rust_repo, which both take a list under that
+            name.
+
+            Applied before anything runs, because a patch is usually what makes
+            a package's own install script work at all -- the same order npm
+            uses. A patch that does not apply cleanly fails the build rather
+            than being skipped: a silently unapplied patch is a package that
+            looks fixed and is not.
         bins: Executables the package's own manifest omits, as name -> path
               within the package.
 
@@ -159,7 +173,7 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
 
     return build_rule(
         name = name,
-        srcs = [download],
+        srcs = {"pkg": [download], "patch": patch},
         outs = [name],
         cmd = " && ".join([
             # An npm tarball conventionally holds a single package/ directory,
@@ -169,11 +183,23 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             # sole top-level directory when it is not, and the tarball itself
             # when it has no wrapper at all.
             'mkdir -p "$OUT/pkg"',
-            'if [ -d "$SRCS/package" ]; then ROOT="$SRCS/package";' +
-            ' elif [ "$(ls -1 "$SRCS" | wc -l)" = 1 ] && [ -d "$SRCS/$(ls -1 "$SRCS")" ];' +
-            ' then ROOT="$SRCS/$(ls -1 "$SRCS")"; else ROOT="$SRCS"; fi',
+            'if [ -d "$SRCS_PKG/package" ]; then ROOT="$SRCS_PKG/package";' +
+            ' elif [ "$(ls -1 "$SRCS_PKG" | wc -l)" = 1 ] && [ -d "$SRCS_PKG/$(ls -1 "$SRCS_PKG")" ];' +
+            ' then ROOT="$SRCS_PKG/$(ls -1 "$SRCS_PKG")"; else ROOT="$SRCS_PKG"; fi',
             'cp -R "$ROOT/." "$OUT/pkg/"',
         ] + ([
+            # Absolute, because patch is run with -d and a relative path would
+            # be resolved against the package rather than the staging root.
+            # -F0 because patch will otherwise apply a hunk whose context does
+            # not match, by searching nearby lines. A patch written against one
+            # version then lands somewhere plausible in another and the package
+            # looks patched. Exact context or nothing.
+            #
+            # --no-backup-if-mismatch keeps .orig files out of the package, which
+            # would otherwise ship inside node_modules.
+            'for p in "$TMP_DIR"/$SRCS_PATCH; do ' +
+            'patch -d "$OUT/pkg" -p1 -F0 --no-backup-if-mismatch < "$p" || exit 1; done',
+        ] if patch else []) + ([
             # Before describe, so a command that writes a bin/ or a
             # package.json field is reflected in what the store records.
             #
