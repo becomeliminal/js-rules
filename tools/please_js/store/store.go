@@ -436,3 +436,51 @@ func names(m map[string]string) string {
 	sort.Strings(out)
 	return strings.Join(out, ", ")
 }
+
+// Publish rewrites a built package's manifest for release.
+//
+// It patches rather than regenerates. A library's package.json already carries
+// the name, entry point, types and exports map that make it importable, and
+// those were worked out once and are easy to get wrong -- the exports map
+// especially, since a missing one makes the package unimportable under ESM and
+// a mis-ordered one makes its types unreachable. Publishing changes what a
+// registry needs and leaves the rest alone.
+func Publish(dir, version string, fields map[string]any) error {
+	path := filepath.Join(dir, "package.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	// Decoded into an ordered form, so the exports map's condition order
+	// survives: node matches conditions in file order and treats "default" as
+	// the fallback, so re-encoding through a map would move it and make
+	// everything after it unreachable.
+	var manifest map[string]json.RawMessage
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+
+	set := func(key string, value any) error {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		manifest[key] = raw
+		return nil
+	}
+	if err := set("version", version); err != nil {
+		return err
+	}
+	for k, v := range fields {
+		if err := set(k, v); err != nil {
+			return err
+		}
+	}
+
+	out, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o644)
+}

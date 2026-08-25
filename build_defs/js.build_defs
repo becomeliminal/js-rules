@@ -367,3 +367,75 @@ def check_package_name(package:str, target:str):
          "resolve. npm allows one segment, or a scope and one segment -- " +
          "CommonJS hides this by falling back to directories, but ESM reads " +
          f"it as a subpath and fails. Set package, for instance `{suggestion}`.")
+
+
+def npm_package(name:str, lib:str, version:str, fields:dict={}, files:list=[],
+                include_types:bool=True, visibility:list=None,
+                test_only:bool&testonly=False, labels:list=[]):
+    """A publishable npm package, built from a first-party library.
+
+    js_library and ts_library already emit a package: a pkg/ directory with a
+    generated package.json beside it. What they do not emit is what a registry
+    needs -- a real version, a repository, a licence -- because a library
+    consumed inside one repo needs none of it.
+
+    The manifest is patched rather than regenerated. The name, entry point,
+    types and exports map were worked out once and are easy to get wrong; the
+    exports map especially, since a missing one makes a package unimportable
+    under ESM and a mis-ordered one makes its types unreachable. Neither failure
+    happens until someone installs it.
+
+    A separate rule rather than more arguments on js_library, because almost no
+    library is published and paying for the distinction everywhere to serve the
+    few that are is the wrong trade.
+
+    Args:
+        name: Target name.
+        lib: The js_library or ts_library to package. Its package name is the
+             published name -- the one consumers already import it by, so there
+             is nothing to restate and nothing to drift.
+        version: The version to publish as. Required and deliberately not
+                 defaulted: a plausible wrong version is worse than no default.
+        fields: Further package.json fields -- repository, license, keywords,
+                engines. A value that parses as JSON is written as JSON, so a
+                repository can be an object rather than a string that looks
+                like one.
+        files: Extra files copied in beside the library's own, such as a README
+               or a LICENSE, which a registry shows and a build does not need.
+        include_types: Keep the .d.ts files.
+        visibility: Visibility specification.
+        test_only: If True, only visible to test rules.
+        labels: Additional labels.
+    """
+    set_flags = " ".join([
+        "--set " + _shell_quote(k + "=" + v) for k, v in sorted(fields.items())
+    ])
+
+    return build_rule(
+        name = name,
+        srcs = {"lib": [lib], "files": files},
+        outs = [name],
+        cmd = " && ".join([
+            # The library's own output, found by shape rather than named: it
+            # describes itself, exactly as every consumer of it does.
+            'LIB=$(find . -name lib.json -not -path "./$OUT/*" | head -1)',
+            'mkdir -p "$OUT"',
+            'cp -R "$(dirname "$LIB")/pkg/." "$OUT/"',
+            'for f in ${SRCS_FILES:-}; do cp "$f" "$OUT/$(basename "$f")"; done',
+        ] + ([] if include_types else [
+            'find "$OUT" -name "*.d.ts" -delete',
+        ]) + [
+            f'"$TOOLS_PLEASE_JS" publish --dir "$OUT" --version {version} {set_flags}',
+        ]),
+        tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
+        deps = [lib],
+        visibility = visibility,
+        test_only = test_only,
+        labels = labels + ["npm_package"],
+        building_description = "Packaging...",
+    )
+
+
+def _shell_quote(v:str):
+    """Single-quotes a value so a shell will not reinterpret it."""
+    return "'" + v.replace("'", "'\\''") + "'"
