@@ -122,7 +122,8 @@ def js_binary(name:str, entry_point:str, deps:list=[], node_modules:str="",
 
 
 def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
-            data:list=[], node_modules:str="", node_options:list=[], env:dict={},
+            data:list=[], runner:str="", runner_args:list=[],
+            node_modules:str="", node_options:list=[], env:dict={},
             fixed_args:list=[], chdir:str="", expected_exit_code:int=0,
             visibility:list=None, labels:list=[],
             timeout:int=0, flaky:bool|int=0, size:str=None):
@@ -148,6 +149,20 @@ def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
         srcs: Test files, run by node's test runner. Named individually rather
               than discovered, so a file the rule was not given cannot be picked
               up by accident.
+        runner: An npm package providing the test runner, as "package" or
+                "package|bin" where a package publishes several.
+
+            Empty means node's own runner, which needs nothing installed and is
+            what the rules here test themselves with -- a test of npm_link
+            cannot come from a tree npm_link built.
+
+            Named, and everything else follows: vitest, jest and mocha all
+            write JUnit and all take a file to write it to, so a runner is a
+            package name and a few flags rather than a rule of its own.
+        runner_args: Flags for that runner. $RESULTS_FILE expands to the path
+                     Please reads results from, which is only known at test
+                     time, so a reporter is pointed at it here rather than in
+                     an output.
         data: Targets the test reads rather than imports -- a built package, a
               bundle, a compiled file. They stage at their package paths, and
               the test's working directory is the staging root, so a test asserts
@@ -183,7 +198,8 @@ def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
 
     return _js_run(name, entry_point, deps, node_modules, node_options,
                    test = True, visibility = visibility, labels = labels,
-                   srcs = srcs, data = data, env = env,
+                   srcs = srcs, data = data, runner = runner,
+                   runner_args = runner_args, env = env,
                    fixed_args = fixed_args, chdir = chdir,
                    expected_exit_code = expected_exit_code,
                    timeout = timeout, flaky = flaky, size = size)
@@ -348,7 +364,8 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
 
 
 def _js_run(name, entry_point, deps, node_modules, node_options, test,
-            visibility, labels, srcs=[], data=[], env={}, fixed_args=[],
+            visibility, labels, srcs=[], data=[], runner="", runner_args=[],
+            env={}, fixed_args=[],
             chdir="", expected_exit_code=0, timeout=0, flaky=0, size=None):
     """Shared implementation of js_binary and js_test.
 
@@ -444,7 +461,30 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     call = '"$NODE" @OPTS@ "$MAIN" ' + " ".join(
         ["'" + a.replace("'", "'\\''") + "'" for a in fixed_args]) + ' "$@"'
 
-    if suite:
+    if suite and runner:
+        pkg, _, bin = runner.partition("|")
+        # Resolved at test time from the tree beside the tests, because that is
+        # the tree the runner will resolve everything else through -- and
+        # resolve-bin says what a package publishes when the name is wrong.
+        exec_line = "\n".join([
+            'TOOL=$(find_one "$ROOT/@TOOL@" "$ROOT/plz-out/bin/@TOOL@") || {',
+            '    echo "js_test: no please_js to find the runner" >&2; exit 1; }',
+            f'BIN=$("$TOOL" resolve-bin --tree "$RUNDIR/node_modules" --package {pkg}' +
+            (f' --bin {bin}' if bin else '') + ')',
+            'BIN=$(cd "$RUNDIR" && readlink -f "$BIN")',
+            # Please may give this relative, and relative to where the launcher
+            # started, so it is resolved before anything changes directory.
+            'case "${RESULTS_FILE:-}" in',
+            '    "") RESULTS="" ;;',
+            '    /*) RESULTS="$RESULTS_FILE" ;;',
+            '    *) RESULTS="$ROOT/$RESULTS_FILE" ;;',
+            "esac",
+            # From the run directory: a runner reads its config and finds its
+            # tests relative to where it starts.
+            f'cd "$RUNDIR" && exec "$NODE" @OPTS@ "$BIN" ' +
+            " ".join([_runner_arg(a) for a in runner_args]),
+        ])
+    elif suite:
         # Named individually rather than by directory: node's runner takes paths,
         # and naming them means a file the rule was not given cannot be picked up
         # by accident.
@@ -658,3 +698,14 @@ def npm_package(name:str, lib:str, version:str, fields:dict={}, files:list=[],
 def _shell_quote(v:str):
     """Single-quotes a value so a shell will not reinterpret it."""
     return "'" + v.replace("'", "'\\''") + "'"
+
+
+def _runner_arg(arg:str):
+    """Quotes a runner flag, leaving $RESULTS_FILE as the one thing that expands.
+
+    Everything else is literal, because a flag carrying a space or a dollar
+    should reach the runner as written. The results path is the exception: it
+    is only known at test time, so a reporter has to be pointed at it by name.
+    """
+    quote = lambda part: "'" + part.replace("'", "'\\''") + "'"
+    return '"$RESULTS"'.join([quote(part) for part in arg.split("$RESULTS_FILE")])
