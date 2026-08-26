@@ -1,6 +1,8 @@
 package generate_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -81,5 +83,33 @@ func TestNoDevKeepsWhatProductionAlsoReaches(t *testing.T) {
 	}
 	if in["devonly_1.0.0"] {
 		t.Error("a dev-only package survived no_dev")
+	}
+}
+
+// Node resolves by walking up, and a staged action sits inside the repo, so the
+// repo's own node_modules is on that path. A declared dependency still resolves
+// from the nearer staged tree; an undeclared one falls through to this and the
+// build passes here and nowhere else.
+func TestStrayModulesReportsOnlyWhatIsThere(t *testing.T) {
+	dir := t.TempDir()
+	if got := generate.StrayModules(dir); got != "" {
+		t.Errorf("nothing there, but got: %s", got)
+	}
+
+	// A file rather than a directory is not a module tree.
+	if err := os.WriteFile(filepath.Join(dir, "node_modules"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := generate.StrayModules(dir); got != "" {
+		t.Errorf("a file is not a tree, but got: %s", got)
+	}
+
+	os.Remove(filepath.Join(dir, "node_modules"))
+	if err := os.Mkdir(filepath.Join(dir, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := generate.StrayModules(dir)
+	if !strings.Contains(got, "node_modules") || !strings.Contains(got, "undeclared") {
+		t.Errorf("the warning should name the path and say what goes wrong, got: %s", got)
 	}
 }

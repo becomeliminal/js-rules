@@ -216,6 +216,12 @@ func update() error {
 		return err
 	}
 
+	// Reported here because update runs at the repo root, where the stray tree
+	// is visible; a build action is sandboxed and cannot see it.
+	if warning := generate.StrayModules("."); warning != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
+
 	fmt.Fprintf(os.Stderr, "wrote %s: %d packages\n", opts.Update.Out, len(plan.Entries))
 	for path, closure := range plan.Closure {
 		label := path
