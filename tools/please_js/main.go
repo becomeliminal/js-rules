@@ -53,6 +53,7 @@ var opts = struct {
 		Bin     []string `long:"bin" description:"an executable the package's own manifest omits, as name=path"`
 		Set     []string `long:"set" description:"an extra package.json field, as key=value"`
 		Main    string   `long:"main" description:"entry file, for the generated package.json of a first-party library"`
+		Role     string   `long:"role" description:"what this entry is for; 'types' marks a declarations twin merged into its package"`
 		SrcDir   string   `long:"src-dir" description:"repo-relative directory holding this library's sources"`
 		SrcEntry string   `long:"src-entry" description:"the entry as written, e.g. index.ts"`
 		Src      []string `long:"src" description:"a source file, relative to src-dir; repeatable"`
@@ -408,6 +409,7 @@ func describe() error {
 
 	return store.WriteMeta(o.Out, store.Meta{
 		Name:     o.Name,
+		Role:     o.Role,
 		Package:  o.Package,
 		Version:  o.Version,
 		Bins:     bins,
@@ -571,6 +573,9 @@ func overlay() error {
 	// at the source file Please knows.
 	covmap := map[string]string{}
 	for _, lib := range libs {
+		if lib.Meta.Role == "types" {
+			continue // the twin carries no sources of its own
+		}
 		if lib.Meta.SrcDir != "" {
 			covmap[lib.Meta.Package] = lib.Meta.SrcDir
 		}
@@ -590,6 +595,11 @@ func overlay() error {
 	var built []store.Source
 	var links []store.DevLink
 	for _, lib := range libs {
+		if lib.Meta.Role == "types" {
+			// Dev serves sources; the declarations twin has none, and letting
+			// it through would fight the source package for one directory.
+			continue
+		}
 		if lib.Meta.SrcDir == "" {
 			built = append(built, lib)
 			continue

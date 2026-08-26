@@ -45,6 +45,11 @@ type Meta struct {
 	// everywhere, but nothing was fetched and nothing is placed.
 	Unsupported bool `json:"unsupported,omitempty"`
 
+	// Role distinguishes a declarations twin from the package it describes.
+	// "types" entries merge into their package's directory rather than
+	// claiming the name -- two outputs of one library are one package.
+	Role string `json:"role,omitempty"`
+
 	// Where a first-party library's sources live, recorded because a rule only
 	// ever sees its dependencies' outputs -- so this is the one channel through
 	// which a development server can learn what to serve instead of the built
@@ -181,6 +186,19 @@ func Build(root string, sources []Source, links []Ref, layout Layout) error {
 		return buildHoisted(root, sources, links)
 	}
 
+	// Declarations twins merge into their package's store entry after it is
+	// placed; they never claim a name of their own.
+	var twins []Source
+	kept := sources[:0:0]
+	for _, s := range sources {
+		if s.Meta.Role == "types" {
+			twins = append(twins, s)
+		} else {
+			kept = append(kept, s)
+		}
+	}
+	sources = kept
+
 	byName := make(map[string]Source, len(sources))
 	for _, s := range sources {
 		if prev, dup := byName[s.Meta.Name]; dup {
@@ -238,6 +256,17 @@ func Build(root string, sources []Source, links []Ref, layout Layout) error {
 			to := filepath.Join(root, StoreRoot, StoreDir(dep.Meta.Name), "node_modules", dep.Meta.Package)
 			if err := symlink(from, to); err != nil {
 				return fmt.Errorf("linking %s into %s: %w", ref.As, s.Meta.Name, err)
+			}
+		}
+	}
+
+	for _, twin := range twins {
+		for _, s := range sources {
+			if s.Meta.Package == twin.Meta.Package && !s.Meta.Unsupported {
+				dst := filepath.Join(root, StoreRoot, StoreDir(s.Meta.Name), "node_modules", s.Meta.Package)
+				if err := copyTree(twin.Dir, dst); err != nil {
+					return fmt.Errorf("merging %s into %s: %w", twin.Meta.Name, s.Meta.Name, err)
+				}
 			}
 		}
 	}
@@ -397,8 +426,22 @@ func ReadBins(dir, pkgName string) (map[string]string, error) {
 // These are copied rather than linked into the store: a first-party library has
 // no resolution to disambiguate, so it needs no entry of its own.
 func Overlay(root string, libs []Source) error {
+	// Twins after their packages, so the merge below always has a directory
+	// to land in whichever order find listed them.
+	sort.SliceStable(libs, func(i, j int) bool {
+		return libs[i].Meta.Role == "" && libs[j].Meta.Role != ""
+	})
 	taken := map[string]string{}
 	for _, lib := range libs {
+		if lib.Meta.Role == "types" {
+			// The declarations twin of a package staged above: merged into the
+			// same directory, because a compiler wants the .d.ts beside the
+			// manifest it resolved -- and never a name claim of its own.
+			if err := copyTree(lib.Dir, filepath.Join(root, lib.Meta.Package)); err != nil {
+				return fmt.Errorf("overlaying %s: %w", lib.Meta.Name, err)
+			}
+			continue
+		}
 		if prev, dup := taken[lib.Meta.Package]; dup {
 			return fmt.Errorf(
 				"%s and %s are both imported as %q; set `package` on one of them",

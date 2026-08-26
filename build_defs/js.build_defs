@@ -59,29 +59,56 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
     src_rel = [f[strip_len:] if f.startswith(pkg_dir + "/") else f for f in srcs + data]
 
     strip = package_name() + "/"
+    types_entry = entry.replace(".js", ".d.ts")
 
     return build_rule(
         name = name,
         srcs = {"srcs": srcs, "types": types, "data": data},
-        outs = [name],
+        # Two named outputs, because they have different readers and Please
+        # invalidates per output -- measured, not assumed: a consumer of one
+        # named output is not rebuilt when the other changes.
+        #
+        #   pkg    what runs: sources, data, the manifest. A bundle or a test
+        #          depends on :lib|pkg and stops rebuilding when a declaration
+        #          changes.
+        #   types  what type-checks: declarations and the manifest, package-
+        #          shaped because a compiler resolves the package by its
+        #          manifest and then wants the .d.ts beside it. A ts_check
+        #          depends on :lib|types and stops re-running when runtime
+        #          code changes.
+        #
+        # A plain dep on :lib stages both and behaves exactly as before.
+        outs = {
+            "pkg": [name],
+            "types": [name + "_types"],
+        },
         cmd = " && ".join([
-            'mkdir -p "$OUT/pkg"',
-            # One placement for all three: they differ in what may read them,
-            # not in where they land. A consumer sees one package.
-            'for s in ${SRCS_SRCS:-} ${SRCS_TYPES:-} ${SRCS_DATA:-}; do ' +
-            'mkdir -p "$OUT/pkg/$(dirname "${s#' + strip + '}")" && ' +
-            'cp "$s" "$OUT/pkg/${s#' + strip + '}"; done',
+            'mkdir -p "$OUTS_PKG/pkg" "$OUTS_TYPES/pkg"',
+            # Runtime and data into pkg; declarations into their own package-
+            # shaped twin. One placement rule each, same path arithmetic.
+            'for s in ${SRCS_SRCS:-} ${SRCS_DATA:-}; do ' +
+            'mkdir -p "$OUTS_PKG/pkg/$(dirname "${s#' + strip + '}")" && ' +
+            'cp "$s" "$OUTS_PKG/pkg/${s#' + strip + '}"; done',
+            'for t in ${SRCS_TYPES:-}; do ' +
+            'mkdir -p "$OUTS_TYPES/pkg/$(dirname "${t#' + strip + '}")" && ' +
+            'cp "$t" "$OUTS_TYPES/pkg/${t#' + strip + '}"; done',
             " ".join([
                 "$TOOLS_PLEASE_JS describe",
                 f"--name {name} --package {package} --version 0.0.0",
                 f"--main {entry}",
-                # Where the sources live, for a development server that serves
-                # them instead of this built output. Data files are included --
-                # a library reads them at runtime -- and types are not, since
-                # nothing serves a declaration.
                 f"--src-dir {pkg_dir} --src-entry {entry}",
                 " ".join([f"--src {f}" for f in src_rel]),
-                '--dir "$OUT/pkg" --out "$OUT/lib.json"',
+                '--dir "$OUTS_PKG/pkg" --out "$OUTS_PKG/lib.json"',
+            ]),
+            # The twin describes the same package in the types role: a compiler
+            # resolves it by manifest and reads the .d.ts beside it; node never
+            # loads it, so the dangling main is harmless and the types
+            # condition is what matters.
+            " ".join([
+                "$TOOLS_PLEASE_JS describe",
+                f"--name {name}_types --package {package} --version 0.0.0",
+                f"--main {entry} --types {types_entry} --role types",
+                '--dir "$OUTS_TYPES/pkg" --out "$OUTS_TYPES/lib.json"',
             ]),
         ]),
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
@@ -351,6 +378,14 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
         labels: Additional labels.
         test_only: If True, only visible to test rules.
     """
+    # A dep naming one output -- //lib|types, //lib|pkg -- cannot travel as a
+    # dep: Please stages every output of a dependency, which is exactly what
+    # narrowing exists to avoid. Named outputs ride the srcs channel instead,
+    # where plz stages precisely what was named and the lib.json walk discovers
+    # it like anything else. Plain deps keep their transitive closure.
+    narrowed = [d for d in deps if "|" in d]
+    deps = [d for d in deps if "|" not in d]
+
     node_modules = node_modules or CONFIG.JS.NODE_MODULES
     run_dir = "_run"
     # Kept apart on disk, not merged. The store already makes each tree resolve
@@ -405,6 +440,7 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
         srcs = {
             "modules": [node_modules] if node_modules else [],
             "tool": [tool_modules] if tool_modules else [],
+            "libs": narrowed,
             "srcs": srcs,
         },
         outs = outs + out_dirs,
@@ -467,6 +503,11 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     it: `plz run` refuses a target with more than one output, and data is staged
     beside the binary for `plz test` but not for `plz run`.
     """
+    # Named outputs ride the srcs channel, exactly as in js_run_binary: a dep
+    # stages all its outputs, which is what narrowing exists to avoid.
+    narrowed = [d for d in deps if "|" in d]
+    deps = [d for d in deps if "|" not in d]
+
     node_modules = node_modules or CONFIG.JS.NODE_MODULES
     run_dir = "_" + name + "_run"
     # The entry may be a label naming a file some other target produced, in
@@ -477,7 +518,11 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # Node's own test runner, which needs nothing installed: it is part of the
     # runtime already pinned, and it writes JUnit natively, which is what Please
     # reads to report tests individually rather than as one pass or fail.
-    suite = bool(srcs) and not runner
+    # A runner-based suite is still a suite: it writes results Please must
+    # read. The exec branch checks runner first, so nothing here needs the
+    # negation -- and with it, no_test_output silently discarded every junit
+    # file jest wrote, reporting one nameless pass per target.
+    suite = bool(srcs)
     # A run directory rather than a single entry file: anything with sources of
     # its own, or a runner that finds its own inputs, works from a directory.
     from_dir = bool(srcs) or bool(runner) or bool(link_srcs)
@@ -493,6 +538,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         srcs = {
             "entry": [entry_point] if entry_point else [],
             "suite": srcs if copy_srcs else [],
+            "libs": narrowed,
             "modules": [node_modules] if node_modules else [],
         },
         outs = [run_dir],
