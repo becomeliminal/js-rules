@@ -36,6 +36,8 @@ var opts = struct {
 		Workers        int    `long:"workers" default:"8" description:"concurrent downloads while hashing"`
 		NoDev          bool     `long:"no-dev" description:"leave devDependencies out of the tree"`
 		NoOptional     bool     `long:"no-optional" description:"leave optionalDependencies out of the tree"`
+		ScopeRegistry  []string `long:"scope-registry" description:"a registry for one scope, as @scope=url; repeatable"`
+		Header         []string `long:"header" description:"a header sent while hashing, as 'Name: value'; how a private registry's token travels, typically via shell expansion of an env var"`
 		LifecycleHooks []string `long:"lifecycle-hooks" description:"a package whose own install scripts may run; repeatable, and nothing runs without it"`
 		SkipHashes     bool   `long:"skip-hashes" description:"do not fetch tarballs to record hashes; the result is unverified"`
 	} `command:"update" description:"Translate a pnpm lockfile into npm_repo targets"`
@@ -232,10 +234,13 @@ func update() error {
 	if err := plan.AllowHooks(opts.Update.LifecycleHooks); err != nil {
 		return err
 	}
+	if err := plan.ApplyScopeRegistries(opts.Update.ScopeRegistry); err != nil {
+		return err
+	}
 
 	var sums []string
 	if !opts.Update.SkipHashes {
-		h := &generate.Hasher{Registry: opts.Update.Registry, Workers: opts.Update.Workers}
+		h := &generate.Hasher{Registry: opts.Update.Registry, Headers: opts.Update.Header, Workers: opts.Update.Workers}
 		sums, err = h.Resolve(plan.Entries, func(done, total int) {
 			fmt.Fprintf(os.Stderr, "\rhashing %d/%d", done, total)
 		})

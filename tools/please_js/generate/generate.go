@@ -33,6 +33,14 @@ type Entry struct {
 	OS        []string
 	CPU       []string
 
+	// URL is the exact tarball location when the lockfile records one -- npm
+	// lockfiles always do, and it is how a package from a private registry
+	// says where it actually lives. Empty means construct it from a registry.
+	URL string
+	// Registry overrides the default registry for this package, set from a
+	// per-scope mapping. Empty means the default.
+	Registry string
+
 	// RunHooks is set from an allowlist a person wrote, never from anything the
 	// lockfile or the package says. A package declaring install scripts is not a
 	// reason to run them -- that is the decision, and it belongs to whoever owns
@@ -144,6 +152,7 @@ func Build(lock *lockfile.Lockfile, scope Scope) (*Plan, error) {
 			Key:       key,
 			Deps:      deps,
 			Integrity: meta.Resolution.Integrity,
+			URL:       meta.Resolution.Tarball,
 			HasBin:    meta.HasBin,
 			OS:        meta.OS,
 			CPU:       meta.CPU,
@@ -336,4 +345,37 @@ func sortedKeysOf(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+
+// ApplyScopeRegistries points scoped packages at their own registry.
+//
+// A private scope is how organisations publish internally -- @acme/* from
+// registry.acme.dev -- and the mapping lives beside the lockfile rather than
+// in it, which is why pnpm reads it from .npmrc and this reads it from flags.
+// A package whose lockfile already records an exact URL keeps it: the lockfile
+// is more specific than any mapping.
+func (p *Plan) ApplyScopeRegistries(mappings []string) error {
+	if len(mappings) == 0 {
+		return nil
+	}
+	byScope := map[string]string{}
+	for _, m := range mappings {
+		scope, url, ok := strings.Cut(m, "=")
+		if !ok || !strings.HasPrefix(scope, "@") {
+			return fmt.Errorf("--scope-registry %q is not @scope=url", m)
+		}
+		byScope[scope] = strings.TrimSuffix(url, "/")
+	}
+	for i := range p.Entries {
+		e := &p.Entries[i]
+		if e.URL != "" || !strings.HasPrefix(e.Package, "@") {
+			continue
+		}
+		scope := e.Package[:strings.Index(e.Package, "/")]
+		if url, ok := byScope[scope]; ok {
+			e.Registry = url
+		}
+	}
+	return nil
 }

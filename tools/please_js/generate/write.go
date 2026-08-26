@@ -28,6 +28,14 @@ func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums 
 			str(call, "pkg", e.Package)
 		}
 		str(call, "version", e.Version)
+		// The lockfile's exact URL wins; a scope registry is next; silence
+		// means the default. Emitted so the build file works without the flags
+		// that generated it.
+		if e.URL != "" {
+			str(call, "url", e.URL)
+		} else if e.Registry != "" {
+			str(call, "registry", e.Registry)
+		}
 		if e.RunHooks {
 			call.List = append(call.List, &build.AssignExpr{
 				LHS: &build.Ident{Name: "run_hooks"},

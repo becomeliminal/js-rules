@@ -1,6 +1,10 @@
 package generate_test
 
 import (
+	"crypto/sha512"
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,5 +115,90 @@ func TestStrayModulesReportsOnlyWhatIsThere(t *testing.T) {
 	got := generate.StrayModules(dir)
 	if !strings.Contains(got, "node_modules") || !strings.Contains(got, "undeclared") {
 		t.Errorf("the warning should name the path and say what goes wrong, got: %s", got)
+	}
+}
+
+// A private scope is how organisations publish internally, and the mapping
+// lives beside the lockfile rather than in it -- pnpm reads .npmrc, this reads
+// flags. The lockfile's own URL is more specific than any mapping and wins.
+func TestScopeRegistriesPointScopedPackages(t *testing.T) {
+	plan := &generate.Plan{Entries: []generate.Entry{
+		{Target: "a", Package: "@acme/a"},
+		{Target: "b", Package: "@acme/b", URL: "https://exact.example/b.tgz"},
+		{Target: "c", Package: "@other/c"},
+		{Target: "d", Package: "plain"},
+	}}
+	if err := plan.ApplyScopeRegistries([]string{"@acme=https://registry.acme.dev/"}); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, e := range plan.Entries {
+		got[e.Target] = e.Registry
+	}
+	if got["a"] != "https://registry.acme.dev" {
+		t.Errorf("@acme/a should use the scope registry, got %q", got["a"])
+	}
+	if got["b"] != "" {
+		t.Errorf("a lockfile-recorded URL is more specific than a mapping, got %q", got["b"])
+	}
+	if got["c"] != "" || got["d"] != "" {
+		t.Errorf("unmapped packages keep the default: %v", got)
+	}
+	if err := plan.ApplyScopeRegistries([]string{"acme=nope"}); err == nil {
+		t.Error("a mapping without @scope=url shape should be refused")
+	}
+}
+
+// The ticket's fake registry, as a real server: the token must arrive in the
+// request, and must exist nowhere but the request -- it reaches the hasher via
+// a flag whose value came from the environment, and is never written anywhere.
+func TestHasherSendsHeadersToThePrivateRegistry(t *testing.T) {
+	tarball := []byte("not really a tarball, but bytes hash all the same")
+	sum512 := sha512.Sum512(tarball)
+	integrity := "sha512-" + base64.StdEncoding.EncodeToString(sum512[:])
+
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write(tarball)
+	}))
+	defer server.Close()
+
+	h := &generate.Hasher{
+		Registry: server.URL,
+		Headers:  []string{"Authorization: Bearer sekrit-token"},
+		Workers:  1,
+	}
+	sums, err := h.Resolve([]generate.Entry{
+		{Target: "p_1", Package: "p", Version: "1.0.0", Integrity: integrity},
+	}, func(done, total int) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer sekrit-token" {
+		t.Errorf("the registry saw %q", gotAuth)
+	}
+	if len(sums) != 1 || sums[0] == "" {
+		t.Errorf("hashing should still work through the header path: %v", sums)
+	}
+	// And the token reaches no output: the emitted build file carries hashes
+	// and URLs, never headers.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "BUILD")
+	plan := &generate.Plan{
+		Entries: []generate.Entry{{Target: "p_1", Package: "p", Version: "1.0.0",
+			URL: server.URL + "/p/-/p-1.0.0.tgz", Registry: "https://reg.example"}},
+		Closure: map[string][]string{}, Direct: map[string]map[string]string{},
+		Workspace: map[string]map[string]string{},
+	}
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", sums, generate.Scope{}); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := os.ReadFile(path)
+	if strings.Contains(string(out), "sekrit") {
+		t.Error("the token leaked into a generated file")
+	}
+	if !strings.Contains(string(out), `url = "`+server.URL) {
+		t.Errorf("the exact URL should be emitted:\n%s", out)
 	}
 }

@@ -38,8 +38,10 @@ def _env_prefix(env:dict):
 
 
 def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
-             os:list=[], cpu:list=[], patch:list=[], bins:dict={},
-             run_hooks:bool=False,
+             os:list=[], cpu:list=[], url:str="", registry:str="",
+             username:str="", password_file:str="", headers:dict={},
+             secret_headers:dict={}, pass_env:list=[],
+             patch:list=[], bins:dict={}, run_hooks:bool=False,
              postinstall:str="", postinstall_env:dict={},
              visibility:list=["PUBLIC"], labels:list=[]):
     """One npm package version, fetched and described.
@@ -72,6 +74,23 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
             megabytes of compilers that cannot run here. A package excluded by
             its constraints still gets a target, so the build file is the same
             on every platform, but nothing is fetched and nothing is placed.
+        url: The exact tarball location, overriding registry construction. An
+             npm lockfile records one for every package, which is how a package
+             from a private registry says where it actually lives; the
+             generator emits this when the lockfile knows better than a rule.
+        registry: The registry this one package is fetched from, overriding
+                  the NpmRegistry config. Emitted by the generator for scoped
+                  packages under a --scope-registry mapping.
+        username: Passed to remote_file, for basic-auth registries.
+        password_file: A file holding the password or token -- a file rather
+                       than a value, so the secret is never in the build graph.
+        headers: Headers sent with the fetch. These are inputs to the target's
+                 hash, so nothing secret belongs here; that is what
+                 secret_headers is for.
+        secret_headers: Headers whose values are read from files at fetch time
+                        and deliberately kept out of the target hash -- Please's
+                        own mechanism, exposed rather than reinvented.
+        pass_env: Environment variables the headers may reference.
         patch: Patch files applied to the package after it is unpacked, in the
                order given.
 
@@ -163,11 +182,20 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
     # the path but not in the tarball filename.
     basename = pkg.split("/")[-1]
 
+    # Bound first: the build language's f-strings take names, not expressions.
+    reg = registry or CONFIG.JS.NPM_REGISTRY
+    fetch_url = url or f"{reg}/{pkg}/-/{basename}-{version}.tgz"
+
     download = remote_file(
         name = tag(name, "download"),
-        url = f"{CONFIG.JS.NPM_REGISTRY}/{pkg}/-/{basename}-{version}.tgz",
+        url = fetch_url,
         out = tag(name, "tgz"),
         hashes = hashes,
+        username = username or None,
+        password_file = password_file or None,
+        headers = headers,
+        secret_headers = secret_headers,
+        pass_env = pass_env,
         extract = True,
     )
 

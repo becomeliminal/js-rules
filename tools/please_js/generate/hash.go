@@ -22,7 +22,11 @@ import (
 // slow update in exchange for verified builds.
 type Hasher struct {
 	Registry string
-	Workers  int
+	// Headers are sent with every fetch -- how a private registry's token
+	// travels during hashing. Values typically arrive by shell expansion of an
+	// environment variable, so the token exists in the request and in no file.
+	Headers []string
+	Workers int
 
 	mu    sync.Mutex
 	cache map[string]string
@@ -61,7 +65,10 @@ func (h *Hasher) Resolve(entries []Entry, progress func(done, total int)) ([]str
 			defer wg.Done()
 			for j := range jobs {
 				e := entries[j.i]
-				url := TarballURL(h.Registry, e.Package, e.Version)
+				url := e.URL
+				if url == "" {
+					url = TarballURL(h.pick(e), e.Package, e.Version)
+				}
 
 				h.mu.Lock()
 				cached, ok := h.cache[url]
@@ -69,7 +76,7 @@ func (h *Hasher) Resolve(entries []Entry, progress func(done, total int)) ([]str
 				if ok {
 					sums[j.i] = cached
 				} else {
-					sum, err := fetchAndHash(url, e.Integrity)
+					sum, err := fetchAndHash(url, e.Integrity, h.Headers)
 					if err != nil {
 						errs[j.i] = fmt.Errorf("%s@%s: %w", e.Package, e.Version, err)
 					} else {
@@ -105,8 +112,19 @@ func (h *Hasher) Resolve(entries []Entry, progress func(done, total int)) ([]str
 
 // fetchAndHash downloads a tarball, checks it against the lockfile's integrity
 // where there is one, and returns its sha256 in hex.
-func fetchAndHash(url, integrity string) (string, error) {
-	resp, err := http.Get(url)
+func fetchAndHash(url, integrity string, headers []string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	for _, h := range headers {
+		name, value, ok := strings.Cut(h, ":")
+		if !ok {
+			return "", fmt.Errorf("--header %q is not Name: value", h)
+		}
+		req.Header.Set(strings.TrimSpace(name), strings.TrimSpace(value))
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -132,4 +150,12 @@ func fetchAndHash(url, integrity string) (string, error) {
 		}
 	}
 	return hex.EncodeToString(s256.Sum(nil)), nil
+}
+
+// pick returns the registry this entry fetches from: its own, or the default.
+func (h *Hasher) pick(e Entry) string {
+	if e.Registry != "" {
+		return e.Registry
+	}
+	return h.Registry
 }
