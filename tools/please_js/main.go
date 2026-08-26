@@ -50,6 +50,9 @@ var opts = struct {
 		Bin     []string `long:"bin" description:"an executable the package's own manifest omits, as name=path"`
 		Set     []string `long:"set" description:"an extra package.json field, as key=value"`
 		Main    string   `long:"main" description:"entry file, for the generated package.json of a first-party library"`
+		SrcDir   string   `long:"src-dir" description:"repo-relative directory holding this library's sources"`
+		SrcEntry string   `long:"src-entry" description:"the entry as written, e.g. index.ts"`
+		Src      []string `long:"src" description:"a source file, relative to src-dir; repeatable"`
 		Dir     string   `long:"dir" description:"the fetched package directory"`
 		Out     string   `long:"out" required:"true" description:"description file to write"`
 	} `command:"describe" description:"Record what a fetched package is, for npm_link to assemble"`
@@ -57,6 +60,7 @@ var opts = struct {
 	Link struct {
 		NoDev      bool     `long:"no-dev" description:"leave devDependencies out; must match how the build file was generated"`
 		NoOptional bool     `long:"no-optional" description:"leave optionalDependencies out; must match how the build file was generated"`
+		Hoisted    bool     `long:"hoisted" description:"write npm's layout rather than pnpm's: no symlinks, resolution by walking up"`
 		Workspace  []string `long:"workspace" description:"a workspace package this repo builds, as npm-name:directory"`
 		Lockfile string   `long:"lock" required:"true" description:"the pnpm lockfile describing the graph"`
 		Project  string   `long:"project" default:"." description:"which pnpm workspace project's tree to build"`
@@ -68,7 +72,18 @@ var opts = struct {
 		Tree string   `long:"tree" required:"true" description:"an existing node_modules tree"`
 		Lib  []string `long:"lib" description:"a first-party library, as metadata-path:directory"`
 		Out  string   `long:"out" required:"true" description:"node_modules root to write"`
+		Dev  bool     `long:"dev" description:"record libraries with sources for devlink instead of copying their built output"`
 	} `command:"overlay" description:"Add first-party libraries to a node_modules tree"`
+
+	Devlink struct {
+		Tree string `long:"tree" required:"true" description:"the node_modules tree to write packages into"`
+		Root string `long:"root" required:"true" description:"the repository root the symlinks point into"`
+		Spec string `long:"spec" required:"true" description:"the devlinks.json overlay --dev wrote"`
+	} `command:"devlink" description:"Serve first-party packages from their sources"`
+
+	Packages struct {
+		Dir string `long:"dir" default:"." description:"directory to scan for lib.json"`
+	} `command:"packages" description:"List the first-party package names staged under a directory"`
 
 	Hooks struct {
 		Dir  string   `long:"dir" required:"true" description:"the fetched package"`
@@ -128,6 +143,8 @@ func main() {
 		"describe":    describe,
 		"link":        link,
 		"overlay":     overlay,
+		"devlink":     devlink,
+		"packages":    listPackages,
 		"hooks":       runHooks,
 		"junit":       convertJUnit,
 		"publish":     publish,
@@ -312,10 +329,13 @@ func describe() error {
 	}
 
 	return store.WriteMeta(o.Out, store.Meta{
-		Name:    o.Name,
-		Package: o.Package,
-		Version: o.Version,
-		Bins:    bins,
+		Name:     o.Name,
+		Package:  o.Package,
+		Version:  o.Version,
+		Bins:     bins,
+		SrcDir:   o.SrcDir,
+		SrcEntry: o.SrcEntry,
+		Srcs:     o.Src,
 	})
 }
 
@@ -405,7 +425,11 @@ func link() error {
 			opts.Link.Lockfile, strings.Join(missing, ", "), noun)
 	}
 
-	return store.Build(opts.Link.Out, sources, links)
+	layout := store.Store
+	if opts.Link.Hoisted {
+		layout = store.Hoisted
+	}
+	return store.Build(opts.Link.Out, sources, links, layout)
 }
 
 func projects(plan *generate.Plan) []string {
@@ -439,7 +463,47 @@ func overlay() error {
 		}
 		libs = append(libs, store.Source{Dir: dir, Meta: meta})
 	}
-	return store.Overlay(opts.Overlay.Out, libs)
+	if !opts.Overlay.Dev {
+		return store.Overlay(opts.Overlay.Out, libs)
+	}
+
+	// Development: a library whose lib.json records sources is served from
+	// them, so nothing of it is copied here -- devlink builds it at run time.
+	// One without source info still gets its built output, which is correct,
+	// just not hot.
+	var built []store.Source
+	var links []store.DevLink
+	for _, lib := range libs {
+		if lib.Meta.SrcDir == "" {
+			built = append(built, lib)
+			continue
+		}
+		links = append(links, store.DevLink{
+			Package:  lib.Meta.Package,
+			SrcDir:   lib.Meta.SrcDir,
+			SrcEntry: lib.Meta.SrcEntry,
+			Srcs:     lib.Meta.Srcs,
+		})
+	}
+	if err := store.Overlay(opts.Overlay.Out, built); err != nil {
+		return err
+	}
+	return store.WriteDevLinks(filepath.Join(filepath.Dir(opts.Overlay.Out), "devlinks.json"), links)
+}
+
+func devlink() error {
+	return store.Devlink(opts.Devlink.Tree, opts.Devlink.Root, opts.Devlink.Spec)
+}
+
+func listPackages() error {
+	names, err := store.Packages(opts.Packages.Dir)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		fmt.Println(name)
+	}
+	return nil
 }
 
 func copyTreeInto(src, dst string) error {
