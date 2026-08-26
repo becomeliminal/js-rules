@@ -266,7 +266,7 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
                   srcs:list=[], outs:list=[],
                   out_dirs:list=[], args:list=[], env:dict={}, chdir:str=None,
                   stdout:str="", stderr:str="", exit_code_out:str="",
-                  silent_on_success:bool=False,
+                  silent_on_success:bool=False, progress:str="", sandbox:bool=None,
                   visibility:list=None, labels:list=[], test_only:bool&testonly=False):
     """Runs an executable published by an npm package as a build action.
 
@@ -315,6 +315,16 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
         silent_on_success: Show the tool's output only if it fails. A large
                            build's log is worth reading, and most tools are
                            chatty about succeeding.
+        progress: What the build log says while this runs. The default is
+                  "Running <package>...", which is honest and useless in a log
+                  with forty of them; "Bundling the admin app" is information.
+                  rules_js spreads this over mnemonic, progress_message and
+                  execution_requirements -- Please has one string and a sandbox
+                  flag, so that is what is exposed.
+        sandbox: Sandbox the action, overriding the repo default. The escape
+                 hatch for a tool that needs the network or a shared daemon;
+                 turning it off is visible here, in review, rather than in a
+                 global config.
         chdir: Directory to run in. Defaults to the package directory, so args
                read relative to the BUILD file. node_modules sits at the staged
                root and is still found, because node's resolution walks up.
@@ -415,7 +425,8 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
         visibility = visibility,
         labels = labels,
         test_only = test_only,
-        building_description = "Running...",
+        sandbox = sandbox,
+        building_description = progress or f"Running {package}...",
     )
 
 
