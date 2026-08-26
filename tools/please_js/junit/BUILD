@@ -3,6 +3,7 @@ subinclude("///go//build_defs:go")
 go_library(
     name = "junit",
     srcs = [
+        "editor.go",
         "junit.go",
         "lcov.go",
     ],

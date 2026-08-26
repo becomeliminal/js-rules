@@ -373,6 +373,9 @@ def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str="
         ] + source_flags),
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         visibility = visibility,
+        # Discoverable, for js_project: an editor config needs every tree, and
+        # a script can only find what the graph names.
+        labels = ["npm_link"],
         building_description = "Linking node_modules...",
     )
 

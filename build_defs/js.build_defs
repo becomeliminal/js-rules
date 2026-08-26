@@ -89,7 +89,10 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
         exported_deps = deps,
         visibility = visibility,
         test_only = test_only,
-        labels = labels + [f"js_library:{package}"],
+        # The bare label is for discovery -- plz query --include matches exact
+        # labels, so a filter needs a constant name and the packaged one
+        # carries the data.
+        labels = labels + ["js_library", f"js_library:{package}"],
         building_description = "Arranging...",
     )
 
@@ -977,4 +980,93 @@ def jest_test(name:str, srcs:list, deps:list=[], data:list=[], config:str="",
         timeout = timeout,
         flaky = flaky,
         size = size,
+    )
+
+
+def js_project(name:str, targets:list=["//..."], out:str="tsconfig.plz.json",
+               visibility:list=None):
+    """Writes the tsconfig fragment that lets an editor resolve what the build
+    provides.
+
+    Declare one in the repo root BUILD file and run it:
+
+        plz run //:js-project
+
+    then extend it from the repo tsconfig:
+
+        { "extends": "./tsconfig.plz.json", ... }
+
+    The TypeScript language server resolves an import by walking node_modules
+    up from the file, and this repo deliberately has none in its source tree --
+    so a fresh checkout's editor knows nothing until this runs. rust-rules
+    answers the same problem for rust-analyzer with rust_project, and this is
+    that pattern: discover from the graph, write one file at the root, keep no
+    list by hand. A library added anywhere is in the next run.
+
+    First-party packages map to their sources -- the files being edited, the
+    same identity the dev server serves -- and everything else falls through to
+    the built trees, where fetched packages and their declarations live. The
+    trees must have been built for the fallback to resolve, which `plz run`
+    guarantees for the run itself and the docstring states for later.
+
+    A run target rather than a build rule for rust_project's reason: the
+    discovery can only query the build graph, which a rule cannot do while it
+    is being parsed. And it writes into the source tree deliberately, by an
+    explicit command a person runs -- the npm_update shape, because editor
+    config is for the human, not the build.
+
+    Args:
+        name: Target name.
+        targets: Where to look. The default covers the repo; a monorepo with
+                 JavaScript in one subtree can narrow it and skip the rest.
+        out: The file to write, relative to the repo root.
+        visibility: Visibility specification.
+    """
+    tool_rel = _staged_path(CONFIG.JS.PLEASE_JS_TOOL)
+    tool_sub = _subrepo_path(CONFIG.JS.PLEASE_JS_TOOL) or tool_rel
+
+    script = "\n".join([
+        "#!/bin/sh",
+        "set -eu",
+        "ROOT=$(pwd -P)",
+        "find_one() {",
+        '    for c in "$@"; do',
+        '        [ -e "$c" ] && { printf %s "$c"; return 0; }',
+        "    done",
+        "    return 1",
+        "}",
+        'TOOL=$(find_one "$ROOT/@TOOL@" "$ROOT/plz-out/bin/@TOOL@" "$ROOT/plz-out/bin/@TOOLSUB@") || {',
+        '    echo "js_project: no please_js" >&2; exit 1; }',
+        "{",
+        # Every library, by the package name its label carries and the source
+        # directory its target address is.
+        'plz query alltargets --include js_library @TARGETS@ 2>/dev/null | while read t; do',
+        '    pkg=$(plz query print "$t" -f labels 2>/dev/null | sed -n "s/^js_library://p" | head -1)',
+        '    dir=${t#//}; dir=${dir%%:*}',
+        '    [ -n "$pkg" ] && printf "lib\t%s\t%s\n" "$pkg" "$dir"',
+        "done",
+        # Every tree, built so the fallback resolves, at its output path.
+        'plz query alltargets --include npm_link @TARGETS@ 2>/dev/null | while read t; do',
+        '    plz build "$t" >/dev/null 2>&1 || true',
+        '    dir=${t#//}; pkg=${dir%%:*}; n=${t##*:}',
+        '    printf "tree\tplz-out/gen/%s/%s\n" "$pkg" "$n"',
+        "done",
+        '} | "$TOOL" editor --out "$ROOT/@OUT@"',
+        'echo "wrote @OUT@; extend it from the repo tsconfig" >&2',
+    ])
+    script = (script
+        .replace("@TOOL@", tool_rel)
+        .replace("@TOOLSUB@", tool_sub)
+        .replace("@TARGETS@", " ".join(targets))
+        .replace("@OUT@", out))
+
+    return build_rule(
+        name = name,
+        outs = [name + ".sh"],
+        cmd = "cat > $OUT <<'PLZ_EDITOR'\n" + script + "\nPLZ_EDITOR\nchmod +x $OUT",
+        runtime_deps = [CONFIG.JS.PLEASE_JS_TOOL.split("|")[0]],
+        binary = True,
+        visibility = visibility,
+        labels = ["js_project"],
+        building_description = "Preparing...",
     )
