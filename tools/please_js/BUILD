@@ -11,5 +11,6 @@ go_binary(
         "//tools/please_js/junit",
         "//tools/please_js/lockfile",
         "//tools/please_js/store",
+        "//tools/please_js/tsconfig",
     ],
 )

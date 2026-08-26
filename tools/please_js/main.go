@@ -23,6 +23,7 @@ import (
 	"tools/please_js/junit"
 	"tools/please_js/lockfile"
 	"tools/please_js/store"
+	"tools/please_js/tsconfig"
 )
 
 var opts = struct {
@@ -114,6 +115,12 @@ var opts = struct {
 		Out string `long:"out" required:"true" description:"the tsconfig fragment to write"`
 	} `command:"editor" description:"Write the tsconfig paths an editor needs, from lib/tree lines on stdin"`
 
+	TsconfigCheck struct {
+		ShowConfig string `long:"show-config" required:"true" description:"file holding tsc --showConfig output"`
+		Config     string `long:"config" required:"true" description:"the tsconfig path the compiler was given"`
+		Root       string `long:"root" description:"the rule's --rootDir; empty means the repo root"`
+	} `command:"tsconfig-check" description:"Fail when the tsconfig disagrees with the flags a rule mirrors over it"`
+
 	CovFlags struct {
 		Map string `long:"map" required:"true" description:"covmap.json from the overlay"`
 	} `command:"covflags" description:"Print the coverage-include flags for the staged first-party packages"`
@@ -173,6 +180,7 @@ func main() {
 		"editor":      editorConfig,
 		"publish":     publish,
 		"resolve-bin": resolveBin,
+		"tsconfig-check": tsconfigCheck,
 	}[parser.Active.Name]
 	if run == nil {
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", parser.Active.Name)
@@ -267,6 +275,14 @@ func covFlags() error {
 		fmt.Printf("--test-coverage-include=**/node_modules/%s/** ", pkg)
 	}
 	return nil
+}
+
+func tsconfigCheck() error {
+	data, err := os.ReadFile(opts.TsconfigCheck.ShowConfig)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", opts.TsconfigCheck.ShowConfig, err)
+	}
+	return tsconfig.Check(data, opts.TsconfigCheck.Config, opts.TsconfigCheck.Root)
 }
 
 func convertLcov() error {
