@@ -6,6 +6,7 @@ go_library(
         "generate.go",
         "platform.go",
         "hash.go",
+        "stray.go",
         "write.go",
     ],
     visibility = ["//tools/..."],
