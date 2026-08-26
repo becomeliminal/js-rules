@@ -1,0 +1,8 @@
+{
+  "name": "jest-fixture",
+  "private": true,
+  "devDependencies": {
+    "jest": "30.4.2",
+    "jest-junit": "17.0.0"
+  }
+}

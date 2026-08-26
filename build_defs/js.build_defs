@@ -178,7 +178,7 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
 
 
 def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
-            data:list=[], runner:str="", runner_args:list=[],
+            data:list=[], runner:str="", runner_args:list=[], runner_env:dict={},
             node_modules:str="", node_options:list=[], env:dict={},
             fixed_args:list=[], chdir:str="", expected_exit_code:int=0,
             visibility:list=None, labels:list=[],
@@ -219,6 +219,12 @@ def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
                      Please reads results from, which is only known at test
                      time, so a reporter is pointed at it here rather than in
                      an output.
+        runner_env: Environment for the runner, with the same $RESULTS_FILE
+                    expansion. For a reporter configured by variable rather
+                    than flag -- jest-junit reads JEST_JUNIT_OUTPUT_FILE --
+                    and exported after the path is made absolute, because the
+                    runner starts in the run directory where a relative one
+                    would point nowhere.
         data: Targets the test reads rather than imports -- a built package, a
               bundle, a compiled file. They stage at their package paths, and
               the test's working directory is the staging root, so a test asserts
@@ -255,7 +261,7 @@ def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
     return _js_run(name, entry_point, deps, node_modules, node_options,
                    test = True, visibility = visibility, labels = labels,
                    srcs = srcs, data = data, runner = runner,
-                   runner_args = runner_args, env = env,
+                   runner_args = runner_args, runner_env = runner_env, env = env,
                    fixed_args = fixed_args, chdir = chdir,
                    expected_exit_code = expected_exit_code,
                    timeout = timeout, flaky = flaky, size = size)
@@ -443,7 +449,7 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
 
 def _js_run(name, entry_point, deps, node_modules, node_options, test,
             visibility, labels, srcs=[], data=[], runner="", runner_args=[],
-            link_srcs=[], link_deps=False, env={}, fixed_args=[],
+            runner_env={}, link_srcs=[], link_deps=False, env={}, fixed_args=[],
             chdir="", expected_exit_code=0, timeout=0, flaky=0, size=None):
     """Shared implementation of js_binary and js_test.
 
@@ -594,6 +600,13 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             '    /*) RESULTS="$RESULTS_FILE" ;;',
             '    *) RESULTS="$ROOT/$RESULTS_FILE" ;;',
             "esac",
+        ] + [
+            # After RESULTS is absolute, because the runner starts in the run
+            # directory where a relative path would point nowhere.
+            'export ' + k + '=' + '"$RESULTS"'.join(
+                ["'" + part.replace("'", "'\\''") + "'" for part in v.split("$RESULTS_FILE")])
+            for k, v in sorted(runner_env.items())
+        ] + [
             # From the run directory: a runner reads its config and finds its
             # tests relative to where it starts.
             # The caller's arguments last, so `plz run //x:dev -- --port 5199`
@@ -897,3 +910,71 @@ def _subrepo_path(label:str):
     repo, _, rest = target.partition("//")
     package, _, name = rest.partition(":")
     return repo + "/" + package + "/" + (name or package.split("/")[-1])
+
+
+def jest_test(name:str, srcs:list, deps:list=[], data:list=[], config:str="",
+              node_modules:str="", env:dict={}, args:list=[],
+              visibility:list=None, labels:list=[],
+              timeout:int=0, flaky:bool|int=0, size:str=None):
+    """Tests run by jest, for a repo whose suite is already written in it.
+
+    node's own runner remains what this plugin tests itself with -- a test of
+    npm_link cannot come from a tree npm_link built -- and jest is for
+    everyone whose describe and expect are already on disk. It comes from the
+    consumer's tree, like every runner with an ecosystem: ts-jest, custom
+    transforms and jsdom environments all have to match the jest they load
+    into.
+
+    Reporting goes through jest-junit, which must be in the tree beside jest;
+    the rule points it at the file Please reads, so each test is named in the
+    output rather than the file being one result.
+
+    Runs with --ci, which is not a preference: without it a snapshot mismatch
+    quietly rewrites the snapshot and passes, and a test that edits its own
+    expectations under a build system is not a test. Updating snapshots is a
+    deliberate act -- run jest without --ci via js_run_binary, or an
+    update-mode target, when that lands.
+
+    Args:
+        name: Target name.
+        srcs: Test files, and anything they import that is not a dep.
+        deps: js_library and ts_library targets the tests import by package
+              name, and npm_repo targets.
+        data: Targets the tests read rather than import.
+        config: A jest config file, staged and passed with --config. Absent
+                means jest's defaults over the staged files.
+        node_modules: The tree the tests resolve through, holding jest and
+                      jest-junit.
+        env: Environment variables for the run.
+        args: Further jest flags.
+        visibility: Visibility specification.
+        labels: Additional labels.
+        timeout: Test timeout in seconds.
+        flaky: True to mark the test flaky, or an integer for reruns.
+        size: Test size.
+    """
+    return js_test(
+        name = name,
+        srcs = srcs + ([config] if config else []),
+        deps = deps,
+        data = data,
+        node_modules = node_modules,
+        runner = "jest",
+        runner_args = [
+            "--ci",
+            "--reporters=jest-junit",
+        ] + (["--config", config] if config else [
+            # jest refuses to run without a project marker -- it traverses
+            # upward looking for one and the run directory has none. Inline
+            # JSON is jest's own escape for exactly this, and rootDir pins
+            # discovery to what was staged.
+            "--config", '{"rootDir":"."}',
+        ]) + args,
+        runner_env = {"JEST_JUNIT_OUTPUT_FILE": "$RESULTS_FILE"},
+        env = env,
+        visibility = visibility,
+        labels = labels + ["jest"],
+        timeout = timeout,
+        flaky = flaky,
+        size = size,
+    )
