@@ -8,6 +8,7 @@ js_run_binary(
     package = "typescript",
     bin = "tsc",
     args = ["--nonsense-flag"],
+    progress = "Capturing a deliberate failure",
     exit_code_out = "status",
     stderr = "err.txt",
     stdout = "out.txt",
