@@ -23,6 +23,11 @@ type npmLock struct {
 }
 
 type npmPackage struct {
+	// Name is set only when the package is installed under a different one --
+	// npm's alias form, `npm install x-cjs@npm:x@7`. The path then says what to
+	// import it as and this says what to fetch, and confusing the two asks the
+	// registry for a package that does not exist.
+	Name                 string            `json:"name"`
 	Version              string            `json:"version"`
 	Resolved             string            `json:"resolved"`
 	Integrity            string            `json:"integrity"`
@@ -37,16 +42,30 @@ type npmPackage struct {
 	DevDependencies      map[string]string `json:"devDependencies"`
 }
 
-// packageName returns the name a path installs.
+// importName returns the name a path is imported as.
 //
 // Everything after the last node_modules segment, so a scope survives and
 // nesting does not: "a/node_modules/@scope/b" is "@scope/b".
-func packageName(path string) string {
+func importName(path string) string {
 	i := strings.LastIndex(path, "node_modules/")
 	if i < 0 {
 		return path
 	}
 	return path[i+len("node_modules/"):]
+}
+
+// registryName returns the name to fetch, which is not always the name to
+// import.
+//
+// `npm install wrap-ansi-cjs@npm:wrap-ansi@7` installs one package under
+// another name, and npm records the real one in the entry. Three of the 1,283
+// packages in one real workspace are aliases like this, and asking the registry
+// for the alias gets a 404.
+func registryName(path string, pkg npmPackage) string {
+	if pkg.Name != "" {
+		return pkg.Name
+	}
+	return importName(path)
 }
 
 // resolveFrom finds which entry the package at `from` gets for `dep`.
@@ -101,6 +120,14 @@ func parseNPM(data []byte, path string) (*Lockfile, error) {
 	// one that appears at several paths is genuinely several resolutions, and
 	// the path distinguishes them the way a peer group does in pnpm. Carried in
 	// parentheses so SplitKey reads it as the disambiguator it is.
+	// A path outside node_modules is a project in the repo, not something to
+	// fetch: the root, or a workspace. They are read further down as importers.
+	// Before aliases were handled, such an entry was keyed by its path and so
+	// never collided with anything, which hid the fact that it was here at all.
+	fetchable := func(path string, pkg npmPackage) bool {
+		return path != "" && !pkg.Link && pkg.Version != "" && strings.Contains(path, "node_modules/")
+	}
+
 	counts := map[string]int{}
 	// A package with no dependencies of its own has the same identity wherever
 	// it sits: nothing about its position can change what it resolves, because
@@ -110,10 +137,10 @@ func parseNPM(data []byte, path string) (*Lockfile, error) {
 	// mistake worth never making.
 	positionless := map[string]bool{}
 	for path, pkg := range raw.Packages {
-		if path == "" || pkg.Link || pkg.Version == "" {
+		if !fetchable(path, pkg) {
 			continue
 		}
-		base := packageName(path) + "@" + pkg.Version
+		base := registryName(path, pkg) + "@" + pkg.Version
 		counts[base]++
 		hasDeps := len(pkg.Dependencies) > 0 || len(pkg.OptionalDependencies) > 0
 		if _, seen := positionless[base]; !seen {
@@ -125,7 +152,7 @@ func parseNPM(data []byte, path string) (*Lockfile, error) {
 	}
 	keyOf := func(p string) string {
 		pkg := raw.Packages[p]
-		base := packageName(p) + "@" + pkg.Version
+		base := registryName(p, pkg) + "@" + pkg.Version
 		if counts[base] > 1 && !positionless[base] {
 			return base + "(" + p + ")"
 		}
@@ -133,7 +160,7 @@ func parseNPM(data []byte, path string) (*Lockfile, error) {
 	}
 
 	for p, pkg := range raw.Packages {
-		if p == "" || pkg.Link || pkg.Version == "" {
+		if !fetchable(p, pkg) {
 			continue
 		}
 		key := keyOf(p)
