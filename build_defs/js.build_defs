@@ -267,6 +267,7 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
                   out_dirs:list=[], args:list=[], env:dict={}, chdir:str=None,
                   stdout:str="", stderr:str="", exit_code_out:str="",
                   silent_on_success:bool=False, progress:str="", sandbox:bool=None,
+                  stamp:bool=False,
                   visibility:list=None, labels:list=[], test_only:bool&testonly=False):
     """Runs an executable published by an npm package as a build action.
 
@@ -321,6 +322,15 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
                   rules_js spreads this over mnemonic, progress_message and
                   execution_requirements -- Please has one string and a sandbox
                   flag, so that is what is exposed.
+        stamp: Give the tool the version control state, as SCM_REVISION,
+               SCM_DESCRIBE and SCM_COMMIT_DATE in its environment.
+
+            With a caveat Please is honest about and this rule repeats: a
+            stamped target is not rebuilt when a commit lands, so the stamp is
+            as fresh as the last rebuild. That is the right trade -- the
+            alternative rebuilds the world on every commit -- and it is why
+            stamping belongs on a small terminal target, with `plz build
+            --rebuild` on the release path making freshness explicit.
         sandbox: Sandbox the action, overriding the repo default. The escape
                  hatch for a tool that needs the network or a shared daemon;
                  turning it off is visible here, in review, rather than in a
@@ -426,6 +436,7 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
         labels = labels,
         test_only = test_only,
         sandbox = sandbox,
+        stamp = stamp,
         building_description = progress or f"Running {package}...",
     )
 
@@ -740,7 +751,7 @@ def check_package_name(package:str, target:str):
 
 
 def npm_package(name:str, lib:str, version:str, fields:dict={}, files:list=[],
-                include_types:bool=True, visibility:list=None,
+                include_types:bool=True, stamp:bool=False, visibility:list=None,
                 test_only:bool&testonly=False, labels:list=[]):
     """A publishable npm package, built from a first-party library.
 
@@ -766,6 +777,13 @@ def npm_package(name:str, lib:str, version:str, fields:dict={}, files:list=[],
              is nothing to restate and nothing to drift.
         version: The version to publish as. Required and deliberately not
                  defaulted: a plausible wrong version is worse than no default.
+                 With stamp, {describe}, {revision} and {date} expand from the
+                 version control state -- "0.0.0-{describe}" is a publishable
+                 prerelease that names its commit.
+        stamp: Expand the version's placeholders from version control. The
+               stamp is as fresh as the last rebuild of this target, which is
+               why it lives here on the terminal target and `plz build
+               --rebuild` belongs on the release path.
         fields: Further package.json fields -- repository, license, keywords,
                 engines. A value that parses as JSON is written as JSON, so a
                 repository can be an object rather than a string that looks
@@ -777,6 +795,13 @@ def npm_package(name:str, lib:str, version:str, fields:dict={}, files:list=[],
         test_only: If True, only visible to test rules.
         labels: Additional labels.
     """
+    if not stamp:
+        for placeholder in ["{describe}", "{revision}", "{date}"]:
+            if placeholder in version:
+                fail(f"npm_package {name}: version contains {placeholder} but stamp " +
+                     "is not set, so it would ship literally -- a plausible wrong " +
+                     "version, which is the exact thing this argument refuses to default")
+
     set_flags = " ".join([
         "--set " + _shell_quote(k + "=" + v) for k, v in sorted(fields.items())
     ])
@@ -794,11 +819,18 @@ def npm_package(name:str, lib:str, version:str, fields:dict={}, files:list=[],
             'for f in ${SRCS_FILES:-}; do cp "$f" "$OUT/$(basename "$f")"; done',
         ] + ([] if include_types else [
             'find "$OUT" -name "*.d.ts" -delete',
+        ]) + ([
+            # Expanded here, in the action, where the SCM variables exist.
+            'VERSION=$(printf %s ' + _shell_quote(version) +
+            ' | sed -e "s/{describe}/$SCM_DESCRIBE/g" -e "s/{revision}/$SCM_REVISION/g" -e "s/{date}/$SCM_COMMIT_DATE/g")',
+        ] if stamp else [
+            'VERSION=' + _shell_quote(version),
         ]) + [
-            f'"$TOOLS_PLEASE_JS" publish --dir "$OUT" --version {version} {set_flags}',
+            f'"$TOOLS_PLEASE_JS" publish --dir "$OUT" --version "$VERSION" {set_flags}',
         ]),
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         deps = [lib],
+        stamp = stamp,
         visibility = visibility,
         test_only = test_only,
         labels = labels + ["npm_package"],
