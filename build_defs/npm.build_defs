@@ -371,3 +371,103 @@ def _admits(constraints:list, actual:str):
     if denied:
         return False
     return allowed or not positive
+
+
+def npm_update(name:str, dir:str="", lockfile:str="pnpm-lock.yaml",
+               build_file:str="BUILD", args:list=[], visibility:list=None):
+    """A runnable target that brings a lockfile and its BUILD file up to date.
+
+    `plz run` only, and it writes into the source tree on purpose: the lockfile
+    and the generated build file are sources, and this is the one sanctioned
+    way they change -- the same shape as running a formatter or go mod tidy.
+    It is never a build action, which cannot touch sources and must not need
+    the network.
+
+    pnpm does the resolving, driven through the corepack that ships inside the
+    node toolchain this plugin already pins -- nothing is installed. It is the
+    same invocation the README documents, as one command instead of a
+    paragraph, and unlike a README it cannot go stale without failing.
+
+    Args:
+        name: Target name.
+        dir: The directory holding package.json and the lockfile, relative to
+             the repo root. Defaults to this package.
+        lockfile: The lockfile's name within that directory.
+        build_file: The generated build file's name within that directory.
+        args: Extra flags for please_js update -- --lifecycle-hooks, --no-dev
+              and friends -- recorded here so a repin applies the same policy
+              every time instead of whatever the last person remembered.
+        visibility: Visibility specification.
+    """
+    dir = dir or package_name()
+    node_rel = _npm_staged_path(CONFIG.JS.NODE_TOOL)
+    tool_rel = _npm_staged_path(CONFIG.JS.PLEASE_JS_TOOL)
+    tool_sub = _npm_subrepo_path(CONFIG.JS.PLEASE_JS_TOOL) or tool_rel
+
+    script = "\n".join([
+        "#!/bin/sh",
+        "set -eu",
+        "ROOT=$(pwd -P)",
+        "find_one() {",
+        '    for c in "$@"; do',
+        '        [ -e "$c" ] && { printf %s "$c"; return 0; }',
+        "    done",
+        "    return 1",
+        "}",
+        'NODE=$(find_one "$ROOT/@NODE@/bin/node" "$ROOT/plz-out/bin/@NODE@/bin/node") || {',
+        '    echo "npm_update: no node toolchain" >&2; exit 1; }',
+        # corepack ships inside the toolchain, beside the node that runs it.
+        'COREPACK="${NODE%/bin/node}/lib/node_modules/corepack/dist/corepack.js"',
+        'TOOL=$(find_one "$ROOT/@TOOL@" "$ROOT/plz-out/bin/@TOOL@" "$ROOT/plz-out/bin/@TOOLSUB@") || {',
+        '    echo "npm_update: no please_js" >&2; exit 1; }',
+        'cd "$ROOT/@DIR@"',
+        'COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "$NODE" "$COREPACK" pnpm install --lockfile-only',
+        'cd "$ROOT"',
+        '"$TOOL" update --lockfile "@DIR@/@LOCK@" --out "@DIR@/@BUILDFILE@" --lock-label @LOCK@ @ARGS@ "$@"',
+    ])
+    script = (script
+        .replace("@NODE@", node_rel)
+        .replace("@TOOLSUB@", tool_sub)
+        .replace("@TOOL@", tool_rel)
+        .replace("@DIR@", dir)
+        .replace("@LOCK@", lockfile)
+        .replace("@BUILDFILE@", build_file)
+        .replace("@ARGS@", " ".join(args)))
+
+    return build_rule(
+        name = name,
+        outs = [name + ".sh"],
+        cmd = "cat > $OUT <<'PLZ_UPDATE'\n" + script + "\nPLZ_UPDATE\nchmod +x $OUT",
+        runtime_deps = [
+            CONFIG.JS.NODE_TOOL.split("|")[0],
+            CONFIG.JS.PLEASE_JS_TOOL.split("|")[0],
+        ],
+        binary = True,
+        visibility = visibility,
+        labels = ["npm_update"],
+        building_description = "Preparing...",
+    )
+
+
+def _npm_staged_path(label:str):
+    """Where a runtime dependency lands, relative to the repo root.
+
+    A copy of js.build_defs' _staged_path, because each subincluded file has
+    its own namespace and helpers do not cross -- the same constraint that
+    keeps node-rules' version table in one file.
+    """
+    target = label.split("|")[0].lstrip("/")
+    if "//" in target:
+        target = target.split("//")[-1]
+    package, _, name = target.partition(":")
+    return package + "/" + (name or package.split("/")[-1])
+
+
+def _npm_subrepo_path(label:str):
+    """Where a subrepo's binary sits under plz-out/bin; empty when not a subrepo."""
+    target = label.split("|")[0].lstrip("/")
+    if "//" not in target:
+        return ""
+    repo, _, rest = target.partition("//")
+    package, _, name = rest.partition(":")
+    return repo + "/" + package + "/" + (name or package.split("/")[-1])
