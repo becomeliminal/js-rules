@@ -1,0 +1,11 @@
+# No third-party packages: the only thing in this tree is the package being
+# published, supplied by the build graph rather than fetched.
+lockfileVersion: '9.0'
+
+importers:
+
+  .: {}
+
+packages: {}
+
+snapshots: {}

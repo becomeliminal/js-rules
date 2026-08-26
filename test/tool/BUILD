@@ -14,19 +14,10 @@ js_run_binary(
 )
 
 # The compiled artifact is real JavaScript, not just a file that appeared.
-build_rule(
+js_test(
     name = "compile_test",
-    srcs = ["run_compiled.sh"],
-    data = [
-        ":compile",
-        "//third_party/node:node",
-    ],
-    outs = ["compile_test"],
-    cmd = "cp $SRCS $OUT",
-    binary = True,
-    test = True,
-    no_test_output = True,
-    test_cmd = "$TEST",
+    srcs = ["compiled.test.js"],
+    data = [":compile"],
 )
 
 # The same keystone, over first-party code. tsc can only compile this if the
