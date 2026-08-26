@@ -237,8 +237,8 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
 
 
 def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str=".",
-             no_dev:bool=False, no_optional:bool=False, hoisted:bool=False,
-             visibility:list=["PUBLIC"]):
+             hoist:list=[], no_dev:bool=False, no_optional:bool=False,
+             hoisted:bool=False, visibility:list=["PUBLIC"]):
     """Assembles a node_modules tree for one pnpm workspace project.
 
     This is the JavaScript equivalent of go-rules aggregating .importconfig
@@ -286,6 +286,15 @@ def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str="
             result, because the same package can be a devDependency at the top
             level and a transitive dependency of something shipped -- dropping
             it from the finished closure would break production.
+        hoist: Packages exposed at the top level although nothing links them
+               there -- the escape hatch for a dependency that imports a
+               package it never declared, which the strict store otherwise
+               correctly refuses to resolve.
+
+            Hand-written, never generated: each entry is a recorded workaround
+            for someone else's broken manifest, and the better fix -- an
+            upstream patch, or `patch` on the npm_repo -- should replace it.
+            A name carried by two resolutions is refused rather than guessed.
         hoisted: Write npm's layout rather than pnpm's -- every package at the
                  top level unless its name is taken, resolution by walking up
                  directories, and no symlinks at all.
@@ -329,6 +338,7 @@ def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str="
             discover,
             '$TOOLS_PLEASE_JS link --out "$OUT" --lock "$SRCS_LOCK"',
             f"--project {project}",
+            " ".join([f"--hoist {h}" for h in hoist]),
             "--hoisted" if hoisted else "",
             "--no-dev" if no_dev else "",
             "--no-optional" if no_optional else "",
