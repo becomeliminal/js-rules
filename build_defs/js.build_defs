@@ -541,8 +541,10 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             "esac",
             # From the run directory: a runner reads its config and finds its
             # tests relative to where it starts.
+            # The caller's arguments last, so `plz run //x:dev -- --port 5199`
+            # reaches the runner and can override what the rule set.
             f'cd "$RUNDIR" && exec "$NODE" @OPTS@ "$BIN" ' +
-            " ".join([_runner_arg(a) for a in runner_args]),
+            " ".join([_runner_arg(a) for a in runner_args]) + ' "$@"',
         ])
     elif suite:
         # Named individually rather than by directory: node's runner takes paths,

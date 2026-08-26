@@ -57,6 +57,7 @@ var opts = struct {
 	Link struct {
 		NoDev      bool     `long:"no-dev" description:"leave devDependencies out; must match how the build file was generated"`
 		NoOptional bool     `long:"no-optional" description:"leave optionalDependencies out; must match how the build file was generated"`
+		Hoisted    bool     `long:"hoisted" description:"write npm's layout rather than pnpm's: no symlinks, resolution by walking up"`
 		Workspace  []string `long:"workspace" description:"a workspace package this repo builds, as npm-name:directory"`
 		Lockfile string   `long:"lock" required:"true" description:"the pnpm lockfile describing the graph"`
 		Project  string   `long:"project" default:"." description:"which pnpm workspace project's tree to build"`
@@ -405,7 +406,11 @@ func link() error {
 			opts.Link.Lockfile, strings.Join(missing, ", "), noun)
 	}
 
-	return store.Build(opts.Link.Out, sources, links)
+	layout := store.Store
+	if opts.Link.Hoisted {
+		layout = store.Hoisted
+	}
+	return store.Build(opts.Link.Out, sources, links, layout)
 }
 
 func projects(plan *generate.Plan) []string {

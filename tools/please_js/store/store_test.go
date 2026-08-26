@@ -52,7 +52,7 @@ func TestScopedAndUnscopedLinksResolve(t *testing.T) {
 	if err := store.Build(tree, sources, []store.Ref{
 		ref("react", "react_18_3_1"),
 		ref("@scope/thing", "scope_thing_1_0_0"),
-	}); err != nil {
+	}, store.Store); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"react", "@scope/thing"} {
@@ -73,7 +73,7 @@ func TestDepsResolveFromInsideTheirPackage(t *testing.T) {
 		pkg(t, root, "react_18_3_1", "react", "18.3.1"),
 		pkg(t, root, "scope_thing_1_0_0", "@scope/thing", "1.0.0"),
 	}
-	if err := store.Build(tree, sources, []store.Ref{ref("react-dom", "react_dom_18_3_1")}); err != nil {
+	if err := store.Build(tree, sources, []store.Ref{ref("react-dom", "react_dom_18_3_1")}, store.Store); err != nil {
 		t.Fatal(err)
 	}
 
@@ -99,7 +99,7 @@ func TestCyclicDependenciesAreFine(t *testing.T) {
 		pkg(t, root, "babel_helper", "@babel/helper-module-transforms", "7.28.6",
 			ref("@babel/core", "babel_core")),
 	}
-	if err := store.Build(tree, sources, []store.Ref{ref("@babel/core", "babel_core")}); err != nil {
+	if err := store.Build(tree, sources, []store.Ref{ref("@babel/core", "babel_core")}, store.Store); err != nil {
 		t.Fatal(err)
 	}
 	both := [][2]string{
@@ -130,7 +130,7 @@ func TestOnePackageUnderTwoNamesAtTwoVersions(t *testing.T) {
 	if err := store.Build(tree, sources, []store.Ref{
 		ref("@aspect-test/c", "aspect_c_2_0_2"),
 		ref("@aspect-test/c1", "aspect_c_1_0_0"),
-	}); err != nil {
+	}, store.Store); err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{
@@ -154,7 +154,7 @@ func TestMissingClosureMemberIsAnError(t *testing.T) {
 		pkg(t, root, "react_dom", "react-dom", "18.3.1", ref("react", "react_18_3_1")),
 	}
 	err := store.Build(filepath.Join(root, "node_modules"), sources,
-		[]store.Ref{ref("react-dom", "react_dom")})
+		[]store.Ref{ref("react-dom", "react_dom")}, store.Store)
 	if err == nil {
 		t.Fatal("a dangling dependency should fail the build, not produce a broken tree")
 	}
@@ -179,7 +179,7 @@ func TestUnsupportedPlatformIsDescribedButNotPlaced(t *testing.T) {
 	}}
 
 	if err := store.Build(tree, []store.Source{wrapper, linux, darwin},
-		[]store.Ref{ref("typescript", "typescript_7")}); err != nil {
+		[]store.Ref{ref("typescript", "typescript_7")}, store.Store); err != nil {
 		t.Fatal(err)
 	}
 
@@ -297,7 +297,7 @@ func TestTwoPackagesWithOneNameNameBoth(t *testing.T) {
 		return store.Source{Dir: d, Meta: store.Meta{Name: "clash", Package: "clash"}, Origin: origin}
 	}
 	err := store.Build(filepath.Join(dir, "out"),
-		[]store.Source{src("the lockfile"), src("this repo")}, nil)
+		[]store.Source{src("the lockfile"), src("this repo")}, nil, store.Store)
 	if err == nil {
 		t.Fatal("expected a collision")
 	}
@@ -361,5 +361,100 @@ func TestDeclareBinsRefusesAManifestItCannotUnderstand(t *testing.T) {
 	err := store.DeclareBins(dir, map[string]string{"a": "b"})
 	if err == nil || !strings.Contains(err.Error(), "neither an object nor a string") {
 		t.Errorf("got %v", err)
+	}
+}
+
+// The hoisted layout is npm's: a package at the top level unless its name is
+// taken, resolution by walking up, and not one symlink anywhere. It exists for
+// tools that cannot follow symlinks without also resolving away paths that must
+// stay as written.
+func TestHoistedPutsEachNameWhereAWalkWillFindIt(t *testing.T) {
+	dir := t.TempDir()
+	pkg := func(name string) string {
+		d := filepath.Join(dir, "src", strings.ReplaceAll(name, "/", "+"))
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "index.js"), []byte("// "+name), 0o644)
+		return d
+	}
+	src := func(entry, name string, deps ...store.Ref) store.Source {
+		return store.Source{Dir: pkg(entry), Meta: store.Meta{Name: entry, Package: name}, Deps: deps}
+	}
+
+	// app -> shared@2, and app -> old, which needs shared@1. Exactly the case
+	// the store exists for, and the one hoisting has to nest.
+	sources := []store.Source{
+		src("app_1", "app", store.Ref{As: "shared", Entry: "shared_2"}, store.Ref{As: "old", Entry: "old_1"}),
+		src("shared_2", "shared"),
+		src("old_1", "old", store.Ref{As: "shared", Entry: "shared_1"}),
+		src("shared_1", "shared"),
+	}
+	root := filepath.Join(dir, "out")
+	if err := store.Build(root, sources, []store.Ref{{As: "app", Entry: "app_1"}}, store.Hoisted); err != nil {
+		t.Fatal(err)
+	}
+
+	// Not one symlink: that is the whole point, since the tool this is for
+	// cannot follow them without also resolving away the sources.
+	var links int
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			links++
+		}
+		return nil
+	})
+	if links != 0 {
+		t.Errorf("a hoisted tree has no symlinks, found %d", links)
+	}
+
+	// The winner is at the top, where every package walking up will find it.
+	for _, at := range []string{"app", "shared", "old"} {
+		if _, err := os.Stat(filepath.Join(root, at, "index.js")); err != nil {
+			t.Errorf("%s is not at the top level: %v", at, err)
+		}
+	}
+
+	// The loser sits beside the only package that asks for it, which is what
+	// makes a walk up from `old` find its own shared before the top-level one.
+	nested := filepath.Join(root, "old", "node_modules", "shared", "index.js")
+	if _, err := os.Stat(nested); err != nil {
+		t.Errorf("the conflicting resolution should sit beside its dependent: %v", err)
+	}
+}
+
+// A package needed by two dependents that cannot see the hoisted one is copied
+// to both. That is the entire cost of this layout, and it is worth knowing it
+// is bounded by name conflicts rather than by dependents.
+func TestHoistingCopiesOnlyWhereNamesCollide(t *testing.T) {
+	dir := t.TempDir()
+	pkg := func(name string) string {
+		d := filepath.Join(dir, "src", name)
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "index.js"), []byte("// "+name), 0o644)
+		return d
+	}
+	src := func(entry, name string, deps ...store.Ref) store.Source {
+		return store.Source{Dir: pkg(entry), Meta: store.Meta{Name: entry, Package: name}, Deps: deps}
+	}
+	// Three packages all depending on one shared version: one copy, not three.
+	sources := []store.Source{
+		src("a_1", "a", store.Ref{As: "dep", Entry: "dep_1"}),
+		src("b_1", "b", store.Ref{As: "dep", Entry: "dep_1"}),
+		src("c_1", "c", store.Ref{As: "dep", Entry: "dep_1"}),
+		src("dep_1", "dep"),
+	}
+	root := filepath.Join(dir, "out")
+	links := []store.Ref{{As: "a", Entry: "a_1"}, {As: "b", Entry: "b_1"}, {As: "c", Entry: "c_1"}}
+	if err := store.Build(root, sources, links, store.Hoisted); err != nil {
+		t.Fatal(err)
+	}
+	var copies int
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err == nil && info.IsDir() && filepath.Base(p) == "dep" {
+			copies++
+		}
+		return nil
+	})
+	if copies != 1 {
+		t.Errorf("one resolution, one copy; found %d", copies)
 	}
 }

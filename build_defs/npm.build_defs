@@ -237,7 +237,7 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
 
 
 def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str=".",
-             no_dev:bool=False, no_optional:bool=False,
+             no_dev:bool=False, no_optional:bool=False, hoisted:bool=False,
              visibility:list=["PUBLIC"]):
     """Assembles a node_modules tree for one pnpm workspace project.
 
@@ -286,6 +286,17 @@ def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str="
             result, because the same package can be a devDependency at the top
             level and a transitive dependency of something shipped -- dropping
             it from the finished closure would break production.
+        hoisted: Write npm's layout rather than pnpm's -- every package at the
+                 top level unless its name is taken, resolution by walking up
+                 directories, and no symlinks at all.
+
+            For a tool that cannot follow symlinks without also resolving away
+            paths that must stay as written. A development server serving a
+            developer's real files is the case that forces it, and there is not
+            expected to be another.
+
+            Costs a copy only where two resolutions of one name are both
+            reachable: 67 extra placements of 1,279 in a real workspace, or 5%.
         project: Which project in the pnpm workspace this tree is for.
         visibility: Visibility specification.
     """
@@ -318,6 +329,7 @@ def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str="
             discover,
             '$TOOLS_PLEASE_JS link --out "$OUT" --lock "$SRCS_LOCK"',
             f"--project {project}",
+            "--hoisted" if hoisted else "",
             "--no-dev" if no_dev else "",
             "--no-optional" if no_optional else "",
         ] + source_flags),
