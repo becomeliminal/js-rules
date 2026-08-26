@@ -95,6 +95,13 @@ func Parse(path string) (*Lockfile, error) {
 		return nil, fmt.Errorf("reading lockfile: %w", err)
 	}
 
+	// By name, not by sniffing. A repo's lockfile is called what its package
+	// manager calls it, and guessing from content would mean guessing wrong
+	// quietly on the day someone renames one.
+	if strings.HasSuffix(path, ".json") {
+		return parseNPM(data, path)
+	}
+
 	var raw rawLockfile
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
