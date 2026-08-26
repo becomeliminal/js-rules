@@ -34,17 +34,11 @@ npm_repo(
     version = "2.1.3",
 )
 
-build_rule(
+js_test(
     name = "postinstall_test",
-    srcs = ["check.sh"],
+    srcs = ["postinstall.test.js"],
     data = [
         ":ms",
         ":ms_with_hook",
     ],
-    outs = ["postinstall_test"],
-    cmd = "cp $SRCS $OUT",
-    binary = True,
-    test = True,
-    no_test_output = True,
-    test_cmd = "$TEST",
 )

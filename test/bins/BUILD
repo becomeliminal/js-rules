@@ -27,14 +27,8 @@ js_run_binary(
     stdout = "out.txt",
 )
 
-build_rule(
+js_test(
     name = "bins_test",
-    srcs = ["check.sh"],
+    srcs = ["bins.test.js"],
     data = [":ran"],
-    outs = ["bins_test"],
-    cmd = "cp $SRCS $OUT",
-    binary = True,
-    test = True,
-    no_test_output = True,
-    test_cmd = "$TEST",
 )

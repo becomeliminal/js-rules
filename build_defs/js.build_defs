@@ -122,7 +122,7 @@ def js_binary(name:str, entry_point:str, deps:list=[], node_modules:str="",
 
 
 def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
-            node_modules:str="", node_options:list=[], env:dict={},
+            data:list=[], node_modules:str="", node_options:list=[], env:dict={},
             fixed_args:list=[], chdir:str="", expected_exit_code:int=0,
             visibility:list=None, labels:list=[],
             timeout:int=0, flaky:bool|int=0, size:str=None):
@@ -148,6 +148,14 @@ def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
         srcs: Test files, run by node's test runner. Named individually rather
               than discovered, so a file the rule was not given cannot be picked
               up by accident.
+        data: Targets the test reads rather than imports -- a built package, a
+              bundle, a compiled file. They stage at their package paths, and
+              the test's working directory is the staging root, so a test asserts
+              on `test/thing/built.js` by that name.
+
+              Separate from deps because these are not modules: a test that
+              checks what a rule produced is reading an artifact, not importing
+              a library.
         deps: js_library targets whose packages this test imports.
         node_modules: The third-party tree, from npm_link.
         node_options: Flags passed to node.
@@ -175,7 +183,8 @@ def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
 
     return _js_run(name, entry_point, deps, node_modules, node_options,
                    test = True, visibility = visibility, labels = labels,
-                   srcs = srcs, env = env, fixed_args = fixed_args, chdir = chdir,
+                   srcs = srcs, data = data, env = env,
+                   fixed_args = fixed_args, chdir = chdir,
                    expected_exit_code = expected_exit_code,
                    timeout = timeout, flaky = flaky, size = size)
 
@@ -339,7 +348,7 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
 
 
 def _js_run(name, entry_point, deps, node_modules, node_options, test,
-            visibility, labels, srcs=[], env={}, fixed_args=[],
+            visibility, labels, srcs=[], data=[], env={}, fixed_args=[],
             chdir="", expected_exit_code=0, timeout=0, flaky=0, size=None):
     """Shared implementation of js_binary and js_test.
 
@@ -518,7 +527,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         # data for the test layout, runtime_deps for the run layout.
         # please_js only for a suite, which is the only mode that has results
         # to convert.
-        data = ([runtime, CONFIG.JS.NODE_TOOL.split("|")[0]] +
+        data = (data + [runtime, CONFIG.JS.NODE_TOOL.split("|")[0]] +
                 ([CONFIG.JS.PLEASE_JS_TOOL.split("|")[0]] if suite else [])) if test else None,
         runtime_deps = None if test else [runtime, CONFIG.JS.NODE_TOOL.split("|")[0]],
         binary = True,

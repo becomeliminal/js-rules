@@ -1,4 +1,4 @@
-subinclude("//build_defs:js")
+subinclude("//build_defs:js", "//build_defs:npm")
 
 js_library(
     name = "lib",
@@ -19,17 +19,17 @@ npm_package(
     },
 )
 
-build_rule(
+# The built package staged as a consumer would receive it, which is what makes
+# the import assertion below a real one rather than a file check.
+npm_link(
+    name = "consumer",
+    lock = "pnpm-lock.yaml",
+    packages = [],
+    workspace = {"@test/publishable": ":package"},
+)
+
+js_test(
     name = "publish_test",
-    srcs = ["check.sh"],
-    data = [
-        ":package",
-        "//third_party/node:node",
-    ],
-    outs = ["publish_test"],
-    cmd = "cp $SRCS $OUT",
-    binary = True,
-    test = True,
-    no_test_output = True,
-    test_cmd = "$TEST",
+    srcs = ["publish.test.js"],
+    node_modules = ":consumer",
 )
