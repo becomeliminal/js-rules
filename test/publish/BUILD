@@ -33,3 +33,18 @@ js_test(
     srcs = ["publish.test.js"],
     node_modules = ":consumer",
 )
+
+# A prerelease that names its commit. The stamp is as fresh as the last rebuild
+# of this target, which is why it lives on a terminal target like this one.
+npm_package(
+    name = "stamped",
+    lib = ":lib",
+    stamp = True,
+    version = "0.0.0-{describe}",
+)
+
+js_test(
+    name = "stamped_test",
+    srcs = ["stamped.test.js"],
+    data = [":stamped"],
+)
