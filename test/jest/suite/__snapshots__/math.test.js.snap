@@ -1,0 +1,7 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`a suite already written in jest matches its committed snapshot 1`] = `
+{
+  "shape": 2,
+}
+`;
