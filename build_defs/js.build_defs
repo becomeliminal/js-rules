@@ -121,16 +121,33 @@ def js_binary(name:str, entry_point:str, deps:list=[], node_modules:str="",
                    env = env, fixed_args = fixed_args, chdir = chdir)
 
 
-def js_test(name:str, entry_point:str, deps:list=[], node_modules:str="",
-            node_options:list=[], env:dict={},
+def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
+            node_modules:str="", node_options:list=[], env:dict={},
             fixed_args:list=[], chdir:str="", expected_exit_code:int=0,
             visibility:list=None, labels:list=[],
             timeout:int=0, flaky:bool|int=0, size:str=None):
-    """A JavaScript program run under `plz test`.
+    """A JavaScript test, either a suite or a program.
+
+    Two modes, because a test is one of two things and they report differently.
+
+    Pass `srcs` and node's own test runner runs them, writing JUnit for Please
+    to read, so each test is named in the output rather than the whole file
+    being one result. Nothing is installed for this: the runner is part of the
+    runtime node-rules already pins, which is what lets a test of these rules
+    avoid depending on the tree these rules build. go_test uses stdlib testing
+    and rust_test uses built-in #[test] for the same reason.
+
+    Pass `entry_point` and the program runs, passing if it exits as expected.
+    That is how a command line tool's failure path gets tested, and how a
+    built artifact -- a bundle, a compiled file -- gets run to prove it works.
 
     Args:
         name: Target name.
-        entry_point: The file node runs, relative to this package.
+        entry_point: The file node runs, relative to this package. Exactly one
+                     of this and srcs.
+        srcs: Test files, run by node's test runner. Named individually rather
+              than discovered, so a file the rule was not given cannot be picked
+              up by accident.
         deps: js_library targets whose packages this test imports.
         node_modules: The third-party tree, from npm_link.
         node_options: Flags passed to node.
@@ -149,9 +166,16 @@ def js_test(name:str, entry_point:str, deps:list=[], node_modules:str="",
         flaky: True to mark the test flaky, or an integer for reruns.
         size: Test size.
     """
+    if bool(entry_point) == bool(srcs):
+        fail(f"js_test {name}: set exactly one of entry_point or srcs")
+    if srcs and expected_exit_code:
+        fail(f"js_test {name}: expected_exit_code asks whether a program exited " +
+             "as expected, which a suite does not answer -- a failing test is " +
+             "reported as a failing test")
+
     return _js_run(name, entry_point, deps, node_modules, node_options,
                    test = True, visibility = visibility, labels = labels,
-                   env = env, fixed_args = fixed_args, chdir = chdir,
+                   srcs = srcs, env = env, fixed_args = fixed_args, chdir = chdir,
                    expected_exit_code = expected_exit_code,
                    timeout = timeout, flaky = flaky, size = size)
 
@@ -315,7 +339,7 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
 
 
 def _js_run(name, entry_point, deps, node_modules, node_options, test,
-            visibility, labels, env={}, fixed_args=[],
+            visibility, labels, srcs=[], env={}, fixed_args=[],
             chdir="", expected_exit_code=0, timeout=0, flaky=0, size=None):
     """Shared implementation of js_binary and js_test.
 
@@ -337,10 +361,20 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # a filename. The staged path is the truth, so the name is read from it.
     entry_name = "main.js"
 
+    # Node's own test runner, which needs nothing installed: it is part of the
+    # runtime already pinned, and it writes JUnit natively, which is what Please
+    # reads to report tests individually rather than as one pass or fail.
+    suite = bool(srcs)
+    strip = package_name() + "/"
+
     runtime = build_rule(
         name = name,
         tag = "runtime",
-        srcs = {"entry": [entry_point], "modules": [node_modules] if node_modules else []},
+        srcs = {
+            "entry": [entry_point] if entry_point else [],
+            "suite": srcs,
+            "modules": [node_modules] if node_modules else [],
+        },
         outs = [run_dir],
         cmd = " && ".join([
             'PLEASE_JS=$(readlink -f "$TOOLS_PLEASE_JS")',
@@ -356,8 +390,15 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # no tree to overlay onto, and the overlay makes an empty one. The
             # variable is unset rather than empty in that case.
             '"$PLEASE_JS" overlay --tree "${SRCS_MODULES:-}" --out "$OUT/node_modules" $LIBS',
+        ] + ([
+            # At their own paths, because a test file's relative imports have to
+            # keep working and because the reported name should be the file
+            # someone wrote, not a flattened one.
+            'for s in $SRCS_SUITE; do mkdir -p "$OUT/$(dirname "${s#' + strip + '}")" && ' +
+            'cp "$s" "$OUT/${s#' + strip + '}"; done',
+        ] if suite else [
             'cp "$SRCS_ENTRY" "$OUT/' + entry_name + '"',  # a fixed name, so a label works
-        ]),
+        ])),
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         deps = deps,
         needs_transitive_deps = True,
@@ -374,7 +415,9 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # paths. Neither layout is wrong; they are just different, so the launcher
     # looks for each thing in both places and says so if it finds neither.
     node_rel = _staged_path(CONFIG.JS.NODE_TOOL) + "/bin/node"
+    tool_rel = _staged_path(CONFIG.JS.PLEASE_JS_TOOL)
     run_rel = package_name() + "/" + run_dir + "/" + entry_name
+    dir_rel = package_name() + "/" + run_dir
 
     # Exported before exec, single-quoted so a value carrying a space or a
     # dollar reaches the program as written.
@@ -391,7 +434,41 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # wrapper's own arguments cannot be displaced by whoever runs it.
     call = '"$NODE" @OPTS@ "$MAIN" ' + " ".join(
         ["'" + a.replace("'", "'\\''") + "'" for a in fixed_args]) + ' "$@"'
-    if expected_exit_code:
+
+    if suite:
+        # Named individually rather than by directory: node's runner takes paths,
+        # and naming them means a file the rule was not given cannot be picked up
+        # by accident.
+        files = " ".join(['"$RUNDIR"/' + "'" + f + "'" for f in srcs])
+        # No cd. Node resolves a relative import from the importing file and
+        # walks up from there for node_modules, so the test file's own location
+        # is what matters and the working directory is not.
+        #
+        # Two whole commands rather than a variable holding flags, because a
+        # variable would have to expand unquoted to become two arguments.
+        exec_line = "\n".join([
+            'if [ -n "${RESULTS_FILE:-}" ]; then',
+            # Please may give this relative, and relative to the directory the
+            # launcher started in.
+            '    case "$RESULTS_FILE" in',
+            '        /*) RESULTS="$RESULTS_FILE" ;;',
+            '        *) RESULTS="$ROOT/$RESULTS_FILE" ;;',
+            "    esac",
+            '    TOOL=$(find_one "$ROOT/@TOOL@" "$ROOT/plz-out/bin/@TOOL@") || {',
+            '        echo "js_test: no please_js to convert results" >&2; exit 1; }',
+            # Node writes its own shape first, then it is rewritten: a test not
+            # inside a describe lands directly under <testsuites>, where Please
+            # does not look, so without this a plain test file reports nothing.
+            '    "$NODE" @OPTS@ --test --test-reporter=junit' +
+            ' --test-reporter-destination="$ROOT/node.xml" ' + files + ' && status=0 || status=$?',
+            f'    "$TOOL" junit --in "$ROOT/node.xml" --out "$RESULTS" --suite {name}',
+            '    exit "$status"',
+            "else",
+            # No results file means a person is reading, so print for them.
+            '    exec "$NODE" @OPTS@ --test --test-reporter=spec ' + files,
+            "fi",
+        ])
+    elif expected_exit_code:
         # Inverted: the program is expected to fail, so succeeding is the
         # failure. Only ever set on a test.
         exec_line = "\n".join([
@@ -417,7 +494,9 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         "",
         'NODE=$(find_one "$ROOT/@NODE@" "$ROOT/plz-out/bin/@NODE@") || {',
         '    echo "js_binary: no node toolchain at @NODE@" >&2; exit 1; }',
-        'MAIN=$(find_one "$HERE/@RUNDIR@/@ENTRY@" "$ROOT/@RUN@" "$ROOT/plz-out/gen/@RUN@") || {',
+        ('RUNDIR=$(find_one "$HERE/@RUNDIR@" "$ROOT/@DIR@" "$ROOT/plz-out/gen/@DIR@") || {'
+         if suite else
+         'MAIN=$(find_one "$HERE/@RUNDIR@/@ENTRY@" "$ROOT/@RUN@" "$ROOT/plz-out/gen/@RUN@") || {'),
         '    echo "js_binary: no runtime directory for this program" >&2; exit 1; }',
         "",
     ] + env_lines + chdir_lines + [
@@ -427,6 +506,8 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         .replace("@NODE@", node_rel)
         .replace("@RUNDIR@", run_dir)
         .replace("@RUN@", run_rel)
+        .replace("@DIR@", dir_rel)
+        .replace("@TOOL@", tool_rel)
         .replace("@ENTRY@", entry_name)
         .replace("@OPTS@", " ".join(node_options)))
 
@@ -435,11 +516,16 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         outs = [name + ".sh"],
         cmd = "cat > $OUT <<'PLZ_LAUNCHER'\n" + launcher + "\nPLZ_LAUNCHER\nchmod +x $OUT",
         # data for the test layout, runtime_deps for the run layout.
-        data = [runtime, CONFIG.JS.NODE_TOOL.split("|")[0]] if test else None,
+        # please_js only for a suite, which is the only mode that has results
+        # to convert.
+        data = ([runtime, CONFIG.JS.NODE_TOOL.split("|")[0]] +
+                ([CONFIG.JS.PLEASE_JS_TOOL.split("|")[0]] if suite else [])) if test else None,
         runtime_deps = None if test else [runtime, CONFIG.JS.NODE_TOOL.split("|")[0]],
         binary = True,
         test = test,
-        no_test_output = test,
+        # A suite writes JUnit for Please to read, which is the whole point --
+        # without it a target with six tests reports one result.
+        no_test_output = test and not suite,
         visibility = visibility,
         labels = labels,
         test_timeout = timeout if test else 0,

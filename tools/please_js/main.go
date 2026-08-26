@@ -19,6 +19,7 @@ import (
 
 	"tools/please_js/generate"
 	"tools/please_js/hooks"
+	"tools/please_js/junit"
 	"tools/please_js/lockfile"
 	"tools/please_js/store"
 )
@@ -81,6 +82,12 @@ var opts = struct {
 		Set     []string `long:"set" description:"a package.json field, as key=value; JSON values are kept as JSON"`
 	} `command:"publish" description:"Patch a built package's manifest for release"`
 
+	JUnit struct {
+		In    string `long:"in" required:"true" description:"results as node's runner wrote them"`
+		Out   string `long:"out" required:"true" description:"results for Please to read"`
+		Suite string `long:"suite" default:"test" description:"name for the suite loose tests are put in"`
+	} `command:"junit" description:"Make node's test results readable by Please"`
+
 	ResolveBin struct {
 		Tree    string `long:"tree" required:"true" description:"a node_modules tree"`
 		Package string `long:"package" required:"true" description:"the package publishing the executable"`
@@ -122,6 +129,7 @@ func main() {
 		"link":        link,
 		"overlay":     overlay,
 		"hooks":       runHooks,
+		"junit":       convertJUnit,
 		"publish":     publish,
 		"resolve-bin": resolveBin,
 	}[parser.Active.Name]
@@ -176,6 +184,13 @@ func publish() error {
 		}
 	}
 	return store.Publish(opts.Publish.Dir, opts.Publish.Version, fields)
+}
+
+// convertJUnit exists because node writes a <testcase> directly under
+// <testsuites> for any test not inside a describe, and Please reads only the
+// ones inside a <testsuite>. Most test files have no describe.
+func convertJUnit() error {
+	return junit.Convert(opts.JUnit.In, opts.JUnit.Out, opts.JUnit.Suite)
 }
 
 func update() error {
