@@ -509,3 +509,45 @@ def _npm_subrepo_path(label:str):
     repo, _, rest = target.partition("//")
     package, _, name = rest.partition(":")
     return repo + "/" + package + "/" + (name or package.split("/")[-1])
+
+
+def please_js_binary(name:str, version:str, hashes:dict, visibility:list=["PUBLIC"]):
+    """The companion tool as a prebuilt release binary.
+
+    A consuming repo otherwise builds please_js from source, which drags the Go
+    plugin into every repo that only wanted JavaScript -- ts-rules and
+    js-bundler-rules both carry it today for exactly this reason, and
+    rust-rules ships please_rust as a release download to avoid the same thing.
+    A from-source tool build also cannot work under remote execution.
+
+    Point the config at the target this declares:
+
+        [Plugin "js"]
+        PleaseJsTool = //third_party/js:please_js
+
+    Args:
+        name: Target name.
+        version: The release, e.g. "0.1.0" -- the tag is please_js-v<version>.
+        hashes: sha256 per platform, keyed "<os>_<arch>" as plz names them
+                (linux_amd64, darwin_arm64, ...). All platforms a repo builds
+                on belong here, so the file is the same everywhere and the
+                fetch is verified everywhere.
+        visibility: Visibility specification.
+    """
+    platform = f"{CONFIG.OS}_{CONFIG.ARCH}"
+    if platform not in hashes:
+        fail(f"please_js_binary {name}: no hash for {platform}; add it, or this " +
+             "platform silently gets an unverified binary")
+    sha = hashes[platform]
+
+    return remote_file(
+        name = name,
+        url = f"https://github.com/becomeliminal/js-rules/releases/download/please_js-v{version}/please_js-{platform}",
+        # Named for what it is, not for the URL it came from -- the platform
+        # suffix is transport, and a consumer's config names one path on every
+        # machine.
+        out = name,
+        hashes = [sha],
+        binary = True,
+        visibility = visibility,
+    )
