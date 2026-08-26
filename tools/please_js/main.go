@@ -41,6 +41,7 @@ var opts = struct {
 		Header         []string `long:"header" description:"a header sent while hashing, as 'Name: value'; how a private registry's token travels, typically via shell expansion of an env var"`
 		LifecycleHooks []string `long:"lifecycle-hooks" description:"a package whose own install scripts may run; repeatable, and nothing runs without it"`
 		SkipHashes     bool   `long:"skip-hashes" description:"do not fetch tarballs to record hashes; the result is unverified"`
+		HoistedLink    bool   `long:"hoisted-link" description:"also emit each tree in npm's hoisted layout, as :hoisted"`
 	} `command:"update" description:"Translate a pnpm lockfile into npm_repo targets"`
 
 	Describe struct {
@@ -323,7 +324,7 @@ func update() error {
 		}
 	}
 
-	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, opts.Update.LockLabel, sums, generate.Scope{NoDev: opts.Update.NoDev, NoOptional: opts.Update.NoOptional}); err != nil {
+	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, opts.Update.LockLabel, sums, generate.Scope{NoDev: opts.Update.NoDev, NoOptional: opts.Update.NoOptional}, opts.Update.HoistedLink); err != nil {
 		return err
 	}
 

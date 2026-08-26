@@ -191,7 +191,7 @@ func TestHasherSendsHeadersToThePrivateRegistry(t *testing.T) {
 		Closure: map[string][]string{}, Direct: map[string]map[string]string{},
 		Workspace: map[string]map[string]string{},
 	}
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", sums, generate.Scope{}); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", sums, generate.Scope{}, false); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := os.ReadFile(path)
@@ -200,5 +200,40 @@ func TestHasherSendsHeadersToThePrivateRegistry(t *testing.T) {
 	}
 	if !strings.Contains(string(out), `url = "`+server.URL) {
 		t.Errorf("the exact URL should be emitted:\n%s", out)
+	}
+}
+
+// The hoisted twin is emitted from the same closure as the store-layout tree,
+// so the two can never disagree about what a repin staged.
+func TestWriteBUILDHoistedLink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "BUILD")
+	plan := &generate.Plan{
+		Entries: []generate.Entry{{Target: "p_1", Package: "p", Version: "1.0.0"}},
+		Closure: map[string][]string{".": {"p_1"}},
+		Direct:  map[string]map[string]string{},
+		Workspace: map[string]map[string]string{},
+	}
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{NoDev: true}, true); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := os.ReadFile(path)
+	for _, want := range []string{`name = "node_modules"`, `name = "hoisted"`, "hoisted = True"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("generated file should contain %q:\n%s", want, out)
+		}
+	}
+	// Policy flags carry onto both trees: a hoisted tree that silently kept
+	// devDependencies would stage what the other tree refused.
+	if strings.Count(string(out), "no_dev = True") != 2 {
+		t.Errorf("no_dev should be on both link targets:\n%s", out)
+	}
+	// Without the flag, no hoisted target appears.
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, false); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = os.ReadFile(path)
+	if strings.Contains(string(out), "hoisted") {
+		t.Errorf("hoisted emission is opt-in:\n%s", out)
 	}
 }

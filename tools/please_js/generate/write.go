@@ -13,7 +13,10 @@ import (
 // Emission goes through the same AST Please parses with, so the output is
 // stable against plz fmt and a regenerated file diffs only where the lockfile
 // actually changed.
-func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums []string, scope Scope) error {
+// hoistedLink additionally emits each tree in npm's hoisted layout, under the
+// name "hoisted" -- the layout a development server needs, since a store of
+// symlinks and a server told to preserve them cannot coexist.
+func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums []string, scope Scope, hoistedLink bool) error {
 	f := &build.File{Path: path, Type: build.TypeBuild}
 
 	f.Stmt = append(f.Stmt, &build.CallExpr{
@@ -99,12 +102,45 @@ func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums 
 		list(call, "packages", labels(closure))
 		list(call, "visibility", []string{"PUBLIC"})
 		f.Stmt = append(f.Stmt, call)
+
+		if hoistedLink {
+			h := &build.CallExpr{X: &build.Ident{Name: "npm_link"}, ForceMultiLine: true}
+			str(h, "name", hoistedName(path))
+			for _, fl := range []struct {
+				name string
+				on   bool
+			}{{"no_dev", scope.NoDev}, {"no_optional", scope.NoOptional}, {"hoisted", true}} {
+				if fl.on {
+					h.List = append(h.List, &build.AssignExpr{
+						LHS: &build.Ident{Name: fl.name},
+						Op:  "=",
+						RHS: &build.Ident{Name: "True"},
+					})
+				}
+			}
+			str(h, "lock", lockLabel)
+			if path != "." && path != "" {
+				str(h, "project", path)
+			}
+			list(h, "packages", labels(closure))
+			list(h, "visibility", []string{"PUBLIC"})
+			f.Stmt = append(f.Stmt, h)
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, build.Format(f), 0o644)
+}
+
+// hoistedName names the hoisted tree for a workspace project, mirroring
+// linkName's convention.
+func hoistedName(importerPath string) string {
+	if importerPath == "." || importerPath == "" {
+		return "hoisted"
+	}
+	return "hoisted_" + sanitise(importerPath)
 }
 
 // linkName names the tree for a workspace project. The root project gets the
