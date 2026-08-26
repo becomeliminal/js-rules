@@ -217,3 +217,41 @@ func TestASkippedOptionalDependencyIsNotAGap(t *testing.T) {
 		}
 	}
 }
+
+// npm lets a package be installed under another name -- `npm install
+// x-cjs@npm:x@7` -- and records the real one in the entry. The path says what
+// to import it as; the entry says what to fetch. Confusing the two asks the
+// registry for a package that does not exist, which is a 404 at build time and
+// only for the three packages in a thousand that do this.
+func TestAnAliasIsFetchedByItsRealName(t *testing.T) {
+	lock := parseNPMFixture(t, `{
+	  "lockfileVersion": 3,
+	  "packages": {
+	    "": {"name": "root", "dependencies": {"cliui": "^8"}},
+	    "node_modules/cliui": {"version": "8.0.2", "dependencies": {"wrap-ansi-cjs": "*"}},
+	    "node_modules/wrap-ansi-cjs": {"name": "wrap-ansi", "version": "7.0.0"}
+	  }
+	}`)
+
+	var key string
+	for k := range lock.Packages {
+		if strings.HasPrefix(k, "wrap-ansi") {
+			key = k
+		}
+	}
+	if key != "wrap-ansi@7.0.0" {
+		t.Errorf("fetched as %q; the registry has no wrap-ansi-cjs", key)
+	}
+
+	// And the importer still asks for it by the name its source code uses, so
+	// the tree links the alias to the real package.
+	var cliui string
+	for k := range lock.Snapshots {
+		if strings.HasPrefix(k, "cliui@") {
+			cliui = k
+		}
+	}
+	if got := lock.Snapshots[cliui].Dependencies["wrap-ansi-cjs"]; got != "wrap-ansi@7.0.0" {
+		t.Errorf("cliui should import wrap-ansi-cjs and get wrap-ansi@7.0.0, got %q", got)
+	}
+}
