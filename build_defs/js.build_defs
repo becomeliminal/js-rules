@@ -625,9 +625,23 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # Node writes its own shape first, then it is rewritten: a test not
             # inside a describe lands directly under <testsuites>, where Please
             # does not look, so without this a plain test file reports nothing.
-            '    "$NODE" @OPTS@ --test --test-reporter=junit' +
+            # Coverage costs nothing to collect when asked, and Please asks by
+            # setting COVERAGE -- which it only does because the cover variant
+            # of test_cmd below exists.
+            '    COV=""',
+            # Node's coverage excludes node_modules wholesale, and the staged
+            # first-party libraries are most of what coverage is for, so each
+            # is included by name from the overlay's record.
+            '    [ -n "${COVERAGE:-}" ] && COV="--experimental-test-coverage' +
+            ' --test-reporter=lcov --test-reporter-destination=$ROOT/node.lcov' +
+            ' $("$TOOL" covflags --map "$RUNDIR/covmap.json")"',
+            '    "$NODE" @OPTS@ --test $COV --test-reporter=junit' +
             ' --test-reporter-destination="$ROOT/node.xml" ' + files + ' && status=0 || status=$?',
             f'    "$TOOL" junit --in "$ROOT/node.xml" --out "$RESULTS" --suite {name}',
+            '    if [ -n "${COVERAGE:-}" ] && [ -f "$ROOT/node.lcov" ]; then',
+            '        "$TOOL" lcov2cover --in "$ROOT/node.lcov" --out "$COVERAGE_FILE"' +
+            ' --strip "$RUNDIR" --strip "${RUNDIR#$ROOT/}" --strip "${RUNDIR##*/}" --map "$RUNDIR/covmap.json"',
+            "    fi",
             '    exit "$status"',
             "else",
             # No results file means a person is reading, so print for them.
@@ -694,6 +708,10 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         runtime_deps = None if test else _staged(runtime, suite or bool(runner)),
         binary = True,
         test = test,
+        # The cover variant exists so `plz cover` sets COVERAGE and
+        # COVERAGE_FILE -- measured: without it, neither appears in the test's
+        # environment and coverage cannot be reported at all.
+        test_cmd = {"dbg": "$TEST", "opt": "$TEST", "cover": "$TEST"} if test and suite else None,
         # A suite writes JUnit for Please to read, which is the whole point --
         # without it a target with six tests reports one result.
         no_test_output = test and not suite,

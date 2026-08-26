@@ -100,6 +100,17 @@ var opts = struct {
 		Set     []string `long:"set" description:"a package.json field, as key=value; JSON values are kept as JSON"`
 	} `command:"publish" description:"Patch a built package's manifest for release"`
 
+	Lcov struct {
+		In    string `long:"in" required:"true" description:"lcov, as node's coverage reporter wrote it"`
+		Out   string `long:"out" required:"true" description:"go-cover output, for Please to read"`
+		Strip []string `long:"strip" description:"a prefix to strip from source paths; repeatable, since the run directory appears absolute or relative depending on where the test ran"`
+		Map   string `long:"map" description:"covmap.json from the overlay, attributing staged libraries to their sources"`
+	} `command:"lcov2cover" description:"Convert node's coverage to the format Please reads"`
+
+	CovFlags struct {
+		Map string `long:"map" required:"true" description:"covmap.json from the overlay"`
+	} `command:"covflags" description:"Print the coverage-include flags for the staged first-party packages"`
+
 	JUnit struct {
 		In    string `long:"in" required:"true" description:"results as node's runner wrote them"`
 		Out   string `long:"out" required:"true" description:"results for Please to read"`
@@ -150,6 +161,8 @@ func main() {
 		"packages":    listPackages,
 		"hooks":       runHooks,
 		"junit":       convertJUnit,
+		"lcov2cover":  convertLcov,
+		"covflags":    covFlags,
 		"publish":     publish,
 		"resolve-bin": resolveBin,
 	}[parser.Active.Name]
@@ -209,6 +222,47 @@ func publish() error {
 // convertJUnit exists because node writes a <testcase> directly under
 // <testsuites> for any test not inside a describe, and Please reads only the
 // ones inside a <testsuite>. Most test files have no describe.
+// covFlags prints one include per first-party package, because node's own
+// coverage excludes node_modules wholesale and the staged libraries are most
+// of what coverage is for -- measured: without these, the report holds only
+// the test's own files, which Please then excludes as the test's srcs, and
+// the total reads "No data".
+func covFlags() error {
+	raw, err := os.ReadFile(opts.CovFlags.Map)
+	if err != nil {
+		return nil // no overlay record means nothing to include
+	}
+	covmap := map[string]string{}
+	if err := json.Unmarshal(raw, &covmap); err != nil {
+		return fmt.Errorf("parsing %s: %w", opts.CovFlags.Map, err)
+	}
+	names := make([]string, 0, len(covmap))
+	for pkg := range covmap {
+		names = append(names, pkg)
+	}
+	sort.Strings(names)
+	for _, pkg := range names {
+		// **/ because the test's working directory is the sandbox, not the
+		// run directory, so the tree sits at a relative path below it.
+		fmt.Printf("--test-coverage-include=**/node_modules/%s/** ", pkg)
+	}
+	return nil
+}
+
+func convertLcov() error {
+	data, err := os.ReadFile(opts.Lcov.In)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", opts.Lcov.In, err)
+	}
+	covmap := map[string]string{}
+	if opts.Lcov.Map != "" {
+		if raw, err := os.ReadFile(opts.Lcov.Map); err == nil {
+			_ = json.Unmarshal(raw, &covmap) // absent or empty means unmapped
+		}
+	}
+	return os.WriteFile(opts.Lcov.Out, []byte(junit.LcovToGoCover(string(data), opts.Lcov.Strip, covmap)), 0o644)
+}
+
 func convertJUnit() error {
 	return junit.Convert(opts.JUnit.In, opts.JUnit.Out, opts.JUnit.Suite)
 }
@@ -494,6 +548,19 @@ func overlay() error {
 		}
 		libs = append(libs, store.Source{Dir: dir, Meta: meta})
 	}
+	// Recorded for coverage attribution: a staged library's files live under
+	// node_modules/<package>/, and only this mapping can point a hit line back
+	// at the source file Please knows.
+	covmap := map[string]string{}
+	for _, lib := range libs {
+		if lib.Meta.SrcDir != "" {
+			covmap[lib.Meta.Package] = lib.Meta.SrcDir
+		}
+	}
+	if data, err := json.Marshal(covmap); err == nil {
+		_ = os.WriteFile(filepath.Join(filepath.Dir(opts.Overlay.Out), "covmap.json"), data, 0o644)
+	}
+
 	if !opts.Overlay.Dev {
 		return store.Overlay(opts.Overlay.Out, libs)
 	}
