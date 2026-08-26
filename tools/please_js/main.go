@@ -8,6 +8,7 @@
 package main
 
 import (
+	"io"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -107,6 +108,10 @@ var opts = struct {
 		Map   string `long:"map" description:"covmap.json from the overlay, attributing staged libraries to their sources"`
 	} `command:"lcov2cover" description:"Convert node's coverage to the format Please reads"`
 
+	Editor struct {
+		Out string `long:"out" required:"true" description:"the tsconfig fragment to write"`
+	} `command:"editor" description:"Write the tsconfig paths an editor needs, from lib/tree lines on stdin"`
+
 	CovFlags struct {
 		Map string `long:"map" required:"true" description:"covmap.json from the overlay"`
 	} `command:"covflags" description:"Print the coverage-include flags for the staged first-party packages"`
@@ -163,6 +168,7 @@ func main() {
 		"junit":       convertJUnit,
 		"lcov2cover":  convertLcov,
 		"covflags":    covFlags,
+		"editor":      editorConfig,
 		"publish":     publish,
 		"resolve-bin": resolveBin,
 	}[parser.Active.Name]
@@ -227,6 +233,18 @@ func publish() error {
 // of what coverage is for -- measured: without these, the report holds only
 // the test's own files, which Please then excludes as the test's srcs, and
 // the total reads "No data".
+func editorConfig() error {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return err
+	}
+	out, err := junit.EditorConfig(strings.Split(string(data), "\n"))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(opts.Editor.Out, []byte(out), 0o644)
+}
+
 func covFlags() error {
 	raw, err := os.ReadFile(opts.CovFlags.Map)
 	if err != nil {

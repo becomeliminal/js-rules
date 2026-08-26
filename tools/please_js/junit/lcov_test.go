@@ -59,3 +59,39 @@ func TestLibraryCoverageMapsToItsSource(t *testing.T) {
 		t.Errorf("no staged path should survive:\n%s", got)
 	}
 }
+
+// The editor fragment: first-party packages map to their sources, everything
+// else falls through to the built trees, every entry ./-relative because
+// TypeScript 7 removed baseUrl -- found by running the output through the
+// real compiler, which also rejects bare relative paths.
+func TestEditorConfigMapsSourcesAndTrees(t *testing.T) {
+	got, err := junit.EditorConfig([]string{
+		"lib\t@test/greeter\ttest/lib/greeter",
+		"tree\tplz-out/gen/third_party/js/node_modules",
+		"",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"./test/lib/greeter/index.ts"`,
+		`"@test/greeter/*"`,
+		`"./plz-out/gen/third_party/js/node_modules/*"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "baseUrl") {
+		t.Error("TypeScript 7 removed baseUrl; emitting it makes the whole file an error")
+	}
+	if strings.Contains(got, "node_modules/node_modules") {
+		t.Error("the npm_link output IS the tree root; doubling the segment was the first real run's bug")
+	}
+}
+
+func TestEditorConfigRefusesWhatItCannotRead(t *testing.T) {
+	if _, err := junit.EditorConfig([]string{"garbage line"}); err == nil {
+		t.Error("an unrecognised line should be refused, not skipped -- it means the generating script broke")
+	}
+}
