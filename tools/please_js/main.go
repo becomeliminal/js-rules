@@ -58,6 +58,7 @@ var opts = struct {
 	} `command:"describe" description:"Record what a fetched package is, for npm_link to assemble"`
 
 	Link struct {
+		Hoist      []string `long:"hoist" description:"a package exposed at the top level although nothing links it there; the escape hatch for a package that imports what it never declared"`
 		NoDev      bool     `long:"no-dev" description:"leave devDependencies out; must match how the build file was generated"`
 		NoOptional bool     `long:"no-optional" description:"leave optionalDependencies out; must match how the build file was generated"`
 		Hoisted    bool     `long:"hoisted" description:"write npm's layout rather than pnpm's: no symlinks, resolution by walking up"`
@@ -423,6 +424,31 @@ func link() error {
 		return fmt.Errorf("%s resolves %s through the workspace, and no target was given for %s; "+
 			"pass workspace = {\"<name>\": \"//path/to:target\"}",
 			opts.Link.Lockfile, strings.Join(missing, ", "), noun)
+	}
+
+	// The escape hatch for a package that imports what it never declared: its
+	// victim is exposed at the top level, where the broken import's walk up the
+	// tree will find it. Named by import name rather than target, because the
+	// name is what the broken package writes -- but a name carried by two
+	// resolutions is ambiguous, and picking one silently is how the wrong
+	// version reaches production, so that is refused with both candidates.
+	for _, name := range opts.Link.Hoist {
+		var candidates []string
+		for _, s := range sources {
+			if s.Meta.Package == name && !s.Meta.Unsupported {
+				candidates = append(candidates, s.Meta.Name)
+			}
+		}
+		switch len(candidates) {
+		case 0:
+			return fmt.Errorf("--hoist %s names nothing in this tree; hoisting only exposes a package that is already in the closure", name)
+		case 1:
+			links = append(links, store.Ref{As: name, Entry: candidates[0]})
+		default:
+			sort.Strings(candidates)
+			return fmt.Errorf("--hoist %s is ambiguous: %s all carry that name; this needs resolving in the lockfile",
+				name, strings.Join(candidates, ", "))
+		}
 	}
 
 	layout := store.Store
