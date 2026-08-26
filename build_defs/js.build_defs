@@ -54,6 +54,9 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
     package = package or package_name()
     check_package_name(package, name)
     entry = "index.js"
+    pkg_dir = package_name()
+    strip_len = len(pkg_dir) + 1 if pkg_dir else 0
+    src_rel = [f[strip_len:] if f.startswith(pkg_dir + "/") else f for f in srcs + data]
 
     strip = package_name() + "/"
 
@@ -72,6 +75,12 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
                 "$TOOLS_PLEASE_JS describe",
                 f"--name {name} --package {package} --version 0.0.0",
                 f"--main {entry}",
+                # Where the sources live, for a development server that serves
+                # them instead of this built output. Data files are included --
+                # a library reads them at runtime -- and types are not, since
+                # nothing serves a declaration.
+                f"--src-dir {pkg_dir} --src-entry {entry}",
+                " ".join([f"--src {f}" for f in src_rel]),
                 '--dir "$OUT/pkg" --out "$OUT/lib.json"',
             ]),
         ]),
@@ -87,6 +96,7 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
 
 def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
               runner:str="", runner_args:list=[], link_srcs:list=[],
+              link_deps:bool=False,
               node_modules:str="", node_options:list=[], env:dict={},
               fixed_args:list=[], chdir:str="",
               visibility:list=None, labels:list=[]):
@@ -119,6 +129,20 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
             Linked at run time, because a build action is sandboxed and sees
             temporary paths, and a symlink to one of those is dead the moment
             the action ends.
+        link_deps: Serve first-party dependencies from their sources rather
+                   than their built output.
+
+            The dev half of the same split link_srcs draws for the program's own
+            files: in development a package is its sources, and the server
+            transforms them like anything else it serves. Each library records
+            where its sources live in its lib.json -- the only channel, since a
+            rule sees nothing of its dependencies but their outputs -- and the
+            launcher materialises them at start-up, for the same reason
+            link_srcs links at run time: a symlink made in a sandboxed action
+            points at a path that dies with the action.
+
+            Requires runner: the only program that wants this is one serving the
+            files, and it needs the tree the links land in.
         deps: js_library targets whose packages this program imports.
         node_modules: The third-party tree, from npm_link. Defaults to the
                       NodeModules config, so a single-tree repo never names it.
@@ -143,11 +167,13 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
     """
     if bool(entry_point) == bool(runner):
         fail(f"js_binary {name}: set exactly one of entry_point or runner")
+    if link_deps and not runner:
+        fail(f"js_binary {name}: link_deps serves dependencies to a runner, and there is none")
 
     return _js_run(name, entry_point, deps, node_modules, node_options,
                    test = False, visibility = visibility, labels = labels,
                    srcs = srcs, runner = runner, runner_args = runner_args,
-                   link_srcs = link_srcs,
+                   link_srcs = link_srcs, link_deps = link_deps,
                    env = env, fixed_args = fixed_args, chdir = chdir)
 
 
@@ -395,7 +421,7 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
 
 def _js_run(name, entry_point, deps, node_modules, node_options, test,
             visibility, labels, srcs=[], data=[], runner="", runner_args=[],
-            link_srcs=[], env={}, fixed_args=[],
+            link_srcs=[], link_deps=False, env={}, fixed_args=[],
             chdir="", expected_exit_code=0, timeout=0, flaky=0, size=None):
     """Shared implementation of js_binary and js_test.
 
@@ -452,7 +478,8 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # A repo whose first-party code has no third-party dependencies has
             # no tree to overlay onto, and the overlay makes an empty one. The
             # variable is unset rather than empty in that case.
-            '"$PLEASE_JS" overlay --tree "${SRCS_MODULES:-}" --out "$OUT/node_modules" $LIBS',
+            '"$PLEASE_JS" overlay --tree "${SRCS_MODULES:-}" --out "$OUT/node_modules" $LIBS' +
+            (" --dev" if link_deps else ""),
         ] + ([
             # At their own paths, because a test file's relative imports have to
             # keep working and because the reported name should be the file
@@ -532,6 +559,12 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             f'BIN=$("$TOOL" resolve-bin --tree "$RUNDIR/node_modules" --package {pkg}' +
             (f' --bin {bin}' if bin else '') + ')',
             'BIN=$(cd "$RUNDIR" && readlink -f "$BIN")',
+        ] + ([
+            # First-party packages, as their sources. Rebuilt every start, so a
+            # library removed from deps or a source removed from a library
+            # stops being served.
+            '"$TOOL" devlink --tree "$RUNDIR/node_modules" --root "$ROOT" --spec "$RUNDIR/devlinks.json"',
+        ] if link_deps else []) + [
             # Please may give this relative, and relative to where the launcher
             # started, so it is resolved before anything changes directory.
             'case "${RESULTS_FILE:-}" in',

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -456,5 +457,107 @@ func TestHoistingCopiesOnlyWhereNamesCollide(t *testing.T) {
 	})
 	if copies != 1 {
 		t.Errorf("one resolution, one copy; found %d", copies)
+	}
+}
+
+// Devlink materialises a first-party package as its sources: a manifest whose
+// entry is the source as written, and one symlink per file into the repository.
+func TestDevlinkServesSources(t *testing.T) {
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "node_modules")
+	root := filepath.Join(dir, "repo")
+	os.MkdirAll(tree, 0o755)
+
+	spec := filepath.Join(dir, "devlinks.json")
+	links := []store.DevLink{{
+		Package:  "@test/greeter",
+		SrcDir:   "lib/greeter",
+		SrcEntry: "index.ts",
+		Srcs:     []string{"index.ts", "deep/util.ts"},
+	}}
+	if err := store.WriteDevLinks(spec, links); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Devlink(tree, root, spec); err != nil {
+		t.Fatal(err)
+	}
+
+	// The manifest's entry is the source as written -- index.ts, not a
+	// compiled index.js -- because the server transforms what it serves.
+	data, err := os.ReadFile(filepath.Join(tree, "@test/greeter/package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"./index.ts"`) {
+		t.Errorf("the entry should be the source, got:\n%s", data)
+	}
+
+	// Each source is a link into the repository, nested paths included.
+	for _, src := range []string{"index.ts", "deep/util.ts"} {
+		at := filepath.Join(tree, "@test/greeter", src)
+		target, err := os.Readlink(at)
+		if err != nil {
+			t.Fatalf("%s should be a symlink: %v", at, err)
+		}
+		want := filepath.Join(root, "lib/greeter", src)
+		if target != want {
+			t.Errorf("%s points at %s, want %s", src, target, want)
+		}
+	}
+}
+
+// Rebuilt from nothing every start, so a source removed from the library stops
+// being served rather than lingering as a link nobody declared.
+func TestDevlinkRebuildsFromNothing(t *testing.T) {
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "node_modules")
+	root := filepath.Join(dir, "repo")
+	os.MkdirAll(tree, 0o755)
+
+	spec := filepath.Join(dir, "devlinks.json")
+	write := func(srcs ...string) {
+		if err := store.WriteDevLinks(spec, []store.DevLink{{
+			Package: "lib", SrcDir: "lib", SrcEntry: "index.js", Srcs: srcs,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Devlink(tree, root, spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("index.js", "old.js")
+	write("index.js")
+	if _, err := os.Lstat(filepath.Join(tree, "lib/old.js")); err == nil {
+		t.Error("a removed source should stop being served")
+	}
+	if _, err := os.Lstat(filepath.Join(tree, "lib/index.js")); err != nil {
+		t.Errorf("the surviving source should still be there: %v", err)
+	}
+}
+
+// The names a development server's config needs, from the same lib.jsons the
+// overlay reads -- knowable at build time even though the links are not
+// buildable then.
+func TestPackagesListsWhatIsStaged(t *testing.T) {
+	dir := t.TempDir()
+	put := func(rel, pkg string) {
+		d := filepath.Join(dir, rel)
+		os.MkdirAll(d, 0o755)
+		if err := store.WriteMeta(filepath.Join(d, "lib.json"), store.Meta{Name: "x", Package: pkg}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("a", "@test/a")
+	put("b/nested", "@test/b")
+	// Inside node_modules is a staged tree, not a first-party library.
+	put("node_modules/decoy", "@test/decoy")
+
+	got, err := store.Packages(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(got)
+	if strings.Join(got, ",") != "@test/a,@test/b" {
+		t.Errorf("got %v", got)
 	}
 }

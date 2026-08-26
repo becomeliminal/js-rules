@@ -44,6 +44,14 @@ type Meta struct {
 	// platform. The target still exists so the build file stays the same
 	// everywhere, but nothing was fetched and nothing is placed.
 	Unsupported bool `json:"unsupported,omitempty"`
+
+	// Where a first-party library's sources live, recorded because a rule only
+	// ever sees its dependencies' outputs -- so this is the one channel through
+	// which a development server can learn what to serve instead of the built
+	// package. The build path ignores all three.
+	SrcDir   string   `json:"srcDir,omitempty"`   // repo-relative source directory
+	SrcEntry string   `json:"srcEntry,omitempty"` // the entry as written, e.g. index.ts
+	Srcs     []string `json:"srcs,omitempty"`     // source files, relative to SrcDir
 }
 
 // Ref is one entry appearing in a node_modules directory, under the name source
