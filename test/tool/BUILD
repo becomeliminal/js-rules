@@ -31,7 +31,10 @@ js_run_binary(
     bin = "tsc",
     srcs = ["uses_lib.ts"],
     outs = ["uses_lib.js"],
-    deps = ["//test/tool/lib"],
+    # The types output alone: a type-check reads declarations and the
+    # manifest, never runtime code -- so editing the library's index.js
+    # cannot invalidate this action. That claim is measured below.
+    deps = ["//test/tool/lib|types"],
     # tsc ignores this; the shell does not. Unquoted it splits, the word after
     # the space is taken as the command to run, and the build fails -- so a
     # build that succeeds is the assertion.
@@ -47,9 +50,11 @@ js_run_binary(
 
 # And it still resolves at runtime, through the tree js_test assembles rather
 # than the one the compiler saw.
+# And the runtime consumer narrowed the other way: the compiled program needs
+# the library's code and data, never its declarations.
 js_test(
     name = "uses_lib_test",
     entry_point = ":compile_lib",
-    deps = ["//test/tool/lib"],
+    deps = ["//test/tool/lib|pkg"],
 )
 
