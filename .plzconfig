@@ -23,6 +23,13 @@ Help = Build label for the third-party node_modules tree, from npm_link. Rules t
 Optional = true
 Inherit = true
 
+[PluginConfig "tree"]
+ConfigKey = Tree
+DefaultValue = //third_party/js
+Help = Package of the repo's pnpm workspace tree: the lockfile, its generated BUILD file, and the data npm_project reads. npm_project takes it by default so a repo with one tree never names it.
+Optional = true
+Inherit = true
+
 [PluginConfig "npm_registry"]
 ConfigKey = NpmRegistry
 DefaultValue = https://registry.npmjs.org

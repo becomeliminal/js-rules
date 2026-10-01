@@ -380,6 +380,84 @@ def npm_link(name:str, lock:str, packages:list, workspace:dict={}, project:str="
     )
 
 
+def npm_project(name:str="node_modules", hoisted_name:str="hoisted", tree:str="",
+                hoist:list=[], workspace:dict={}, visibility:list=["PUBLIC"]):
+    """Declares that this package is an npm project, and gives it its trees.
+
+    Called in the package that holds the project's package.json, with no
+    arguments. The project is a member of the repo's pnpm workspace -- listed
+    in the tree's pnpm-workspace.yaml, resolved into its one lockfile -- and
+    this finds itself in that workspace by package_name(), so there is no path
+    to pass and nothing to keep in step: moving the package is moving the
+    project.
+
+    Declares two trees over the same closure, and Please builds only the ones
+    something asks for:
+
+        :node_modules  pnpm's store layout. What builds, checks and tests
+                       resolve through; an undeclared import finds nothing.
+        :hoisted       npm's flat layout, no symlinks. For a tool that cannot
+                       follow symlinks without resolving away paths it must
+                       keep -- a development server serving real sources.
+
+    The closures come from data the tree's npm_update writes beside its BUILD
+    file, loaded here rather than written into any BUILD file: a project's
+    full closure has to be named label by label for the link step to stage
+    it, and that list belongs to the generator, not to anyone reading a BUILD
+    file.
+
+    Args:
+        name: The store-layout tree. Defaults to node_modules; there is rarely
+              a reason to change it.
+        hoisted_name: The flat-layout tree.
+        tree: The workspace tree's package, e.g. //third_party/js. Defaults to
+              the Tree config, so a repo with one tree never names it.
+        hoist: As npm_link's: packages exposed at the top level although
+               nothing links them there. A recorded workaround for someone
+               else's broken manifest.
+        workspace: As npm_link's: the repo's own packages this project links,
+                   as npm name -> the target building it.
+        visibility: Visibility specification.
+    """
+    tree = tree or CONFIG.JS.TREE
+    if not tree:
+        fail("npm_project: no tree to find this project in. Set Tree in " +
+             "[Plugin \"js\"], or pass tree.")
+
+    subinclude(f"{tree}:projects")
+    project = package_name()
+    if project not in NPM_PROJECTS:
+        fail(f"npm_project: {project} is not a project in {tree}'s workspace. " +
+             f"Add it to packages in that tree's pnpm-workspace.yaml and run its " +
+             "npm_update target -- its package.json is the project's manifest.")
+    entry = NPM_PROJECTS[project]
+    packages = [f"{tree}:{t}" for t in entry["packages"]]
+
+    npm_link(
+        name = hoisted_name,
+        lock = f"{tree}:lockfile",
+        packages = packages,
+        project = entry["project"],
+        workspace = workspace,
+        hoist = hoist,
+        no_dev = entry["no_dev"],
+        no_optional = entry["no_optional"],
+        hoisted = True,
+        visibility = visibility,
+    )
+    return npm_link(
+        name = name,
+        lock = f"{tree}:lockfile",
+        packages = packages,
+        project = entry["project"],
+        workspace = workspace,
+        hoist = hoist,
+        no_dev = entry["no_dev"],
+        no_optional = entry["no_optional"],
+        visibility = visibility,
+    )
+
+
 def _supported(os:list, cpu:list):
     """Whether a package's npm platform constraints admit this machine.
 

@@ -55,6 +55,39 @@ pinned node toolchain -- nothing installed -- then translates the lockfile into
 `--hoisted-link`) are recorded on the target, so every repin applies the same
 policy.
 
+### Many projects, one tree: `npm_project`
+
+A repo with several JavaScript apps keeps one lockfile and one resolution, as
+`third_party/go` does for Go: the tree is a pnpm workspace whose projects are
+the apps' own `package.json` files, wherever they live.
+
+```yaml
+# third_party/js/pnpm-workspace.yaml
+packages:
+  - ../../apps/web
+  - ../../apps/admin
+```
+
+Each app becomes an npm project with one line in its own `BUILD` file:
+
+```python
+# apps/web/BUILD
+npm_project()
+
+vite_bundle(name = "bundle", ..., node_modules = ":node_modules")
+vite_dev(name = "dev", ..., node_modules = ":hoisted")
+```
+
+`npm_project` finds itself in the workspace by its package path -- there is
+nothing to pass -- and declares `:node_modules` (store layout) and `:hoisted`
+(flat), of which Please builds only what is asked for. The closures come from a
+`projects.build_defs` file `npm_update` writes beside the tree's `BUILD` file,
+so no project's closure appears in any file a person reads, and the lockfile's
+relative keys (`../../apps/web`) stay inside that data. Each project's trees
+cover exactly its own closure: a bump to a package only `web` uses changes
+`web`'s tree and leaves `admin`'s a cache hit. The tree's package is the `Tree`
+config, `//third_party/js` by default.
+
 Also supported, each with a test that proves it: npm and yarn lockfiles,
 package aliases, workspace packages (`link:`), private registries with
 per-scope URLs and secret headers, patches (zero-fuzz, a failed hunk fails the

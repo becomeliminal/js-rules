@@ -1,0 +1,5 @@
+# The workspace's only project lives in a sibling package, the shape a repo
+# with one tree and many apps has: each app's package.json is its manifest,
+# and npm_project in that app's BUILD file links it.
+packages:
+  - ../app
