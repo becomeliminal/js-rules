@@ -6,6 +6,7 @@ go_library(
         "generate.go",
         "platform.go",
         "hash.go",
+        "resolve.go",
         "stray.go",
         "write.go",
     ],
@@ -22,6 +23,7 @@ go_test(
     srcs = [
         "generate_test.go",
         "platform_test.go",
+        "resolve_test.go",
     ],
     external = True,
     deps = [

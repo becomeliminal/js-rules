@@ -72,8 +72,19 @@ var opts = struct {
 		Lockfile string   `long:"lock" required:"true" description:"the pnpm lockfile describing the graph"`
 		Project  string   `long:"project" default:"." description:"which pnpm workspace project's tree to build"`
 		Source   []string `long:"source" description:"a staged package, as metadata-path:package-dir"`
+		SourceDir []string `long:"source-dir" description:"a directory whose subdirectories are staged packages, each with meta.json beside pkg/; how npm_project hands over the pins attached at build time"`
 		Out      string   `long:"out" required:"true" description:"node_modules root to build"`
 	} `command:"link" description:"Assemble a node_modules tree from staged packages"`
+
+	Resolve struct {
+		Lockfile    string `long:"lock" required:"true" description:"the workspace's pnpm lockfile"`
+		PackageJSON string `long:"package-json" required:"true" description:"the project's package.json, checked against the lockfile"`
+		Project     string `long:"project" required:"true" description:"the project's key in the lockfile, relative to the workspace root"`
+		Tree        string `long:"tree" required:"true" description:"the tree's package label, which qualifies each pin"`
+		Update      string `long:"update" description:"the command that regenerates the tree, for the error when package.json has drifted"`
+		NoDev       bool   `long:"no-dev" description:"leave devDependencies out; must match how the tree was generated"`
+		NoOptional  bool   `long:"no-optional" description:"leave optionalDependencies out; must match how the tree was generated"`
+	} `command:"resolve" description:"Print the pins a workspace project's tree stages, one label per line"`
 
 	Overlay struct {
 		Tree string   `long:"tree" required:"true" description:"an existing node_modules tree"`
@@ -170,6 +181,7 @@ func main() {
 		"update":      update,
 		"describe":    describe,
 		"link":        link,
+		"resolve":     resolve,
 		"overlay":     overlay,
 		"devlink":     devlink,
 		"packages":    listPackages,
@@ -344,11 +356,11 @@ func update() error {
 	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, opts.Update.LockLabel, sums, scope, opts.Update.HoistedLink); err != nil {
 		return err
 	}
-	// The lockfile's directory is the workspace root, and npm_update passes it
-	// relative to the repository root -- which is what turns a lockfile key
-	// like ../../app into the app's own package path.
-	projects := filepath.Join(filepath.Dir(opts.Update.Out), generate.ProjectsFile)
-	if err := generate.WriteProjects(projects, plan, filepath.Dir(opts.Update.Lockfile), scope); err != nil {
+	// npm_project resolves its pins at build time now, so the data file an
+	// earlier generator wrote for it is dead; remove it rather than leave a
+	// file that looks like it matters.
+	stale := filepath.Join(filepath.Dir(opts.Update.Out), generate.StaleProjectsFile)
+	if err := os.Remove(stale); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
@@ -492,6 +504,38 @@ func link() error {
 		})
 	}
 
+	// Pins attached at build time arrive staged at their own package paths
+	// rather than as flags, because no file names them. Only this project's
+	// closure is taken: what is staged should be exactly that, and a tree must
+	// never quietly gain a package its lockfile entry does not reach.
+	inClosure := map[string]bool{}
+	for _, entry := range plan.Closure[opts.Link.Project] {
+		inClosure[entry] = true
+	}
+	for _, root := range opts.Link.SourceDir {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return fmt.Errorf("reading staged pins in %s: %w", root, err)
+		}
+		for _, e := range entries {
+			metaPath := filepath.Join(root, e.Name(), "meta.json")
+			if _, err := os.Stat(metaPath); err != nil {
+				continue // the lockfile export, or anything else that is not a pin
+			}
+			meta, err := store.ReadMeta(metaPath)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", metaPath, err)
+			}
+			if !inClosure[meta.Name] {
+				continue
+			}
+			sources = append(sources, store.Source{
+				Dir: filepath.Join(root, e.Name(), "pkg"), Meta: meta, Deps: refs[meta.Name],
+				Origin: "the lockfile, as " + meta.Package + "@" + meta.Version,
+			})
+		}
+	}
+
 	// Workspace packages are the repo's own, resolved through the lockfile as
 	// link: rather than fetched. They enter the tree the same way a fetched
 	// package does, so nothing downstream can tell them apart -- which is the
@@ -563,6 +607,47 @@ func link() error {
 		layout = store.Hoisted
 	}
 	return store.Build(opts.Link.Out, sources, links, layout)
+}
+
+// resolve prints the pins a workspace project needs, for npm_project's
+// post-build step to attach as dependencies of its trees -- so which packages
+// an app stages is decided from its package.json and the lockfile at build
+// time, and never written down. It refuses first if package.json has drifted
+// from the lockfile, which would otherwise build the old resolution quietly.
+func resolve() error {
+	o := opts.Resolve
+	lock, err := lockfile.Parse(o.Lockfile)
+	if err != nil {
+		return err
+	}
+	imp, ok := lock.Importers[o.Project]
+	if !ok {
+		return fmt.Errorf("%s has no project %q. Add the package to packages in the tree's pnpm-workspace.yaml and regenerate it", o.Lockfile, o.Project)
+	}
+	manifest, err := os.ReadFile(o.PackageJSON)
+	if err != nil {
+		return err
+	}
+	if err := generate.CheckManifest(manifest, imp); err != nil {
+		hint := "regenerate the tree with its npm_update target"
+		if o.Update != "" {
+			hint = "regenerate the tree: " + o.Update
+		}
+		return fmt.Errorf("%s: %w\n%s", o.PackageJSON, err, hint)
+	}
+
+	plan, err := generate.Build(lock, generate.Scope{NoDev: o.NoDev, NoOptional: o.NoOptional})
+	if err != nil {
+		return err
+	}
+	pins, err := generate.Pins(plan, o.Project, o.Tree)
+	if err != nil {
+		return err
+	}
+	for _, pin := range pins {
+		fmt.Println(pin)
+	}
+	return nil
 }
 
 func projects(plan *generate.Plan) []string {

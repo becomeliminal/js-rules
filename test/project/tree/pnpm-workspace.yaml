@@ -1,5 +1,7 @@
-# The workspace's only project lives in a sibling package, the shape a repo
-# with one tree and many apps has: each app's package.json is its manifest,
-# and npm_project in that app's BUILD file links it.
+# Two projects in sibling packages, the shape a repo with one tree and many
+# apps has: each app's package.json is its manifest, npm_project in that app's
+# BUILD file links it, and each gets exactly its own pins -- here, two
+# different versions of ms from the one lockfile.
 packages:
   - ../app
+  - ../other
