@@ -17,7 +17,7 @@ func TestPinsQualifiesTheProjectClosureWithTheTree(t *testing.T) {
 	}}
 
 	// WHEN the web project's pins are resolved against //third_party/js
-	pins, err := generate.Pins(plan, "../../apps/web", "//third_party/js")
+	pins, err := generate.Pins(plan, "../../apps/web", "//third_party/js", true)
 
 	// THEN each is that tree's target for the package, and nothing of api's
 	if err != nil {
@@ -34,7 +34,7 @@ func TestPinsRefusesAProjectTheLockfileDoesNotHave(t *testing.T) {
 	plan := &generate.Plan{Closure: map[string][]string{"../../apps/web": {"ms_2.1.3"}}}
 
 	// WHEN a project missing from the workspace is resolved
-	_, err := generate.Pins(plan, "../../apps/admin", "//third_party/js")
+	_, err := generate.Pins(plan, "../../apps/admin", "//third_party/js", true)
 
 	// THEN the error names the projects that exist and the fix
 	if err == nil {
