@@ -423,6 +423,13 @@ def npm_project(name:str="node_modules", hoisted_name:str="hoisted", tree:str=""
     if not tree:
         fail("npm_project: no tree to find this project in. Set Tree in " +
              "[Plugin \"js\"], or pass tree.")
+    # Please reads a plugin config value that looks like a label AS a label:
+    # Tree = //third_party/js arrives canonicalised, with a target name
+    # defaulted from the package (//third_party/js:js) and qualified to the
+    # host repo. The package is what names the tree, so any target is dropped.
+    colon = tree.rfind(":")
+    if colon > tree.rfind("/"):
+        tree = tree[:colon]
 
     subinclude(f"{tree}:projects")
     project = package_name()

@@ -50,6 +50,10 @@ NodeTool = //third_party/node:node|node
 NodeTool = //third_party/node:node|node
 PleaseJsTool = //tools/please_js
 NodeModules = //third_party/js:node_modules
+; The fixture workspace, so test/project/app's bare npm_project() exercises the
+; config path -- including Please's canonicalisation of a package-shaped value
+; into a label -- exactly as a consuming repo does. Nothing else here reads it.
+Tree = //test/project/tree
 
 ; plz only aggregates coverage for known file extensions, and JavaScript's are
 ; not in its default list -- the same constraint rust-rules documents for .rs.
