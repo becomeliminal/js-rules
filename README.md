@@ -68,24 +68,29 @@ packages:
   - ../../apps/admin
 ```
 
-Each app becomes an npm project with one line in its own `BUILD` file:
+The tree's generated `BUILD` file holds the `npm_repo` pins and an export of
+the lockfile -- nothing per app. Each app declares its trees in its own `BUILD`
+file, from its `package.json`:
 
 ```python
 # apps/web/BUILD
-npm_project()
+npm_project(
+    name = "node_modules",
+    package_json = "package.json",
+)
 
 vite_bundle(name = "bundle", ..., node_modules = ":node_modules")
-vite_dev(name = "dev", ..., node_modules = ":hoisted")
+vite_dev(name = "dev", ..., node_modules = ":node_modules_hoisted")
 ```
 
-`npm_project` finds itself in the workspace by its package path -- there is
-nothing to pass -- and declares `:node_modules` (store layout) and `:hoisted`
-(flat), of which Please builds only what is asked for. The closures come from a
-`projects.build_defs` file `npm_update` writes beside the tree's `BUILD` file,
-so no project's closure appears in any file a person reads, and the lockfile's
-relative keys (`../../apps/web`) stay inside that data. Each project's trees
-cover exactly its own closure: a bump to a package only `web` uses changes
-`web`'s tree and leaves `admin`'s a cache hit. The tree's package is the `Tree`
+Which pins an app needs is decided at build time and never written down: a
+resolve step reads `package.json` and the lockfile and prints the app's pins,
+and its post-build step attaches them as dependencies of `:node_modules`
+(store layout) and `:node_modules_hoisted` (flat). Each tree depends on
+exactly its own pins, so a bump to a package only `admin` uses re-runs `web`'s
+resolve step, prints the same pins, and rebuilds nothing of `web`'s. The
+resolve step also refuses a `package.json` edited without regenerating the
+tree, naming both sides of every difference. The tree's package is the `Tree`
 config, `//third_party/js` by default.
 
 Also supported, each with a test that proves it: npm and yarn lockfiles,
