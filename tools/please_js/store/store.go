@@ -122,6 +122,19 @@ const (
 // nests a little more and is correct for the same reason -- a package's own
 // node_modules is searched before any ancestor's, so a name placed lower is
 // still the one its dependent finds.
+//
+// That rule alone is not enough, and the second pass exists for the gap: a
+// dependent whose name walk is intercepted BETWEEN it and the placement it
+// deduplicated against. Deduplicating "curves -> hashes@2" against a top-level
+// hashes@2 is wrong when the dependent sits under an ancestor that nests its
+// own hashes@1 -- the walk up finds the ancestor's copy first. A single pass
+// cannot see this: the shadowing placement may be decided after the dedup, so
+// after everything is placed, every dependency edge is re-resolved exactly as
+// node will resolve it, and an edge that reaches the wrong entry gets a copy
+// of the right one nested beside its dependent. Adding a copy can change what
+// a deeper, already-checked edge finds, so the sweep repeats until nothing
+// moves; it terminates because placements only ever grow and are bounded by
+// the edge count.
 func place(sources []Source, links []Ref) (map[string][]string, error) {
 	byName := make(map[string]Source, len(sources))
 	for _, s := range sources {
@@ -172,7 +185,74 @@ func place(sources []Source, links []Ref) (map[string][]string, error) {
 			queue = append(queue, item{entry: dep.Entry, as: dep.As, parent: at})
 		}
 	}
-	return placements, nil
+
+	// The verification sweep. Deterministic order, so two runs over the same
+	// lockfile write the same tree.
+	for {
+		changed := false
+		for _, entry := range sortedKeys(placements) {
+			src := byName[entry]
+			// A copy appended mid-sweep is re-checked by the next sweep; this
+			// one iterates what existed when it started.
+			locs := append([]string(nil), placements[entry]...)
+			for _, loc := range locs {
+				for _, dep := range src.Deps {
+					if byName[dep.Entry].Meta.Unsupported {
+						continue
+					}
+					if resolveUp(taken, loc, dep.As) == dep.Entry {
+						continue
+					}
+					// The walk from loc finds the wrong resolution (or none in
+					// this subtree), so the right one is nested where it is
+					// searched first: the dependent's own node_modules.
+					slot := loc + "/node_modules/" + dep.As
+					if held, ok := taken[slot]; ok {
+						if held == dep.Entry {
+							continue
+						}
+						// Two different resolutions under one name in one
+						// node_modules: the lockfile itself is contradictory.
+						return nil, fmt.Errorf("%s and %s would both be at %s", held, dep.Entry, slot)
+					}
+					taken[slot] = dep.Entry
+					placements[dep.Entry] = append(placements[dep.Entry], slot)
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			return placements, nil
+		}
+	}
+}
+
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// resolveUp walks a name up from a placement path the way node resolves an
+// import: the dependent's own node_modules first, then each ancestor
+// node_modules, then the tree root (which is itself a node_modules). It
+// returns the entry the first hit holds, or "" when no step of the walk has
+// the name.
+func resolveUp(taken map[string]string, from, as string) string {
+	parts := strings.Split(from, "/node_modules/")
+	for i := len(parts); i >= 1; i-- {
+		candidate := strings.Join(parts[:i], "/node_modules/") + "/node_modules/" + as
+		if entry, ok := taken[candidate]; ok {
+			return entry
+		}
+	}
+	if entry, ok := taken[as]; ok {
+		return entry
+	}
+	return ""
 }
 
 // Build assembles a node_modules tree at root.

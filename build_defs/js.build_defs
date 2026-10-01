@@ -622,7 +622,14 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
                 # plz-out and points at the file the developer edits. srcs are
                 # written relative to the package, so the package is where the
                 # repository-relative path starts.
-                f'ln -sfn "$ROOT/{pkg_dir}/{src}" "$RUNDIR/{src}"',
+                #
+                # Directories are skipped, not linked: Please's glob returns
+                # them alongside their contents, and a directory symlinked here
+                # would route every later link to a child THROUGH it -- writing
+                # into the source tree, the one place these links must never
+                # reach. The children are linked individually and mkdir -p
+                # builds the real directories they sit in.
+                f'[ -d "$ROOT/{pkg_dir}/{src}" ] || ln -sfn "$ROOT/{pkg_dir}/{src}" "$RUNDIR/{src}"',
             ]
 
     if runner:

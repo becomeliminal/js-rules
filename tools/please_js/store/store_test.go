@@ -422,6 +422,69 @@ func TestHoistedPutsEachNameWhereAWalkWillFindIt(t *testing.T) {
 	}
 }
 
+// Deduplicating against the top level is wrong when an ancestor shadows it.
+// The shape that found this in production (@noble/hashes, LIM-3704):
+//
+//	app -> hashes@2, account@1, ox@2, curves@2   (all take the top level)
+//	account -> hashes@1 (nests), ox@1 (nests)
+//	ox@1 -> curves@1 (nests, "curves" is taken)
+//	curves@1 -> hashes@2
+//
+// curves@1 sits at account/node_modules/ox/node_modules/curves. A walk up
+// from there meets account/node_modules/hashes -- which is hashes@1 -- before
+// the top-level hashes@2 it deduplicated against. The placer has to notice
+// the interception and nest a copy of hashes@2 beside curves@1.
+func TestHoistedNestsThroughAShadowingAncestor(t *testing.T) {
+	dir := t.TempDir()
+	pkg := func(name string) string {
+		d := filepath.Join(dir, "src", strings.ReplaceAll(name, "/", "+"))
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "index.js"), []byte("// "+name), 0o644)
+		return d
+	}
+	src := func(entry, name string, deps ...store.Ref) store.Source {
+		return store.Source{Dir: pkg(entry), Meta: store.Meta{Name: entry, Package: name}, Deps: deps}
+	}
+	sources := []store.Source{
+		src("app_1", "app",
+			store.Ref{As: "@noble/hashes", Entry: "hashes_2"},
+			store.Ref{As: "account", Entry: "account_1"},
+			store.Ref{As: "ox", Entry: "ox_2"},
+			store.Ref{As: "curves", Entry: "curves_2"}),
+		src("hashes_2", "@noble/hashes"),
+		src("ox_2", "ox"),
+		src("curves_2", "curves"),
+		src("account_1", "account",
+			store.Ref{As: "@noble/hashes", Entry: "hashes_1"},
+			store.Ref{As: "ox", Entry: "ox_1"}),
+		src("hashes_1", "@noble/hashes"),
+		src("ox_1", "ox", store.Ref{As: "curves", Entry: "curves_1"}),
+		src("curves_1", "curves", store.Ref{As: "@noble/hashes", Entry: "hashes_2"}),
+	}
+	root := filepath.Join(dir, "out")
+	if err := store.Build(root, sources, []store.Ref{{As: "app", Entry: "app_1"}}, store.Hoisted); err != nil {
+		t.Fatal(err)
+	}
+
+	// The walk from curves@1 must find hashes@2 before the shadowing
+	// hashes@1 one level up -- which means a copy nested beside curves@1.
+	resolved := filepath.Join(root, "account", "node_modules", "ox", "node_modules",
+		"curves", "node_modules", "@noble", "hashes", "index.js")
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatalf("the shadowed dependency should be nested beside its dependent: %v", err)
+	}
+	if string(data) != "// hashes_2" {
+		t.Errorf("nested copy is %q, want hashes_2", string(data))
+	}
+
+	// The shadow itself is untouched: account still finds its own hashes@1.
+	data, _ = os.ReadFile(filepath.Join(root, "account", "node_modules", "@noble", "hashes", "index.js"))
+	if string(data) != "// hashes_1" {
+		t.Errorf("account's own resolution is %q, want hashes_1", string(data))
+	}
+}
+
 // A package needed by two dependents that cannot see the hoisted one is copied
 // to both. That is the entire cost of this layout, and it is worth knowing it
 // is bounded by name conflicts rather than by dependents.
