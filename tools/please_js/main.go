@@ -340,7 +340,15 @@ func update() error {
 		}
 	}
 
-	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, opts.Update.LockLabel, sums, generate.Scope{NoDev: opts.Update.NoDev, NoOptional: opts.Update.NoOptional}, opts.Update.HoistedLink); err != nil {
+	scope := generate.Scope{NoDev: opts.Update.NoDev, NoOptional: opts.Update.NoOptional}
+	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, opts.Update.LockLabel, sums, scope, opts.Update.HoistedLink); err != nil {
+		return err
+	}
+	// The lockfile's directory is the workspace root, and npm_update passes it
+	// relative to the repository root -- which is what turns a lockfile key
+	// like ../../app into the app's own package path.
+	projects := filepath.Join(filepath.Dir(opts.Update.Out), generate.ProjectsFile)
+	if err := generate.WriteProjects(projects, plan, filepath.Dir(opts.Update.Lockfile), scope); err != nil {
 		return err
 	}
 

@@ -237,3 +237,134 @@ func TestWriteBUILDHoistedLink(t *testing.T) {
 		t.Errorf("hoisted emission is opt-in:\n%s", out)
 	}
 }
+
+// A workspace project elsewhere in the repo gets no npm_link in the generated
+// file: its closure is emitted as data, keyed by the project's own package
+// path, for npm_project to link where the package.json lives.
+func TestWriteProjectsKeysByRepoPath(t *testing.T) {
+	// GIVEN a workspace rooted at third_party/js whose only project lives at
+	// x402stack/frontend, which the lockfile spells ../../x402stack/frontend
+	dir := t.TempDir()
+	plan := &generate.Plan{
+		Entries:   []generate.Entry{{Target: "p_1", Package: "p", Version: "1.0.0"}},
+		Closure:   map[string][]string{".": nil, "../../x402stack/frontend": {"p_1"}},
+		Direct:    map[string]map[string]string{},
+		Workspace: map[string]map[string]string{},
+	}
+	buildPath := filepath.Join(dir, "BUILD")
+	projectsPath := filepath.Join(dir, generate.ProjectsFile)
+
+	// WHEN the BUILD file and the projects data are written
+	if err := generate.WriteBUILD(buildPath, plan, "///js//build_defs:npm", "pnpm-lock.yaml", nil, generate.Scope{NoDev: true}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := generate.WriteProjects(projectsPath, plan, "third_party/js", generate.Scope{NoDev: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// THEN the BUILD file links nothing for the project and never says ../../
+	buildOut, _ := os.ReadFile(buildPath)
+	if strings.Contains(string(buildOut), "npm_link") {
+		t.Errorf("a project elsewhere should not be linked in the tree's BUILD file:\n%s", buildOut)
+	}
+	if strings.Contains(string(buildOut), "../") {
+		t.Errorf("the lockfile's relative key leaked into the BUILD file:\n%s", buildOut)
+	}
+	// AND it exports what npm_project reaches for from another package
+	for _, want := range []string{`name = "projects"`, `"projects.build_defs"`, `name = "lockfile"`, `"pnpm-lock.yaml"`} {
+		if !strings.Contains(string(buildOut), want) {
+			t.Errorf("BUILD file should contain %q:\n%s", want, buildOut)
+		}
+	}
+
+	// AND the data is keyed by the path package_name() will return there, with
+	// the lockfile's key and the policy flags carried as data
+	projectsOut, _ := os.ReadFile(projectsPath)
+	for _, want := range []string{
+		`"x402stack/frontend": {`,
+		`"project": "../../x402stack/frontend"`,
+		`"no_dev": True`,
+		`"no_optional": False`,
+		`"p_1"`,
+	} {
+		if !strings.Contains(string(projectsOut), want) {
+			t.Errorf("projects data should contain %q:\n%s", want, projectsOut)
+		}
+	}
+}
+
+// The root project's two layouts share one statement of the closure, so a
+// repin changes one list and the trees cannot disagree.
+func TestWriteBUILDStatesTheRootClosureOnce(t *testing.T) {
+	// GIVEN a single-project tree with the hoisted twin requested
+	dir := t.TempDir()
+	path := filepath.Join(dir, "BUILD")
+	plan := &generate.Plan{
+		Entries:   []generate.Entry{{Target: "p_1", Package: "p", Version: "1.0.0"}},
+		Closure:   map[string][]string{".": {"p_1"}},
+		Direct:    map[string]map[string]string{},
+		Workspace: map[string]map[string]string{},
+	}
+
+	// WHEN the BUILD file is written
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// THEN the closure label appears once, in CLOSURE, and both links use it
+	out, _ := os.ReadFile(path)
+	if n := strings.Count(string(out), `":p_1"`); n != 1 {
+		t.Errorf("the closure should be stated once, found %d mentions of :p_1:\n%s", n, out)
+	}
+	if n := strings.Count(string(out), "packages = CLOSURE"); n != 2 {
+		t.Errorf("both trees should reference CLOSURE, found %d:\n%s", n, out)
+	}
+	// AND a single-project tree gains no projects machinery
+	if strings.Contains(string(out), "projects") {
+		t.Errorf("a tree with no other project should be unchanged:\n%s", out)
+	}
+}
+
+// A project the lockfile places outside the repository is a mistake to name,
+// not a path to emit.
+func TestWriteProjectsRefusesAProjectOutsideTheRepo(t *testing.T) {
+	// GIVEN a lockfile key that climbs above the repository root
+	plan := &generate.Plan{
+		Closure:   map[string][]string{"../../../elsewhere": {"p_1"}},
+		Direct:    map[string]map[string]string{},
+		Workspace: map[string]map[string]string{},
+	}
+
+	// WHEN the projects data is written for a workspace two levels deep
+	err := generate.WriteProjects(filepath.Join(t.TempDir(), generate.ProjectsFile), plan, "third_party/js", generate.Scope{})
+
+	// THEN it fails, naming where the project would have landed
+	if err == nil || !strings.Contains(err.Error(), "outside the repository") {
+		t.Errorf("expected an outside-the-repository error, got %v", err)
+	}
+}
+
+// Regenerating a tree that no longer has a project elsewhere removes the data
+// file, rather than leaving a stale one for npm_project to read.
+func TestWriteProjectsRemovesAStaleFile(t *testing.T) {
+	// GIVEN a projects file from an earlier generation
+	path := filepath.Join(t.TempDir(), generate.ProjectsFile)
+	if err := os.WriteFile(path, []byte("NPM_PROJECTS = {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan := &generate.Plan{
+		Closure:   map[string][]string{".": {"p_1"}},
+		Direct:    map[string]map[string]string{},
+		Workspace: map[string]map[string]string{},
+	}
+
+	// WHEN the tree is regenerated with only a root project
+	if err := generate.WriteProjects(path, plan, "third_party/js", generate.Scope{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// THEN the stale file is gone
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the stale projects file should be removed, stat says %v", err)
+	}
+}

@@ -1,9 +1,11 @@
 package generate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/please-build/buildtools/build"
 )
@@ -68,64 +70,43 @@ func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums 
 		f.Stmt = append(f.Stmt, call)
 	}
 
-	// One link target per pnpm workspace project. The closure is emitted in
-	// full rather than derived at build time: a store entry reachable only
-	// through another package's dep symlink still has to be staged, and the
-	// alternatives for deriving it either miss those entries or reintroduce
-	// the exported_deps hash oscillation.
-	for _, path := range sortedKeys(plan.Closure) {
-		closure := plan.Closure[path]
-		if len(closure) == 0 {
-			continue
-		}
-		call := &build.CallExpr{X: &build.Ident{Name: "npm_link"}, ForceMultiLine: true}
-		str(call, "name", linkName(path))
-		// Emitted onto the rule as well as used here: the link step recomputes
-		// the closure and has to reach the same answer, or it fails on an entry
-		// the package list does not contain.
-		for _, f := range []struct {
-			name string
-			on   bool
-		}{{"no_dev", scope.NoDev}, {"no_optional", scope.NoOptional}} {
-			if f.on {
-				call.List = append(call.List, &build.AssignExpr{
-					LHS: &build.Ident{Name: f.name},
-					Op:  "=",
-					RHS: &build.Ident{Name: "True"},
-				})
-			}
-		}
-		str(call, "lock", lockLabel)
-		if path != "." && path != "" {
-			str(call, "project", path)
-		}
-		list(call, "packages", labels(closure))
-		list(call, "visibility", []string{"PUBLIC"})
-		f.Stmt = append(f.Stmt, call)
-
+	// The root project's trees, linked here because the root project IS this
+	// package. The closure is emitted in full rather than derived at build
+	// time: a store entry reachable only through another package's dep symlink
+	// still has to be staged, and the alternatives for deriving it either miss
+	// those entries or reintroduce the exported_deps hash oscillation.
+	//
+	// Every other workspace project is linked where its package.json lives, by
+	// npm_project, from the data WriteProjects emits -- so no closure for a
+	// project elsewhere in the repo is written into this file at all.
+	if closure := plan.Closure["."]; len(closure) > 0 {
+		packages := labels(closure)
+		var ref build.Expr = listExpr(packages)
 		if hoistedLink {
-			h := &build.CallExpr{X: &build.Ident{Name: "npm_link"}, ForceMultiLine: true}
-			str(h, "name", hoistedName(path))
-			for _, fl := range []struct {
-				name string
-				on   bool
-			}{{"no_dev", scope.NoDev}, {"no_optional", scope.NoOptional}, {"hoisted", true}} {
-				if fl.on {
-					h.List = append(h.List, &build.AssignExpr{
-						LHS: &build.Ident{Name: fl.name},
-						Op:  "=",
-						RHS: &build.Ident{Name: "True"},
-					})
-				}
-			}
-			str(h, "lock", lockLabel)
-			if path != "." && path != "" {
-				str(h, "project", path)
-			}
-			list(h, "packages", labels(closure))
-			list(h, "visibility", []string{"PUBLIC"})
-			f.Stmt = append(f.Stmt, h)
+			// Stated once and referenced by both trees, so a repin's diff
+			// touches one list and the two layouts cannot disagree.
+			f.Stmt = append(f.Stmt, &build.AssignExpr{
+				LHS: &build.Ident{Name: "CLOSURE"},
+				Op:  "=",
+				RHS: listExpr(packages),
+			})
+			ref = &build.Ident{Name: "CLOSURE"}
 		}
+		f.Stmt = append(f.Stmt, linkCall("node_modules", lockLabel, ref, scope, false))
+		if hoistedLink {
+			f.Stmt = append(f.Stmt, linkCall("hoisted", lockLabel, ref, scope, true))
+		}
+	}
+
+	// What npm_project in another package needs to reach this tree: the data
+	// file, and the lockfile, which a rule elsewhere can only name through a
+	// target. Emitted only when there is such a project, so a single-project
+	// tree's file is unchanged.
+	if len(projectPaths(plan)) > 0 {
+		f.Stmt = append(f.Stmt,
+			exportCall("projects", ProjectsFile),
+			exportCall("lockfile", lockLabel),
+		)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -134,22 +115,126 @@ func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums 
 	return os.WriteFile(path, build.Format(f), 0o644)
 }
 
-// hoistedName names the hoisted tree for a workspace project, mirroring
-// linkName's convention.
-func hoistedName(importerPath string) string {
-	if importerPath == "." || importerPath == "" {
-		return "hoisted"
+// ProjectsFile is the generated data file npm_project loads, beside the
+// generated BUILD file.
+const ProjectsFile = "projects.build_defs"
+
+// linkCall is one npm_link over the root project's closure.
+func linkCall(name, lockLabel string, packages build.Expr, scope Scope, hoisted bool) *build.CallExpr {
+	call := &build.CallExpr{X: &build.Ident{Name: "npm_link"}, ForceMultiLine: true}
+	str(call, "name", name)
+	// Emitted onto the rule as well as used here: the link step recomputes the
+	// closure and has to reach the same answer, or it fails on an entry the
+	// package list does not contain. Policy flags carry onto both layouts: a
+	// hoisted tree that silently kept devDependencies would stage what the
+	// other tree refused.
+	for _, f := range []struct {
+		name string
+		on   bool
+	}{{"no_dev", scope.NoDev}, {"no_optional", scope.NoOptional}, {"hoisted", hoisted}} {
+		if f.on {
+			call.List = append(call.List, &build.AssignExpr{
+				LHS: &build.Ident{Name: f.name},
+				Op:  "=",
+				RHS: &build.Ident{Name: "True"},
+			})
+		}
 	}
-	return "hoisted_" + sanitise(importerPath)
+	str(call, "lock", lockLabel)
+	call.List = append(call.List, &build.AssignExpr{
+		LHS: &build.Ident{Name: "packages"},
+		Op:  "=",
+		RHS: packages,
+	})
+	list(call, "visibility", []string{"PUBLIC"})
+	return call
 }
 
-// linkName names the tree for a workspace project. The root project gets the
-// bare name, so the common single-project case reads as node_modules.
-func linkName(importerPath string) string {
-	if importerPath == "." || importerPath == "" {
-		return "node_modules"
+func exportCall(name, src string) *build.CallExpr {
+	call := &build.CallExpr{X: &build.Ident{Name: "filegroup"}, ForceMultiLine: true}
+	str(call, "name", name)
+	list(call, "srcs", []string{src})
+	list(call, "visibility", []string{"PUBLIC"})
+	return call
+}
+
+func listExpr(items []string) *build.ListExpr {
+	l := &build.ListExpr{ForceMultiLine: true}
+	for _, s := range items {
+		l.List = append(l.List, &build.StringExpr{Value: s})
 	}
-	return "node_modules_" + sanitise(importerPath)
+	return l
+}
+
+// projectPaths is every workspace project other than the root that has
+// anything to link, sorted.
+func projectPaths(plan *Plan) []string {
+	var out []string
+	for _, path := range sortedKeys(plan.Closure) {
+		if path != "." && path != "" && len(plan.Closure[path]) > 0 {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// WriteProjects emits the data npm_project reads, for every workspace project
+// other than the root: keyed by the project's path from the repository root,
+// which is exactly what package_name() returns in the package that holds its
+// package.json -- so a project finds itself with no argument at all.
+//
+// The lockfile's own key for the project (relative to the workspace, so often
+// ../../something) is carried as data for the link step and never appears in
+// a file anyone writes.
+//
+// workspaceDir is the lockfile's directory relative to the repository root.
+// Writes nothing, and removes a stale file, when there is no such project.
+func WriteProjects(path string, plan *Plan, workspaceDir string, scope Scope) error {
+	paths := projectPaths(plan)
+	if len(paths) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+
+	boolean := func(b bool) build.Expr {
+		if b {
+			return &build.Ident{Name: "True"}
+		}
+		return &build.Ident{Name: "False"}
+	}
+
+	projects := &build.DictExpr{ForceMultiLine: true}
+	for _, key := range paths {
+		repoPath := filepath.ToSlash(filepath.Clean(filepath.Join(workspaceDir, key)))
+		if repoPath == ".." || strings.HasPrefix(repoPath, "../") {
+			return fmt.Errorf("workspace project %q resolves to %s, outside the repository", key, repoPath)
+		}
+		entry := &build.DictExpr{ForceMultiLine: true}
+		for _, kv := range []struct {
+			k string
+			v build.Expr
+		}{
+			{"project", &build.StringExpr{Value: key}},
+			{"no_dev", boolean(scope.NoDev)},
+			{"no_optional", boolean(scope.NoOptional)},
+			// Bare target names: npm_project qualifies them with the tree's
+			// label, so the data does not care where the tree lives.
+			{"packages", listExpr(plan.Closure[key])},
+		} {
+			entry.List = append(entry.List, &build.KeyValueExpr{Key: &build.StringExpr{Value: kv.k}, Value: kv.v})
+		}
+		projects.List = append(projects.List, &build.KeyValueExpr{Key: &build.StringExpr{Value: repoPath}, Value: entry})
+	}
+
+	assign := &build.AssignExpr{LHS: &build.Ident{Name: "NPM_PROJECTS"}, Op: "=", RHS: projects}
+	assign.Comments.Before = []build.Comment{
+		{Token: "# Generated by please_js update from the workspace lockfile. Do not edit:"},
+		{Token: "# regenerate with this tree's npm_update target. Read by npm_project."},
+	}
+	f := &build.File{Path: path, Type: build.TypeDefault, Stmt: []build.Expr{assign}}
+	return os.WriteFile(path, build.Format(f), 0o644)
 }
 
 func labels(targets []string) []string {
