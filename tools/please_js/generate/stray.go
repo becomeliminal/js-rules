@@ -1,6 +1,7 @@
 package generate
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,4 +38,35 @@ func StrayModules(root string) string {
 			"  An undeclared one resolves from here instead, so the build passes on this\n"+
 			"  machine and fails on any other. Remove it, or keep it knowing that.",
 		path)
+}
+
+// IgnoredPnpmField reports a `pnpm` field in a tree's package.json.
+//
+// pnpm 10 moved workspace settings -- packageExtensions, overrides, patches --
+// to pnpm-workspace.yaml, and the pnpm this toolchain drives no longer reads
+// them from package.json. The failure mode is the quiet kind: the field sits
+// there looking like an applied fix while the resolution it was meant to
+// change proceeds without it. Found the hard way, twenty minutes at a time.
+//
+// A warning rather than an error, because pnpm itself accepts the file; it is
+// only the settings that go nowhere. Returns an empty string when there is
+// nothing to say.
+func IgnoredPnpmField(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return ""
+	}
+	var manifest map[string]json.RawMessage
+	if json.Unmarshal(data, &manifest) != nil {
+		return ""
+	}
+	if _, ok := manifest["pnpm"]; !ok {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s has a \"pnpm\" field, which this pnpm does not read.\n"+
+			"  Workspace settings (packageExtensions, overrides, patchedDependencies, ...)\n"+
+			"  live in pnpm-workspace.yaml since pnpm 10; the field in package.json is\n"+
+			"  silently ignored, so whatever it was meant to change has not changed.",
+		filepath.Join(dir, "package.json"))
 }
