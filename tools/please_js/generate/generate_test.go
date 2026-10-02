@@ -303,3 +303,27 @@ func TestWriteBUILDStatesTheRootClosureOnce(t *testing.T) {
 		t.Errorf("a tree with no other project should be unchanged:\n%s", out)
 	}
 }
+
+// For a BUILD file generated inside a build action, each rule carries the
+// lockfile's own integrity, so nothing has to be downloaded to write it.
+func TestWriteBUILDRecordsLockfileIntegrity(t *testing.T) {
+	// GIVEN a plan whose entry carries the lockfile's integrity
+	path := filepath.Join(t.TempDir(), "BUILD")
+	plan := &generate.Plan{
+		Entries:   []generate.Entry{{Target: "ms_2.1.3", Package: "ms", Version: "2.1.3", Integrity: "sha512-abc=="}},
+		Closure:   map[string][]string{},
+		Direct:    map[string]map[string]string{},
+		Workspace: map[string]map[string]string{},
+	}
+
+	// WHEN it is written in integrity mode
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, false, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// THEN the rule carries the integrity and no download hash
+	out, _ := os.ReadFile(path)
+	if !strings.Contains(string(out), `integrity = "sha512-abc=="`) || strings.Contains(string(out), "hashes") {
+		t.Errorf("expected the lockfile integrity and no hashes:\n%s", out)
+	}
+}

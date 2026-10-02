@@ -8,12 +8,7 @@
 package main
 
 import (
-	"crypto/sha1"
-	"crypto/sha256"
-	"crypto/sha512"
-	"encoding/base64"
 	"encoding/json"
-	"hash"
 	"io"
 	"fmt"
 	"os"
@@ -692,39 +687,13 @@ func resolve() error {
 	return nil
 }
 
-// verifyIntegrity checks a downloaded tarball against the subresource
-// integrity string its lockfile recorded (sha512-<base64>, or an older
-// algorithm). Please verifies only sha1 and sha256 itself, so a package whose
-// rule carries the lockfile's own checksum is checked here instead.
+// verifyIntegrity checks a downloaded tarball against its lockfile integrity
+// and, if asked, extracts it. Please verifies only sha1 and sha256 itself, so
+// a package whose rule carries the lockfile's own checksum is checked here.
 func verifyIntegrity() error {
 	o := opts.VerifyIntegrity
-	algo, want, ok := strings.Cut(o.Integrity, "-")
-	if !ok {
-		return fmt.Errorf("integrity %q is not <algorithm>-<base64>", o.Integrity)
-	}
-	var h hash.Hash
-	switch algo {
-	case "sha512":
-		h = sha512.New()
-	case "sha384":
-		h = sha512.New384()
-	case "sha256":
-		h = sha256.New()
-	case "sha1":
-		h = sha1.New()
-	default:
-		return fmt.Errorf("integrity %q uses %s, which please_js does not verify", o.Integrity, algo)
-	}
-	f, err := os.Open(o.File)
-	if err != nil {
+	if err := tarball.Verify(o.File, o.Integrity); err != nil {
 		return err
-	}
-	defer f.Close()
-	if _, err := io.Copy(h, f); err != nil {
-		return err
-	}
-	if got := base64.StdEncoding.EncodeToString(h.Sum(nil)); got != want {
-		return fmt.Errorf("%s does not match its lockfile integrity: want %s-%s, got %s-%s", o.File, algo, want, algo, got)
 	}
 	if o.ExtractTo != "" {
 		return tarball.Extract(o.File, o.ExtractTo)

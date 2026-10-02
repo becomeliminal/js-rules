@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha512"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,5 +90,25 @@ func TestExtractRefusesEntriesThatEscapeThePackage(t *testing.T) {
 				t.Errorf("expected a refusal, got %v", err)
 			}
 		})
+	}
+}
+
+func TestVerifyAcceptsTheRecordedChecksumAndRefusesAnyOther(t *testing.T) {
+	// GIVEN a file and the sha512 integrity a lockfile would record for it
+	file := filepath.Join(t.TempDir(), "pkg.tgz")
+	os.WriteFile(file, []byte("published bytes"), 0o644)
+	sum := sha512.Sum512([]byte("published bytes"))
+	good := "sha512-" + base64.StdEncoding.EncodeToString(sum[:])
+
+	// WHEN it is verified against that integrity, and against another
+	errGood := tarball.Verify(file, good)
+	errBad := tarball.Verify(file, "sha512-"+base64.StdEncoding.EncodeToString(make([]byte, 64)))
+
+	// THEN the match passes and the mismatch fails, naming both digests
+	if errGood != nil {
+		t.Errorf("the recorded checksum should verify: %v", errGood)
+	}
+	if errBad == nil || !strings.Contains(errBad.Error(), "does not match its lockfile integrity") {
+		t.Errorf("a different checksum should fail, got %v", errBad)
 	}
 }

@@ -2,7 +2,10 @@ subinclude("///go//build_defs:go")
 
 go_library(
     name = "tarball",
-    srcs = ["tarball.go"],
+    srcs = [
+        "tarball.go",
+        "verify.go",
+    ],
     visibility = ["//tools/..."],
 )
 

@@ -99,6 +99,32 @@ also declares `:node_modules_hoisted`, npm's flat layout, for a tool that
 cannot work through the store's links; it duplicates packages wherever
 versions conflict, so it is opt-in.
 
+### No generated BUILD file: `npm_workspace`
+
+The lockfile is the only thing a workspace needs to commit. `npm_workspace`
+translates it into `npm_repo` targets at build time, inside a subrepo, the way
+`go_repo` generates Go modules, so Please regenerates them exactly when the
+lockfile changes:
+
+```python
+# third_party/js/BUILD -- the whole file
+npm_workspace(name = "npm")
+```
+
+```ini
+[Plugin "js"]
+Tree = //third_party/js
+TreeRepo = npm
+```
+
+Each package is checked against the integrity the lockfile recorded, then
+extracted with normalised modes and every entry confined to the package, so
+nothing is downloaded to write the rules. `npm_update(generate = False)` then
+only brings the lockfile up to date -- resolution, which needs the network and
+changes over time, stays a committed, reviewed step; everything after it is a
+cached build. Each project's tree reads its own slice of the lockfile, so a
+dependency change in one app leaves every other app's tree a cache hit.
+
 Also supported, each with a test that proves it: npm and yarn lockfiles,
 package aliases, workspace packages (`link:`), private registries with
 per-scope URLs and secret headers, patches (zero-fuzz, a failed hunk fails the
