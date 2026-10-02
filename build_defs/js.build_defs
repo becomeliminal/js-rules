@@ -453,11 +453,11 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
             # holds none of them and walking it doubles the work.
             'LIBS=$(find . -name node_modules -prune -o -name lib.json -print | ' +
             'while read m; do printf -- "--lib %s:%s " "$m" "$(dirname "$m")/pkg"; done)',
-            # One tree, assembled by the same tool js_binary uses. A repo with no
-            # third-party dependencies has no tree to overlay onto and the
-            # overlay makes an empty one, so this path does not need a special
-            # case for it.
-            f'"$PLEASE_JS" overlay --tree "${{SRCS_MODULES:-}}" --out {run_dir}/node_modules $LIBS',
+            # First-party libraries are overlaid; the third-party tree is linked
+            # in beside them, never copied -- it is already a build output, and
+            # a copy per action duplicated it into every bundle, check and test.
+            f'"$PLEASE_JS" overlay --tree "" --out {run_dir}/node_modules $LIBS',
+            f'"$PLEASE_JS" link-tree --tree "${{SRCS_MODULES:-}}" --into {run_dir}/node_modules',
             f'for s in ${SRCS_SRCS:-}; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
             # A rule with no sources still needs somewhere to run.
             f'mkdir -p "{workdir}"',
@@ -539,7 +539,6 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             "entry": [entry_point] if entry_point else [],
             "suite": srcs if copy_srcs else [],
             "libs": narrowed,
-            "modules": [node_modules] if node_modules else [],
         },
         outs = [run_dir],
         cmd = " && ".join([
@@ -555,7 +554,10 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # A repo whose first-party code has no third-party dependencies has
             # no tree to overlay onto, and the overlay makes an empty one. The
             # variable is unset rather than empty in that case.
-            '"$PLEASE_JS" overlay --tree "${SRCS_MODULES:-}" --out "$OUT/node_modules" $LIBS' +
+            # Only the first-party libraries: the third-party tree is linked in
+            # by the launcher at start, so this output stays small and the tree
+            # exists once, as its own build output.
+            '"$PLEASE_JS" overlay --tree "" --out "$OUT/node_modules" $LIBS' +
             (" --dev" if link_deps else ""),
         ] + ([
             # At their own paths, because a test file's relative imports have to
@@ -586,6 +588,9 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     tool_sub = _subrepo_path(CONFIG.JS.PLEASE_JS_TOOL) or tool_rel
     run_rel = package_name() + "/" + run_dir + "/" + entry_name
     dir_rel = package_name() + "/" + run_dir
+    # The third-party tree is staged beside the program rather than copied into
+    # its runtime, and linked in when the launcher starts.
+    tree_rel = _staged_path(canonicalise(node_modules)) if node_modules else ""
 
     # Exported before exec, single-quoted so a value carrying a space or a
     # dollar reaches the program as written.
@@ -747,8 +752,17 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
          if from_dir else
          'MAIN=$(find_one "$HERE/@RUNDIR@/@ENTRY@" "$ROOT/@RUN@" "$ROOT/plz-out/gen/@RUN@") || {'),
         '    echo "js_binary: no runtime directory for this program" >&2; exit 1; }',
+        "" if from_dir else 'RUNDIR=$(dirname "$MAIN")',
         "",
-    ] + link_lines + env_lines + chdir_lines + [
+    ] + ([
+        # Linked, not copied: one link per top-level package into the tree,
+        # which stays a single build output however many programs use it.
+        'TREE=$(find_one "$HERE/@TREENAME@" "$ROOT/@TREE@" "$ROOT/plz-out/gen/@TREE@") || {',
+        '    echo "js_binary: no node_modules tree at @TREE@" >&2; exit 1; }',
+        'LINKER=$(find_one "$ROOT/@TOOL@" "$ROOT/plz-out/bin/@TOOL@" "$ROOT/plz-out/bin/@TOOLSUB@") || {',
+        '    echo "js_binary: no please_js to link the tree" >&2; exit 1; }',
+        '"$LINKER" link-tree --tree "$TREE" --into "$RUNDIR/node_modules"',
+    ] if tree_rel else []) + link_lines + env_lines + chdir_lines + [
         exec_line,
     ])
     launcher = (launcher
@@ -759,6 +773,8 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         .replace("@TOOLSUB@", tool_sub)
         .replace("@TOOL@", tool_rel)
 
+        .replace("@TREENAME@", tree_rel.split("/")[-1])
+        .replace("@TREE@", tree_rel)
         .replace("@ENTRY@", entry_name)
         .replace("@OPTS@", " ".join(node_options)))
 
@@ -773,8 +789,10 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         # so it is needed whenever either happens -- under both staging layouts,
         # because a binary is reached through runtime_deps and a test through
         # data.
-        data = (data + _staged(runtime, suite or bool(runner))) if test else None,
-        runtime_deps = None if test else _staged(runtime, suite or bool(runner)),
+        data = (data + _staged(runtime, suite or bool(runner) or bool(node_modules)) +
+                ([node_modules] if node_modules else [])) if test else None,
+        runtime_deps = None if test else (_staged(runtime, suite or bool(runner) or bool(node_modules)) +
+                                          ([node_modules] if node_modules else [])),
         binary = True,
         test = test,
         # The cover variant exists so `plz cover` sets COVERAGE and

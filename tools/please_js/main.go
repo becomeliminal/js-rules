@@ -95,6 +95,11 @@ var opts = struct {
 		Dev  bool     `long:"dev" description:"record libraries with sources for devlink instead of copying their built output"`
 	} `command:"overlay" description:"Add first-party libraries to a node_modules tree"`
 
+	LinkTree struct {
+		Tree string `long:"tree" description:"the third-party node_modules tree to link in; empty links nothing"`
+		Into string `long:"into" required:"true" description:"the node_modules to link it into, which may already hold first-party libraries"`
+	} `command:"link-tree" description:"Make a third-party tree resolvable from a node_modules without copying it"`
+
 	Devlink struct {
 		Tree string `long:"tree" required:"true" description:"the node_modules tree to write packages into"`
 		Root string `long:"root" required:"true" description:"the repository root the symlinks point into"`
@@ -185,6 +190,7 @@ func main() {
 		"link":        link,
 		"resolve":     resolve,
 		"overlay":     overlay,
+		"link-tree":   func() error { return store.LinkTree(opts.LinkTree.Tree, opts.LinkTree.Into) },
 		"devlink":     devlink,
 		"packages":    listPackages,
 		"hooks":       runHooks,
