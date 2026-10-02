@@ -28,6 +28,7 @@ import (
 	"tools/please_js/junit"
 	"tools/please_js/lockfile"
 	"tools/please_js/store"
+	"tools/please_js/tarball"
 	"tools/please_js/tsconfig"
 )
 
@@ -105,6 +106,7 @@ var opts = struct {
 	VerifyIntegrity struct {
 		File      string `long:"file" required:"true" description:"the downloaded tarball"`
 		Integrity string `long:"integrity" required:"true" description:"the lockfile's integrity for it, as <algorithm>-<base64>"`
+		ExtractTo string `long:"extract-to" description:"once verified, extract it here, as npm and pnpm do"`
 	} `command:"verify-integrity" description:"Check a tarball against its lockfile integrity"`
 
 	LinkTree struct {
@@ -723,6 +725,9 @@ func verifyIntegrity() error {
 	}
 	if got := base64.StdEncoding.EncodeToString(h.Sum(nil)); got != want {
 		return fmt.Errorf("%s does not match its lockfile integrity: want %s-%s, got %s-%s", o.File, algo, want, algo, got)
+	}
+	if o.ExtractTo != "" {
+		return tarball.Extract(o.File, o.ExtractTo)
 	}
 	return nil
 }

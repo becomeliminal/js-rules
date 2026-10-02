@@ -220,8 +220,10 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None, integrity:s
         ] + ([
             # Verified before anything reads it: a tarball that does not match
             # the lockfile fails the build here.
-            f'"$TOOLS_PLEASE_JS" verify-integrity --file "$SRCS_PKG" --integrity {integrity}',
-            'PKG_DIR="$TMP_DIR/_extracted" && mkdir -p "$PKG_DIR" && tar -xzf "$SRCS_PKG" -C "$PKG_DIR"',
+            # Verified, then extracted as npm does (modes normalised, nothing
+            # written outside the package), by the same tool everywhere.
+            'PKG_DIR="$TMP_DIR/_extracted"',
+            f'"$TOOLS_PLEASE_JS" verify-integrity --file "$SRCS_PKG" --integrity {integrity} --extract-to "$PKG_DIR"',
         ] if integrity else [
             'PKG_DIR="$SRCS_PKG"',
         ]) + [
