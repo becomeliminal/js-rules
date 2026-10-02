@@ -3,6 +3,7 @@ subinclude("///go//build_defs:go")
 go_library(
     name = "lockfile",
     srcs = [
+        "documents.go",
         "lockfile.go",
         "npm.go",
         "slice.go",
