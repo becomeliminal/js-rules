@@ -117,11 +117,10 @@ const (
 
 // place decides where every reachable resolution goes in a hoisted tree.
 //
-// Top level when the name is free, beside the dependent when it is not. npm
-// hoists as high as it can rather than only to the top, which nests less; this
-// nests a little more and is correct for the same reason -- a package's own
-// node_modules is searched before any ancestor's, so a name placed lower is
-// still the one its dependent finds.
+// Top level when the name is free; otherwise as high as it can go on the path
+// to the dependent that needs it, as npm does, so siblings share one copy. A
+// package's own node_modules is searched before any ancestor's, so a name
+// placed lower is still the one its dependent finds.
 //
 // That rule alone is not enough, and the second pass exists for the gap: a
 // dependent whose name walk is intercepted BETWEEN it and the placement it
@@ -135,6 +134,11 @@ const (
 // a deeper, already-checked edge finds, so the sweep repeats until nothing
 // moves; it terminates because placements only ever grow and are bounded by
 // the edge count.
+// maxHoistDepth bounds how deep a hoisted placement may nest. The deepest real
+// tree seen nests 10 levels; the bound exists so a placer bug fails the build
+// rather than consuming memory without limit.
+const maxHoistDepth = 64
+
 func place(sources []Source, links []Ref) (map[string][]string, error) {
 	byName := make(map[string]Source, len(sources))
 	for _, s := range sources {
@@ -168,15 +172,47 @@ func place(sources []Source, links []Ref) (map[string][]string, error) {
 
 		at := it.as
 		if held, dup := taken[at]; dup && held != it.entry {
-			// The name is spoken for by a different resolution, so this one
-			// lives beside the package that asked for it.
-			at = it.parent + "/node_modules/" + it.as
+			// The name is spoken for at the top by a different resolution, so
+			// this one goes as high as it can on the path to the package that
+			// asked for it -- npm's rule. Walking up from the dependent, the
+			// first slot holding the name is what node would resolve; if that
+			// is already this entry there is nothing to place, and otherwise
+			// the shallowest free slot below it is shared by every sibling on
+			// that path. Placing only beside the dependent instead copies a
+			// whole family of packages into each member: a real tree with two
+			// generations of one SDK grew to 6.9 GB and 885,000 files that way.
+			// A slot placed higher can shadow another package's resolution;
+			// the verification sweep below repairs any that it does.
+			parts := strings.Split(it.parent, "/node_modules/")
+			at = ""
+			resolved := false
+			for j := len(parts); j >= 1; j-- {
+				slot := strings.Join(parts[:j], "/node_modules/") + "/node_modules/" + it.as
+				if held, ok := taken[slot]; ok {
+					resolved = held == it.entry
+					break
+				}
+				at = slot
+			}
+			if resolved {
+				continue // already reachable from here, dependencies queued
+			}
+			if at == "" {
+				at = it.parent + "/node_modules/" + it.as // reported as a collision below
+			}
 		}
 		if held, done := taken[at]; done {
 			if held == it.entry {
 				continue // already placed, and its dependencies already queued
 			}
 			return nil, fmt.Errorf("%s and %s would both be at %s", held, it.entry, at)
+		}
+		// No real tree nests anywhere near this deep; a placement that does is
+		// a cycle the placer failed to close, and it would otherwise grow until
+		// the machine runs out of memory. Fail with the evidence instead.
+		if depth := strings.Count(at, "/node_modules/"); depth > maxHoistDepth {
+			return nil, fmt.Errorf("placing %s nested %d levels deep, at %s: a dependency cycle the "+
+				"hoisted layout could not close; this is a bug in the placer", it.entry, depth, at)
 		}
 		taken[at] = it.entry
 		placements[it.entry] = append(placements[it.entry], at)
