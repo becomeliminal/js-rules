@@ -12,10 +12,10 @@ import (
 // Pins is every package a workspace project's tree stages, as build labels:
 // the npm_repo targets the tree's generated BUILD file defines, qualified with
 // the tree's package. This is what npm_project attaches to its node_modules at
-// build time, so the list never has to exist in any file.
-func Pins(plan *Plan, project, tree string) ([]string, error) {
-	closure, ok := plan.Closure[project]
-	if !ok {
+// build time, so the list never has to exist in any file. With merge, peer
+// variants of one package@version are folded to a single pin (see Project).
+func Pins(plan *Plan, project, tree string, merge bool) ([]string, error) {
+	if _, ok := plan.Closure[project]; !ok {
 		known := make([]string, 0, len(plan.Closure))
 		for p := range plan.Closure {
 			known = append(known, p)
@@ -25,6 +25,7 @@ func Pins(plan *Plan, project, tree string) ([]string, error) {
 			"Add the package to packages in the tree's pnpm-workspace.yaml and regenerate it",
 			project, strings.Join(known, ", "))
 	}
+	closure := plan.Project(project, merge).Closure
 	out := make([]string, len(closure))
 	for i, target := range closure {
 		out[i] = tree + ":" + target

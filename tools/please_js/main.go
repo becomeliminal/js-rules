@@ -74,6 +74,7 @@ var opts = struct {
 		Source   []string `long:"source" description:"a staged package, as metadata-path:package-dir"`
 		SourceDir []string `long:"source-dir" description:"a directory whose subdirectories are staged packages, each with meta.json beside pkg/; how npm_project hands over the pins attached at build time"`
 		Out      string   `long:"out" required:"true" description:"node_modules root to build"`
+		NoMergePeers bool `long:"no-merge-peers" description:"stage every peer variant pnpm resolved, rather than one copy per package@version"`
 	} `command:"link" description:"Assemble a node_modules tree from staged packages"`
 
 	Resolve struct {
@@ -84,6 +85,7 @@ var opts = struct {
 		Update      string `long:"update" description:"the command that regenerates the tree, for the error when package.json has drifted"`
 		NoDev       bool   `long:"no-dev" description:"leave devDependencies out; must match how the tree was generated"`
 		NoOptional  bool   `long:"no-optional" description:"leave optionalDependencies out; must match how the tree was generated"`
+		NoMergePeers bool  `long:"no-merge-peers" description:"print every peer variant pnpm resolved, rather than one copy per package@version"`
 	} `command:"resolve" description:"Print the pins a workspace project's tree stages, one label per line"`
 
 	Overlay struct {
@@ -486,7 +488,14 @@ func link() error {
 		return fmt.Errorf("%s has no project %q; it has %s",
 			opts.Link.Lockfile, opts.Link.Project, strings.Join(projects(plan), ", "))
 	}
-	refs := plan.Refs()
+	tree := plan.Project(opts.Link.Project, !opts.Link.NoMergePeers)
+	refs := tree.Refs
+	// Only this project's tree is staged: a package outside it, or a peer
+	// variant folded into the copy kept, must never quietly reach the output.
+	inClosure := map[string]bool{}
+	for _, entry := range tree.Closure {
+		inClosure[entry] = true
+	}
 
 	var sources []store.Source
 	for _, s := range opts.Link.Source {
@@ -498,6 +507,9 @@ func link() error {
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", metaPath, err)
 		}
+		if !inClosure[meta.Name] {
+			continue
+		}
 		sources = append(sources, store.Source{
 			Dir: dir, Meta: meta, Deps: refs[meta.Name],
 			Origin: "the lockfile, as " + meta.Package + "@" + meta.Version,
@@ -505,13 +517,7 @@ func link() error {
 	}
 
 	// Pins attached at build time arrive staged at their own package paths
-	// rather than as flags, because no file names them. Only this project's
-	// closure is taken: what is staged should be exactly that, and a tree must
-	// never quietly gain a package its lockfile entry does not reach.
-	inClosure := map[string]bool{}
-	for _, entry := range plan.Closure[opts.Link.Project] {
-		inClosure[entry] = true
-	}
+	// rather than as flags, because no file names them.
 	for _, root := range opts.Link.SourceDir {
 		entries, err := os.ReadDir(root)
 		if err != nil {
@@ -541,7 +547,7 @@ func link() error {
 	// package does, so nothing downstream can tell them apart -- which is the
 	// point: source code imports "@scope/thing" without knowing where it came
 	// from.
-	links := plan.Links(opts.Link.Project)
+	links := tree.Links
 	provided := map[string]bool{}
 	for _, w := range opts.Link.Workspace {
 		name, dir, ok := strings.Cut(w, ":")
@@ -640,7 +646,7 @@ func resolve() error {
 	if err != nil {
 		return err
 	}
-	pins, err := generate.Pins(plan, o.Project, o.Tree)
+	pins, err := generate.Pins(plan, o.Project, o.Tree, !o.NoMergePeers)
 	if err != nil {
 		return err
 	}

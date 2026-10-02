@@ -267,7 +267,7 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None,
 def npm_link(name:str, lock:str, packages:list=[], workspace:dict={}, project:str=".",
              hoist:list=[], no_dev:bool=False, no_optional:bool=False,
              hoisted:bool=False, source_dirs:list=[], deps:list=[],
-             visibility:list=["PUBLIC"]):
+             merge_peer_variants:bool=True, visibility:list=["PUBLIC"]):
     """Assembles a node_modules tree for one pnpm workspace project.
 
     This is the JavaScript equivalent of go-rules aggregating .importconfig
@@ -341,6 +341,11 @@ def npm_link(name:str, lock:str, packages:list=[], workspace:dict={}, project:st
                      hands over the pins it attaches at build time, which no
                      file names.
         deps: Dependencies of the link action, for npm_project's resolve step.
+        merge_peer_variants: Stage one copy per package@version. pnpm resolves
+                             a package once per peer context, so one version
+                             can become several packages -- several instances
+                             of its module state in one app. True folds them
+                             to one; False stages exactly what pnpm resolved.
         visibility: Visibility specification.
     """
     srcs = {"lock": [lock]}
@@ -377,6 +382,7 @@ def npm_link(name:str, lock:str, packages:list=[], workspace:dict={}, project:st
             "--no-dev" if no_dev else "",
             "--no-optional" if no_optional else "",
             " ".join([f'--source-dir "{d}"' for d in source_dirs]),
+            "" if merge_peer_variants else "--no-merge-peers",
         ] + source_flags),
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         deps = deps,
@@ -390,7 +396,8 @@ def npm_link(name:str, lock:str, packages:list=[], workspace:dict={}, project:st
 
 def npm_project(name:str, package_json:str="package.json", tree:str="",
                 no_dev:bool=False, no_optional:bool=False, hoist:list=[],
-                workspace:dict={}, visibility:list=["PUBLIC"]):
+                workspace:dict={}, merge_peer_variants:bool=True,
+                visibility:list=["PUBLIC"]):
     """Declares that this package is an npm project, and links its node_modules.
 
     Called in the package that holds the project's package.json. That
@@ -429,6 +436,11 @@ def npm_project(name:str, package_json:str="package.json", tree:str="",
                else's broken manifest.
         workspace: As npm_link's: the repo's own packages this project links,
                    as npm name -> the target building it.
+        merge_peer_variants: As npm_link's: one copy per package@version,
+                             whichever peer contexts pnpm resolved it under.
+                             Holds in a shared tree too, where another
+                             project's packages can fill this one's optional
+                             peers.
         visibility: Visibility specification.
     """
     tree = tree or CONFIG.JS.TREE
@@ -463,6 +475,7 @@ def npm_project(name:str, package_json:str="package.json", tree:str="",
             f"--project {project} --tree {tree}",
             "--no-dev" if no_dev else "",
             "--no-optional" if no_optional else "",
+            "" if merge_peer_variants else "--no-merge-peers",
             # The pins are this rule's output and its stdout: post_build reads
             # stdout, and a cached build replays it.
             '> "$OUT" && cat "$OUT"',
@@ -487,6 +500,7 @@ def npm_project(name:str, package_json:str="package.json", tree:str="",
             no_dev = no_dev,
             no_optional = no_optional,
             hoisted = hoisted,
+            merge_peer_variants = merge_peer_variants,
             visibility = visibility,
         )]
     return trees[0]

@@ -6,6 +6,7 @@ go_library(
         "generate.go",
         "platform.go",
         "hash.go",
+        "merge.go",
         "resolve.go",
         "stray.go",
         "write.go",
@@ -22,6 +23,7 @@ go_test(
     name = "generate_test",
     srcs = [
         "generate_test.go",
+        "merge_test.go",
         "platform_test.go",
         "resolve_test.go",
     ],
@@ -29,5 +31,6 @@ go_test(
     deps = [
         ":generate",
         "//tools/please_js/lockfile",
+        "//tools/please_js/store",
     ],
 )

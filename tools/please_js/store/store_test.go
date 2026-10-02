@@ -466,22 +466,170 @@ func TestHoistedNestsThroughAShadowingAncestor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The walk from curves@1 must find hashes@2 before the shadowing
-	// hashes@1 one level up -- which means a copy nested beside curves@1.
-	resolved := filepath.Join(root, "account", "node_modules", "ox", "node_modules",
-		"curves", "node_modules", "@noble", "hashes", "index.js")
-	data, err := os.ReadFile(resolved)
-	if err != nil {
-		t.Fatalf("the shadowed dependency should be nested beside its dependent: %v", err)
+	// The walk node does from curves@1 must find hashes@2, not the hashes@1
+	// account nests one level up. Asserted by walking, not by a fixed path:
+	// where the fix copy lands is the placer's business, what it resolves to
+	// is the contract.
+	var curves string
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err == nil && filepath.Base(p) == "index.js" {
+			if data, _ := os.ReadFile(p); string(data) == "// curves_1" {
+				curves = filepath.Dir(p)
+			}
+		}
+		return nil
+	})
+	if curves == "" {
+		t.Fatal("curves@1 was not placed")
 	}
-	if string(data) != "// hashes_2" {
-		t.Errorf("nested copy is %q, want hashes_2", string(data))
+	got := ""
+	for dir := curves; strings.HasPrefix(dir, root); dir = filepath.Dir(dir) {
+		if data, err := os.ReadFile(filepath.Join(dir, "node_modules", "@noble", "hashes", "index.js")); err == nil {
+			got = string(data)
+			break
+		}
+	}
+	if got == "" {
+		data, _ := os.ReadFile(filepath.Join(root, "@noble", "hashes", "index.js"))
+		got = string(data)
+	}
+	if got != "// hashes_2" {
+		t.Errorf("curves@1 resolves @noble/hashes to %q, want hashes_2", got)
 	}
 
 	// The shadow itself is untouched: account still finds its own hashes@1.
-	data, _ = os.ReadFile(filepath.Join(root, "account", "node_modules", "@noble", "hashes", "index.js"))
+	data, _ := os.ReadFile(filepath.Join(root, "account", "node_modules", "@noble", "hashes", "index.js"))
 	if string(data) != "// hashes_1" {
 		t.Errorf("account's own resolution is %q, want hashes_1", string(data))
+	}
+}
+
+// A family of packages nested under one parent, all needing a version of a
+// name whose top-level slot holds another version, share ONE copy at the
+// highest free spot -- npm's rule -- instead of each member nesting its own.
+// The real case: two generations of the Solana SDK in one tree, where nesting
+// beside each dependent copied one package 597 times (6.9 GB, 885k files).
+func TestHoistedSharesAConflictingVersionAcrossSiblings(t *testing.T) {
+	dir := t.TempDir()
+	pkg := func(name string) string {
+		d := filepath.Join(dir, "src", strings.ReplaceAll(name, "/", "+"))
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "index.js"), []byte("// "+name), 0o644)
+		return d
+	}
+	src := func(entry, name string, deps ...store.Ref) store.Source {
+		return store.Source{Dir: pkg(entry), Meta: store.Meta{Name: entry, Package: name}, Deps: deps}
+	}
+
+	// GIVEN app -> types@7 (takes the top) and program, and program -> five
+	// family members that each need types@5 and each other
+	members := []string{"m1", "m2", "m3", "m4", "m5"}
+	var sources []store.Source
+	var programDeps []store.Ref
+	for _, m := range members {
+		deps := []store.Ref{{As: "types", Entry: "types_5"}}
+		for _, other := range members {
+			if other != m {
+				deps = append(deps, store.Ref{As: other, Entry: other + "_5"})
+			}
+		}
+		sources = append(sources, src(m+"_5", m, deps...))
+		programDeps = append(programDeps, store.Ref{As: m, Entry: m + "_5"})
+	}
+	sources = append(sources,
+		src("app_1", "app", store.Ref{As: "types", Entry: "types_7"}, store.Ref{As: "program", Entry: "program_1"}),
+		src("program_1", "program", programDeps...),
+		src("types_7", "types"),
+		src("types_5", "types"),
+	)
+	// The members also exist at the top under other versions, so they nest too.
+	for _, m := range members {
+		sources = append(sources, src(m+"_7", m))
+	}
+	links := []store.Ref{{As: "app", Entry: "app_1"}}
+	for _, m := range members {
+		links = append(links, store.Ref{As: m, Entry: m + "_7"})
+	}
+	root := filepath.Join(dir, "out")
+
+	// WHEN the hoisted tree is built
+	if err := store.Build(root, sources, links, store.Hoisted); err != nil {
+		t.Fatal(err)
+	}
+
+	// THEN types@5 exists once, shared, not once per member
+	var copies int
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err == nil && filepath.Base(p) == "index.js" {
+			if data, _ := os.ReadFile(p); string(data) == "// types_5" {
+				copies++
+			}
+		}
+		return nil
+	})
+	if copies != 1 {
+		t.Errorf("types@5 should be placed once and shared by the family, found %d copies", copies)
+	}
+}
+
+// A version placed high must not land in the node_modules of a package that
+// needs a different version itself: that package resolves its own slot first.
+// The real case: browserify-sign needs safe-buffer 5.2.1 while a stream
+// nested under it needs 5.1.2.
+func TestHoistedNeverShadowsTheOwnerOfASlot(t *testing.T) {
+	dir := t.TempDir()
+	pkg := func(name string) string {
+		d := filepath.Join(dir, "src", name)
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "index.js"), []byte("// "+name), 0o644)
+		return d
+	}
+	src := func(entry, name string, deps ...store.Ref) store.Source {
+		return store.Source{Dir: pkg(entry), Meta: store.Meta{Name: entry, Package: name}, Deps: deps}
+	}
+
+	// GIVEN app -> sb@2, signer, stream@3; signer -> sb@2, stream@2 (nests,
+	// stream@3 has the top); stream@2 -> sb@1
+	sources := []store.Source{
+		src("app_1", "app",
+			store.Ref{As: "sb", Entry: "sb_2"},
+			store.Ref{As: "signer", Entry: "signer_1"},
+			store.Ref{As: "stream", Entry: "stream_3"}),
+		src("signer_1", "signer",
+			store.Ref{As: "sb", Entry: "sb_2"},
+			store.Ref{As: "stream", Entry: "stream_2"}),
+		src("stream_2", "stream", store.Ref{As: "sb", Entry: "sb_1"}),
+		src("stream_3", "stream"),
+		src("sb_1", "sb"),
+		src("sb_2", "sb"),
+	}
+	root := filepath.Join(dir, "out")
+
+	// WHEN the hoisted tree is built
+	err := store.Build(root, sources, []store.Ref{
+		{As: "sb", Entry: "sb_2"}, {As: "signer", Entry: "signer_1"}, {As: "stream", Entry: "stream_3"},
+	}, store.Hoisted)
+
+	// THEN it builds, signer still finds sb@2, and the nested stream finds sb@1
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(from, name string) string {
+		for d := from; ; d = filepath.Dir(d) {
+			if data, err := os.ReadFile(filepath.Join(d, "node_modules", name, "index.js")); err == nil {
+				return string(data)
+			}
+			if d == root {
+				data, _ := os.ReadFile(filepath.Join(root, name, "index.js"))
+				return string(data)
+			}
+		}
+	}
+	if got := resolve(filepath.Join(root, "signer"), "sb"); got != "// sb_2" {
+		t.Errorf("signer resolves sb to %q, want sb_2", got)
+	}
+	if got := resolve(filepath.Join(root, "signer", "node_modules", "stream"), "sb"); got != "// sb_1" {
+		t.Errorf("the nested stream resolves sb to %q, want sb_1", got)
 	}
 }
 
