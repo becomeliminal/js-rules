@@ -8,8 +8,13 @@
 package main
 
 import (
-	"io"
+	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/base64"
 	"encoding/json"
+	"hash"
+	"io"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +48,7 @@ var opts = struct {
 		LifecycleHooks []string `long:"lifecycle-hooks" description:"a package whose own install scripts may run; repeatable, and nothing runs without it"`
 		SkipHashes     bool   `long:"skip-hashes" description:"do not fetch tarballs to record hashes; the result is unverified"`
 		HoistedLink    bool   `long:"hoisted-link" description:"also emit each tree in npm's hoisted layout, as :hoisted"`
+		Integrity      bool   `long:"integrity" description:"record each package's lockfile checksum for npm_repo to verify, instead of downloading to compute a hash; for a BUILD file generated inside a build action"`
 	} `command:"update" description:"Translate a pnpm lockfile into npm_repo targets"`
 
 	Describe struct {
@@ -86,6 +92,7 @@ var opts = struct {
 		NoDev       bool   `long:"no-dev" description:"leave devDependencies out; must match how the tree was generated"`
 		NoOptional  bool   `long:"no-optional" description:"leave optionalDependencies out; must match how the tree was generated"`
 		NoMergePeers bool  `long:"no-merge-peers" description:"print every peer variant pnpm resolved, rather than one copy per package@version"`
+		SliceOut    string `long:"slice-out" description:"also write the project's slice of the lockfile here: its importer and the packages its tree reaches"`
 	} `command:"resolve" description:"Print the pins a workspace project's tree stages, one label per line"`
 
 	Overlay struct {
@@ -94,6 +101,11 @@ var opts = struct {
 		Out  string   `long:"out" required:"true" description:"node_modules root to write"`
 		Dev  bool     `long:"dev" description:"record libraries with sources for devlink instead of copying their built output"`
 	} `command:"overlay" description:"Add first-party libraries to a node_modules tree"`
+
+	VerifyIntegrity struct {
+		File      string `long:"file" required:"true" description:"the downloaded tarball"`
+		Integrity string `long:"integrity" required:"true" description:"the lockfile's integrity for it, as <algorithm>-<base64>"`
+	} `command:"verify-integrity" description:"Check a tarball against its lockfile integrity"`
 
 	LinkTree struct {
 		Tree string `long:"tree" description:"the third-party node_modules tree to link in; empty links nothing"`
@@ -190,6 +202,7 @@ func main() {
 		"link":        link,
 		"resolve":     resolve,
 		"overlay":     overlay,
+		"verify-integrity": verifyIntegrity,
 		"link-tree":   func() error { return store.LinkTree(opts.LinkTree.Tree, opts.LinkTree.Into) },
 		"devlink":     devlink,
 		"packages":    listPackages,
@@ -349,7 +362,7 @@ func update() error {
 	}
 
 	var sums []string
-	if !opts.Update.SkipHashes {
+	if !opts.Update.SkipHashes && !opts.Update.Integrity {
 		h := &generate.Hasher{Registry: opts.Update.Registry, Headers: opts.Update.Header, Workers: opts.Update.Workers}
 		sums, err = h.Resolve(plan.Entries, func(done, total int) {
 			fmt.Fprintf(os.Stderr, "\rhashing %d/%d", done, total)
@@ -361,7 +374,7 @@ func update() error {
 	}
 
 	scope := generate.Scope{NoDev: opts.Update.NoDev, NoOptional: opts.Update.NoOptional}
-	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, opts.Update.LockLabel, sums, scope, opts.Update.HoistedLink); err != nil {
+	if err := generate.WriteBUILD(opts.Update.Out, plan, opts.Update.Subinclude, opts.Update.LockLabel, sums, scope, opts.Update.HoistedLink, opts.Update.Integrity); err != nil {
 		return err
 	}
 	// npm_project resolves its pins at build time now, so the data file an
@@ -656,8 +669,60 @@ func resolve() error {
 	if err != nil {
 		return err
 	}
+	// The slice is what the project's trees read instead of the whole
+	// lockfile, so they change only when this project's resolution does.
+	if o.SliceOut != "" {
+		keyOf := make(map[string]string, len(plan.Entries))
+		for _, e := range plan.Entries {
+			keyOf[e.Target] = e.Key
+		}
+		var keys []string
+		for _, target := range plan.Closure[o.Project] {
+			keys = append(keys, keyOf[target])
+		}
+		if err := lockfile.Slice(o.Lockfile, o.Project, keys, o.SliceOut); err != nil {
+			return err
+		}
+	}
 	for _, pin := range pins {
 		fmt.Println(pin)
+	}
+	return nil
+}
+
+// verifyIntegrity checks a downloaded tarball against the subresource
+// integrity string its lockfile recorded (sha512-<base64>, or an older
+// algorithm). Please verifies only sha1 and sha256 itself, so a package whose
+// rule carries the lockfile's own checksum is checked here instead.
+func verifyIntegrity() error {
+	o := opts.VerifyIntegrity
+	algo, want, ok := strings.Cut(o.Integrity, "-")
+	if !ok {
+		return fmt.Errorf("integrity %q is not <algorithm>-<base64>", o.Integrity)
+	}
+	var h hash.Hash
+	switch algo {
+	case "sha512":
+		h = sha512.New()
+	case "sha384":
+		h = sha512.New384()
+	case "sha256":
+		h = sha256.New()
+	case "sha1":
+		h = sha1.New()
+	default:
+		return fmt.Errorf("integrity %q uses %s, which please_js does not verify", o.Integrity, algo)
+	}
+	f, err := os.Open(o.File)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	if got := base64.StdEncoding.EncodeToString(h.Sum(nil)); got != want {
+		return fmt.Errorf("%s does not match its lockfile integrity: want %s-%s, got %s-%s", o.File, algo, want, algo, got)
 	}
 	return nil
 }

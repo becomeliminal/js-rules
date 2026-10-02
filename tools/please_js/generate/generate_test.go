@@ -191,7 +191,7 @@ func TestHasherSendsHeadersToThePrivateRegistry(t *testing.T) {
 		Closure: map[string][]string{}, Direct: map[string]map[string]string{},
 		Workspace: map[string]map[string]string{},
 	}
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", sums, generate.Scope{}, false); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", sums, generate.Scope{}, false, false); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := os.ReadFile(path)
@@ -214,7 +214,7 @@ func TestWriteBUILDHoistedLink(t *testing.T) {
 		Direct:  map[string]map[string]string{},
 		Workspace: map[string]map[string]string{},
 	}
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{NoDev: true}, true); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{NoDev: true}, true, false); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := os.ReadFile(path)
@@ -229,7 +229,7 @@ func TestWriteBUILDHoistedLink(t *testing.T) {
 		t.Errorf("no_dev should be on both link targets:\n%s", out)
 	}
 	// Without the flag, no hoisted target appears.
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, false); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, false, false); err != nil {
 		t.Fatal(err)
 	}
 	out, _ = os.ReadFile(path)
@@ -253,7 +253,7 @@ func TestWriteBUILDGivesAProjectElsewhereOnlyThePinsAndTheLockfile(t *testing.T)
 	}
 
 	// WHEN the BUILD file is written
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "pnpm-lock.yaml", nil, generate.Scope{}, true); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "pnpm-lock.yaml", nil, generate.Scope{}, true, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -286,7 +286,7 @@ func TestWriteBUILDStatesTheRootClosureOnce(t *testing.T) {
 	}
 
 	// WHEN the BUILD file is written
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, true); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, true, false); err != nil {
 		t.Fatal(err)
 	}
 
