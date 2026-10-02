@@ -138,3 +138,75 @@ func TestSliceRefusesAProjectTheLockfileDoesNotHave(t *testing.T) {
 		t.Error("expected an error for a project the lockfile does not have")
 	}
 }
+
+// pnpm 10+ writes pnpm's own environment lockfile as a first document when
+// package.json pins pnpm with packageManager.
+const environmentDocument = `---
+lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    configDependencies: {}
+    packageManagerDependencies:
+      pnpm:
+        specifier: 12.8.1
+        version: 12.8.1
+
+packages:
+
+  pnpm@12.8.1:
+    resolution: {integrity: sha512-pnpm}
+
+snapshots:
+
+  pnpm@12.8.1: {}
+
+---
+`
+
+func TestParseReadsTheWorkspaceNotPnpmsOwnEnvironment(t *testing.T) {
+	// GIVEN a lockfile with pnpm's environment document ahead of the workspace
+	path := filepath.Join(t.TempDir(), "pnpm-lock.yaml")
+	os.WriteFile(path, []byte(environmentDocument+twoProjects), 0o644)
+
+	// WHEN it is parsed
+	got, err := lockfile.Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// THEN the workspace's projects are there, and pnpm itself is not a package
+	if want := []string{"../../apps/admin", "../../apps/web"}; !reflect.DeepEqual(mapKeys(got.Importers), want) {
+		t.Errorf("importers = %v, want %v", mapKeys(got.Importers), want)
+	}
+	if _, ok := got.Packages["pnpm@12.8.1"]; ok {
+		t.Error("pnpm's own executable should not be one of the workspace's packages")
+	}
+}
+
+func TestSliceIgnoresPnpmsOwnEnvironment(t *testing.T) {
+	// GIVEN a two-document lockfile
+	dir := t.TempDir()
+	full := filepath.Join(dir, "pnpm-lock.yaml")
+	os.WriteFile(full, []byte(environmentDocument+twoProjects), 0o644)
+	out := filepath.Join(dir, "web.lock.yaml")
+
+	// WHEN web's slice is written
+	if err := lockfile.Slice(full, "../../apps/web", []string{"ms@2.1.3", "shared@1.0.0"}, out); err != nil {
+		t.Fatal(err)
+	}
+
+	// THEN it is a single-document lockfile of web alone
+	got, err := lockfile.Parse(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"../../apps/web"}; !reflect.DeepEqual(mapKeys(got.Importers), want) {
+		t.Errorf("importers = %v, want %v", mapKeys(got.Importers), want)
+	}
+	data, _ := os.ReadFile(out)
+	if strings.Contains(string(data), "packageManagerDependencies") {
+		t.Errorf("the environment document leaked into the slice:\n%s", data)
+	}
+}

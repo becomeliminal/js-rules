@@ -20,8 +20,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Lockfile is the parsed form of pnpm-lock.yaml.
@@ -102,8 +100,12 @@ func Parse(path string) (*Lockfile, error) {
 		return parseNPM(data, path)
 	}
 
+	doc, err := workspaceDocument(data, path)
+	if err != nil {
+		return nil, err
+	}
 	var raw rawLockfile
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	if err := doc.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 

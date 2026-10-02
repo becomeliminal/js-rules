@@ -23,11 +23,13 @@ func Slice(path, project string, snapshotKeys []string, out string) error {
 	if err != nil {
 		return fmt.Errorf("reading lockfile: %w", err)
 	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return fmt.Errorf("parsing %s: %w", path, err)
+	// Only the workspace's document: pnpm's own environment document, when
+	// there is one, describes no project and nothing a tree links.
+	doc, err := workspaceDocument(data, path)
+	if err != nil {
+		return err
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+	if rootMapping(doc) == nil {
 		return fmt.Errorf("%s is not a pnpm lockfile", path)
 	}
 
@@ -74,7 +76,7 @@ func Slice(path, project string, snapshotKeys []string, out string) error {
 		return fmt.Errorf("%s has no project %q", path, project)
 	}
 
-	sliced, err := yaml.Marshal(&doc)
+	sliced, err := yaml.Marshal(doc)
 	if err != nil {
 		return err
 	}
