@@ -522,9 +522,11 @@ def npm_project(name:str, package_json:str="package.json", tree:str="",
             name = name + ("_hoisted" if flat else ""),
             lock = f"{resolve}|lock",
             project = project,
-            # Attached pins are staged at their own package paths, so the
-            # link step finds them under the tree's package.
-            source_dirs = [tree_pkg],
+            # Attached pins are staged at their own package paths: under the
+            # tree's package, or -- for pins in a generated subrepo's root
+            # package -- at the root of the action. Anything else staged there
+            # is ignored; only this project's closure is taken.
+            source_dirs = ["."] if tree_repo else [tree_pkg],
             deps = [resolve],
             workspace = workspace,
             hoist = hoist,
