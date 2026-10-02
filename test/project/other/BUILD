@@ -5,6 +5,7 @@ subinclude("//build_defs:js", "//build_defs:npm")
 npm_project(
     name = "node_modules",
     package_json = "package.json",
+    hoisted = True,
 )
 
 js_test(
