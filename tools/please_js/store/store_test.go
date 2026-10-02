@@ -572,6 +572,67 @@ func TestHoistedSharesAConflictingVersionAcrossSiblings(t *testing.T) {
 	}
 }
 
+// A version placed high must not land in the node_modules of a package that
+// needs a different version itself: that package resolves its own slot first.
+// The real case: browserify-sign needs safe-buffer 5.2.1 while a stream
+// nested under it needs 5.1.2.
+func TestHoistedNeverShadowsTheOwnerOfASlot(t *testing.T) {
+	dir := t.TempDir()
+	pkg := func(name string) string {
+		d := filepath.Join(dir, "src", name)
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "index.js"), []byte("// "+name), 0o644)
+		return d
+	}
+	src := func(entry, name string, deps ...store.Ref) store.Source {
+		return store.Source{Dir: pkg(entry), Meta: store.Meta{Name: entry, Package: name}, Deps: deps}
+	}
+
+	// GIVEN app -> sb@2, signer, stream@3; signer -> sb@2, stream@2 (nests,
+	// stream@3 has the top); stream@2 -> sb@1
+	sources := []store.Source{
+		src("app_1", "app",
+			store.Ref{As: "sb", Entry: "sb_2"},
+			store.Ref{As: "signer", Entry: "signer_1"},
+			store.Ref{As: "stream", Entry: "stream_3"}),
+		src("signer_1", "signer",
+			store.Ref{As: "sb", Entry: "sb_2"},
+			store.Ref{As: "stream", Entry: "stream_2"}),
+		src("stream_2", "stream", store.Ref{As: "sb", Entry: "sb_1"}),
+		src("stream_3", "stream"),
+		src("sb_1", "sb"),
+		src("sb_2", "sb"),
+	}
+	root := filepath.Join(dir, "out")
+
+	// WHEN the hoisted tree is built
+	err := store.Build(root, sources, []store.Ref{
+		{As: "sb", Entry: "sb_2"}, {As: "signer", Entry: "signer_1"}, {As: "stream", Entry: "stream_3"},
+	}, store.Hoisted)
+
+	// THEN it builds, signer still finds sb@2, and the nested stream finds sb@1
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(from, name string) string {
+		for d := from; ; d = filepath.Dir(d) {
+			if data, err := os.ReadFile(filepath.Join(d, "node_modules", name, "index.js")); err == nil {
+				return string(data)
+			}
+			if d == root {
+				data, _ := os.ReadFile(filepath.Join(root, name, "index.js"))
+				return string(data)
+			}
+		}
+	}
+	if got := resolve(filepath.Join(root, "signer"), "sb"); got != "// sb_2" {
+		t.Errorf("signer resolves sb to %q, want sb_2", got)
+	}
+	if got := resolve(filepath.Join(root, "signer", "node_modules", "stream"), "sb"); got != "// sb_1" {
+		t.Errorf("the nested stream resolves sb to %q, want sb_1", got)
+	}
+}
+
 // A package needed by two dependents that cannot see the hoisted one is copied
 // to both. That is the entire cost of this layout, and it is worth knowing it
 // is bounded by name conflicts rather than by dependents.

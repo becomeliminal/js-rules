@@ -187,9 +187,19 @@ func place(sources []Source, links []Ref) (map[string][]string, error) {
 			at = ""
 			resolved := false
 			for j := len(parts); j >= 1; j-- {
-				slot := strings.Join(parts[:j], "/node_modules/") + "/node_modules/" + it.as
+				owner := strings.Join(parts[:j], "/node_modules/")
+				slot := owner + "/node_modules/" + it.as
 				if held, ok := taken[slot]; ok {
 					resolved = held == it.entry
+					break
+				}
+				// The package whose node_modules this is may itself need
+				// another version of the name. Its own slot is what it
+				// resolves first, so taking it would shadow that package --
+				// and placing higher would too, since it would walk up past
+				// its empty slot and find this one. The highest usable slot
+				// is the one below it.
+				if conflicts(byName[taken[owner]], it.as, it.entry) {
 					break
 				}
 				at = slot
@@ -261,6 +271,17 @@ func place(sources []Source, links []Ref) (map[string][]string, error) {
 			return placements, nil
 		}
 	}
+}
+
+// conflicts reports whether src depends on the name as with an entry other
+// than entry.
+func conflicts(src Source, as, entry string) bool {
+	for _, d := range src.Deps {
+		if d.As == as && d.Entry != entry {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedKeys(m map[string][]string) []string {
