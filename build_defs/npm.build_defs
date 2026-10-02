@@ -397,7 +397,7 @@ def npm_link(name:str, lock:str, packages:list=[], workspace:dict={}, project:st
 def npm_project(name:str, package_json:str="package.json", tree:str="",
                 no_dev:bool=False, no_optional:bool=False, hoist:list=[],
                 workspace:dict={}, merge_peer_variants:bool=True,
-                visibility:list=["PUBLIC"]):
+                hoisted:bool=False, visibility:list=["PUBLIC"]):
     """Declares that this package is an npm project, and links its node_modules.
 
     Called in the package that holds the project's package.json. That
@@ -408,13 +408,15 @@ def npm_project(name:str, package_json:str="package.json", tree:str="",
     a resolve step prints them, and its post-build step attaches them as
     dependencies of the trees below.
 
-    Declares, over the same pins, and Please builds only what is asked for:
+    Declares <name>, in pnpm's store layout: what builds, checks, tests and the
+    vite_dev server all resolve through, each package@version once, linked
+    rather than copied into every program that uses it. An undeclared import
+    finds nothing.
 
-        <name>          pnpm's store layout. What builds, checks and tests
-                        resolve through; an undeclared import finds nothing.
-        <name>_hoisted  npm's flat layout, no symlinks. For a tool that cannot
-                        follow symlinks without resolving away paths it must
-                        keep -- a development server serving real sources.
+    With hoisted, also declares <name>_hoisted over the same pins, in npm's
+    flat layout with no symlinks, for a tool that cannot work through the
+    store's links. It duplicates packages wherever versions conflict, so it
+    is opt-in.
 
     Each tree depends on exactly this project's pins, so a bump to a package
     only another project uses re-runs the resolve step, prints the same pins,
@@ -436,6 +438,7 @@ def npm_project(name:str, package_json:str="package.json", tree:str="",
                else's broken manifest.
         workspace: As npm_link's: the repo's own packages this project links,
                    as npm name -> the target building it.
+        hoisted: Also declare <name>_hoisted, npm's flat layout.
         merge_peer_variants: As npm_link's: one copy per package@version,
                              whichever peer contexts pnpm resolved it under.
                              Holds in a shared tree too, where another
@@ -481,14 +484,14 @@ def npm_project(name:str, package_json:str="package.json", tree:str="",
             '> "$OUT" && cat "$OUT"',
         ]),
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
-        post_build = _npm_project_attach,
+        post_build = _npm_project_attach_hoisted if hoisted else _npm_project_attach,
         building_description = "Resolving npm pins...",
     )
 
     trees = []
-    for hoisted in [False, True]:
+    for flat in [False, True] if hoisted else [False]:
         trees += [npm_link(
-            name = name + ("_hoisted" if hoisted else ""),
+            name = name + ("_hoisted" if flat else ""),
             lock = f"{tree}:lockfile",
             project = project,
             # Attached pins are staged at their own package paths, so the
@@ -499,7 +502,7 @@ def npm_project(name:str, package_json:str="package.json", tree:str="",
             hoist = hoist,
             no_dev = no_dev,
             no_optional = no_optional,
-            hoisted = hoisted,
+            hoisted = flat,
             merge_peer_variants = merge_peer_variants,
             visibility = visibility,
         )]
@@ -508,7 +511,15 @@ def npm_project(name:str, package_json:str="package.json", tree:str="",
 
 def _npm_project_attach(rule:str, output:list):
     """npm_project's post-build step: each line the resolve step printed is a
-    pin, attached to both trees. rule is _<name>#resolve."""
+    pin, attached to the tree. rule is _<name>#resolve."""
+    name = rule[1:rule.rfind("#")]
+    for label in output:
+        if label:
+            add_dep(name, label)
+
+
+def _npm_project_attach_hoisted(rule:str, output:list):
+    """As _npm_project_attach, for a project that also declared the flat tree."""
     name = rule[1:rule.rfind("#")]
     for label in output:
         if label:

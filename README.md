@@ -80,18 +80,24 @@ npm_project(
 )
 
 vite_bundle(name = "bundle", ..., node_modules = ":node_modules")
-vite_dev(name = "dev", ..., node_modules = ":node_modules_hoisted")
+vite_dev(name = "dev", ..., node_modules = ":node_modules")
 ```
 
 Which pins an app needs is decided at build time and never written down: a
 resolve step reads `package.json` and the lockfile and prints the app's pins,
-and its post-build step attaches them as dependencies of `:node_modules`
-(store layout) and `:node_modules_hoisted` (flat). Each tree depends on
-exactly its own pins, so a bump to a package only `admin` uses re-runs `web`'s
-resolve step, prints the same pins, and rebuilds nothing of `web`'s. The
-resolve step also refuses a `package.json` edited without regenerating the
-tree, naming both sides of every difference. The tree's package is the `Tree`
-config, `//third_party/js` by default.
+and its post-build step attaches them as dependencies of `:node_modules`. Each
+tree depends on exactly its own pins, so a bump to a package only `admin` uses
+re-runs `web`'s resolve step, prints the same pins, and rebuilds nothing of
+`web`'s. The resolve step also refuses a `package.json` edited without
+regenerating the tree, naming both sides of every difference. The tree's
+package is the `Tree` config, `//third_party/js` by default.
+
+Every program uses that one tree without copying it: builds, type checks,
+test runners and the dev server link it in, one link per top-level package
+into the store, so each package@version exists once per app. `hoisted = True`
+also declares `:node_modules_hoisted`, npm's flat layout, for a tool that
+cannot work through the store's links; it duplicates packages wherever
+versions conflict, so it is opt-in.
 
 Also supported, each with a test that proves it: npm and yarn lockfiles,
 package aliases, workspace packages (`link:`), private registries with
