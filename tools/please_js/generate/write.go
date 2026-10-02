@@ -13,10 +13,12 @@ import (
 // Emission goes through the same AST Please parses with, so the output is
 // stable against plz fmt and a regenerated file diffs only where the lockfile
 // actually changed.
+// integrity records each package's lockfile checksum instead of a computed
+// download hash, for a file generated at build time without the network.
 // hoistedLink additionally emits each tree in npm's hoisted layout, under the
 // name "hoisted" -- the layout a development server needs, since a store of
 // symlinks and a server told to preserve them cannot coexist.
-func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums []string, scope Scope, hoistedLink bool) error {
+func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums []string, scope Scope, hoistedLink, integrity bool) error {
 	f := &build.File{Path: path, Type: build.TypeBuild}
 
 	f.Stmt = append(f.Stmt, &build.CallExpr{
@@ -59,7 +61,12 @@ func WriteBUILD(path string, plan *Plan, subincludePath, lockLabel string, sums 
 		// No dependencies here. Which packages a package needs, and the names
 		// it imports them under, are in the lockfile, and npm_link reads it --
 		// so this file stays as small as a go_repo call.
-		if i < len(sums) && sums[i] != "" {
+		// With integrity, the lockfile's own checksum goes on the rule and
+		// npm_repo verifies it after the download: nothing is fetched to emit
+		// the file, which is what lets it be generated inside a build action.
+		if integrity && e.Integrity != "" {
+			str(call, "integrity", e.Integrity)
+		} else if i < len(sums) && sums[i] != "" {
 			list(call, "hashes", []string{sums[i]})
 		}
 		// Executables are deliberately not recorded here. The lockfile's

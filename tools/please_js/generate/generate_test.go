@@ -191,7 +191,7 @@ func TestHasherSendsHeadersToThePrivateRegistry(t *testing.T) {
 		Closure: map[string][]string{}, Direct: map[string]map[string]string{},
 		Workspace: map[string]map[string]string{},
 	}
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", sums, generate.Scope{}, false); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", sums, generate.Scope{}, false, false); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := os.ReadFile(path)
@@ -214,7 +214,7 @@ func TestWriteBUILDHoistedLink(t *testing.T) {
 		Direct:  map[string]map[string]string{},
 		Workspace: map[string]map[string]string{},
 	}
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{NoDev: true}, true); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{NoDev: true}, true, false); err != nil {
 		t.Fatal(err)
 	}
 	out, _ := os.ReadFile(path)
@@ -229,7 +229,7 @@ func TestWriteBUILDHoistedLink(t *testing.T) {
 		t.Errorf("no_dev should be on both link targets:\n%s", out)
 	}
 	// Without the flag, no hoisted target appears.
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, false); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, false, false); err != nil {
 		t.Fatal(err)
 	}
 	out, _ = os.ReadFile(path)
@@ -253,7 +253,7 @@ func TestWriteBUILDGivesAProjectElsewhereOnlyThePinsAndTheLockfile(t *testing.T)
 	}
 
 	// WHEN the BUILD file is written
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "pnpm-lock.yaml", nil, generate.Scope{}, true); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "pnpm-lock.yaml", nil, generate.Scope{}, true, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -286,7 +286,7 @@ func TestWriteBUILDStatesTheRootClosureOnce(t *testing.T) {
 	}
 
 	// WHEN the BUILD file is written
-	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, true); err != nil {
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, true, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -301,5 +301,29 @@ func TestWriteBUILDStatesTheRootClosureOnce(t *testing.T) {
 	// AND a single-project tree gains no projects machinery
 	if strings.Contains(string(out), "projects") {
 		t.Errorf("a tree with no other project should be unchanged:\n%s", out)
+	}
+}
+
+// For a BUILD file generated inside a build action, each rule carries the
+// lockfile's own integrity, so nothing has to be downloaded to write it.
+func TestWriteBUILDRecordsLockfileIntegrity(t *testing.T) {
+	// GIVEN a plan whose entry carries the lockfile's integrity
+	path := filepath.Join(t.TempDir(), "BUILD")
+	plan := &generate.Plan{
+		Entries:   []generate.Entry{{Target: "ms_2.1.3", Package: "ms", Version: "2.1.3", Integrity: "sha512-abc=="}},
+		Closure:   map[string][]string{},
+		Direct:    map[string]map[string]string{},
+		Workspace: map[string]map[string]string{},
+	}
+
+	// WHEN it is written in integrity mode
+	if err := generate.WriteBUILD(path, plan, "///js//build_defs:npm", "lock", nil, generate.Scope{}, false, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// THEN the rule carries the integrity and no download hash
+	out, _ := os.ReadFile(path)
+	if !strings.Contains(string(out), `integrity = "sha512-abc=="`) || strings.Contains(string(out), "hashes") {
+		t.Errorf("expected the lockfile integrity and no hashes:\n%s", out)
 	}
 }
