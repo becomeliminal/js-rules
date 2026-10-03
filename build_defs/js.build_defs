@@ -469,8 +469,14 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
             # directory whose files are listed beside it, or another rule's
             # directory output, which is listed alone -- so it is copied with
             # its contents, and the first case merely copies some files twice.
+            # Remote execution stages every input read-only and cp keeps the
+            # mode, so a copied directory is made writable again and every
+            # copy replaces what is there (-f): otherwise the files listed
+            # after their directory cannot land, and the tool cannot write
+            # beside its sources.
             f'for s in ${SRCS_SRCS:-}; do mkdir -p "{run_dir}/$(dirname "$s")" && ' +
-            f'if [ -d "$s" ]; then mkdir -p "{run_dir}/$s" && cp -R "$s/." "{run_dir}/$s/"; else cp "$s" "{run_dir}/$s"; fi; done',
+            f'if [ -d "$s" ]; then mkdir -p "{run_dir}/$s" && cp -Rf "$s/." "{run_dir}/$s/" && chmod -R u+w "{run_dir}/$s"; ' +
+            f'else cp -f "$s" "{run_dir}/$s"; fi; done',
             # A rule with no sources still needs somewhere to run.
             f'mkdir -p "{workdir}"',
         ] + ([
