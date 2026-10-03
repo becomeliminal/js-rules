@@ -367,7 +367,9 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
         args: Arguments passed to the executable.
         env: Environment variables for the action.
         stdout: Capture the tool's standard output to this file, declared as an
-                output. How you snapshot-test a command line tool.
+                output. How you snapshot-test a command line tool. If the tool
+                fails, what it wrote is printed to the build log, as an
+                uncaptured stream would have been.
         stderr: Capture standard error the same way.
         exit_code_out: Capture the exit status to this file instead of failing
                        the action.
@@ -453,10 +455,15 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
     # Without exit_code_out a non-zero exit fails the action, which is the right
     # default: a tool that failed did not produce what was asked for.
     status = ""
+    # What a failing tool said, wherever it went: a captured stream is an
+    # output, and Please discards the outputs of a failed action, so a tool
+    # that reports on stdout (astro check, a linter) would otherwise fail with
+    # nothing but its exit status.
+    shown = " ".join([f'"{f}"' for f in [stdout, stderr] if f] + ([f'"{log}"'] if silent_on_success else []))
     if exit_code_out:
         status = f' && echo 0 > "{exit_code_out}" || echo $? > "{exit_code_out}"'
-    elif silent_on_success:
-        status = f' || {{ cat "{log}" >&2; exit 1; }}'
+    elif shown:
+        status = f' || {{ cat {shown} >&2; exit 1; }}'
 
     env_prefix = " ".join([
         k + "='" + v.replace("'", "'\\''") + "'" for k, v in sorted(env.items())
