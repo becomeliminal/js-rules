@@ -2,8 +2,10 @@ package store_test
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -671,78 +673,184 @@ func TestHoistingCopiesOnlyWhereNamesCollide(t *testing.T) {
 	}
 }
 
-// Devlink materialises a first-party package as its sources: a manifest whose
-// entry is the source as written, and one symlink per file into the repository.
-func TestDevlinkServesSources(t *testing.T) {
+// A first-party package is materialised as its sources: a manifest whose entry
+// is the source as written, and one symlink per file into the repository.
+func TestLinkServesLibrarySources(t *testing.T) {
 	dir := t.TempDir()
-	tree := filepath.Join(dir, "node_modules")
+	rundir := filepath.Join(dir, "run")
 	root := filepath.Join(dir, "repo")
-	os.MkdirAll(tree, 0o755)
+	writeFiles(t, filepath.Join(root, "lib/greeter"), "index.ts", "deep/util.ts")
 
-	spec := filepath.Join(dir, "devlinks.json")
-	links := []store.DevLink{{
-		Package:  "@test/greeter",
-		SrcDir:   "lib/greeter",
-		SrcEntry: "index.ts",
-		Srcs:     []string{"index.ts", "deep/util.ts"},
-	}}
-	if err := store.WriteDevLinks(spec, links); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Devlink(tree, root, spec); err != nil {
+	spec := filepath.Join(dir, "links.json")
+	writeLinks(t, spec, store.LinkSet{
+		Into: "node_modules/@test/greeter", From: "lib/greeter",
+		Srcs: []string{"index.ts", "deep/util.ts"}, Live: store.LiveDirs([]string{"index.ts", "deep/util.ts"}),
+		Package: "@test/greeter", SrcEntry: "index.ts",
+	})
+	if err := store.Link(rundir, root, spec); err != nil {
 		t.Fatal(err)
 	}
 
 	// The manifest's entry is the source as written -- index.ts, not a
 	// compiled index.js -- because the server transforms what it serves.
-	data, err := os.ReadFile(filepath.Join(tree, "@test/greeter/package.json"))
+	data, err := os.ReadFile(filepath.Join(rundir, "node_modules/@test/greeter/package.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), `"./index.ts"`) {
 		t.Errorf("the entry should be the source, got:\n%s", data)
 	}
-
-	// Each source is a link into the repository, nested paths included.
-	for _, src := range []string{"index.ts", "deep/util.ts"} {
-		at := filepath.Join(tree, "@test/greeter", src)
-		target, err := os.Readlink(at)
-		if err != nil {
-			t.Fatalf("%s should be a symlink: %v", at, err)
-		}
-		want := filepath.Join(root, "lib/greeter", src)
-		if target != want {
-			t.Errorf("%s points at %s, want %s", src, target, want)
-		}
-	}
+	assertLinks(t, filepath.Join(rundir, "node_modules/@test/greeter"), filepath.Join(root, "lib/greeter"),
+		"deep/util.ts", "index.ts")
 }
 
 // Rebuilt from nothing every start, so a source removed from the library stops
 // being served rather than lingering as a link nobody declared.
-func TestDevlinkRebuildsFromNothing(t *testing.T) {
+func TestLinkRebuildsLibraryFromNothing(t *testing.T) {
 	dir := t.TempDir()
-	tree := filepath.Join(dir, "node_modules")
+	rundir := filepath.Join(dir, "run")
 	root := filepath.Join(dir, "repo")
-	os.MkdirAll(tree, 0o755)
+	writeFiles(t, filepath.Join(root, "lib"), "index.js", "old.js")
+	spec := filepath.Join(dir, "links.json")
+	link := func(srcs ...string) {
+		writeLinks(t, spec, store.LinkSet{
+			Into: "node_modules/lib", From: "lib", Srcs: srcs, Package: "lib", SrcEntry: "index.js",
+		})
+		if err := store.Link(rundir, root, spec); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	spec := filepath.Join(dir, "devlinks.json")
-	write := func(srcs ...string) {
-		if err := store.WriteDevLinks(spec, []store.DevLink{{
-			Package: "lib", SrcDir: "lib", SrcEntry: "index.js", Srcs: srcs,
-		}}); err != nil {
+	link("index.js", "old.js")
+	link("index.js")
+
+	assertLinks(t, filepath.Join(rundir, "node_modules/lib"), filepath.Join(root, "lib"), "index.js")
+}
+
+// The live rule: a top-level directory holding a declared source is linked as
+// it is now, so a file -- or a whole directory of files -- created after the
+// build is served without one. Files at the package's top level are linked only
+// as declared: that is where BUILD, package.json, dist/ and node_modules live.
+func TestLinkMirrorsLiveDirectories(t *testing.T) {
+	dir := t.TempDir()
+	rundir := filepath.Join(dir, "run")
+	root := filepath.Join(dir, "repo")
+	declared := []string{"index.html", "src", "src/main.tsx", "public/logo.svg"}
+	writeFiles(t, filepath.Join(root, "app"),
+		"index.html", "src/main.tsx", "public/logo.svg",
+		// Created after the build: none of these were declared.
+		"src/New.tsx", "src/feature/Panel.tsx", "public/new.png",
+		// Never source, wherever it sits.
+		"src/node_modules/x/index.js", "src/.DS_Store", "src/main.tsx~", "src/.main.tsx.swp",
+		// Package top level, undeclared.
+		"BUILD", "package.json", "dist/index.js",
+	)
+
+	spec := filepath.Join(dir, "links.json")
+	writeLinks(t, spec, store.LinkSet{Into: ".", From: "app", Srcs: declared, Live: store.LiveDirs(declared)})
+	if err := store.Link(rundir, root, spec); err != nil {
+		t.Fatal(err)
+	}
+
+	assertLinks(t, rundir, filepath.Join(root, "app"),
+		"index.html", "public/logo.svg", "public/new.png",
+		"src/New.tsx", "src/feature/Panel.tsx", "src/main.tsx")
+}
+
+// A file deleted since the last start stops being served, but only links into
+// the package are touched: the third-party tree linked into the same run
+// directory, and the real files the build put there, survive.
+func TestLinkRemovesStaleLinksOnly(t *testing.T) {
+	dir := t.TempDir()
+	rundir := filepath.Join(dir, "run")
+	root := filepath.Join(dir, "repo")
+	writeFiles(t, filepath.Join(root, "app"), "src/main.tsx", "src/gone.tsx")
+	writeFiles(t, rundir, "vite.config.ts")
+	writeFiles(t, filepath.Join(dir, "store"), "react/index.js")
+	os.MkdirAll(filepath.Join(rundir, "node_modules"), 0o755)
+	if err := os.Symlink(filepath.Join(dir, "store/react"), filepath.Join(rundir, "node_modules/react")); err != nil {
+		t.Fatal(err)
+	}
+	spec := filepath.Join(dir, "links.json")
+	declared := []string{"src/main.tsx", "src/gone.tsx"}
+	writeLinks(t, spec, store.LinkSet{Into: ".", From: "app", Srcs: declared, Live: store.LiveDirs(declared)})
+	if err := store.Link(rundir, root, spec); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(filepath.Join(root, "app/src/gone.tsx")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Link(rundir, root, spec); err != nil {
+		t.Fatal(err)
+	}
+
+	assertLinks(t, rundir, filepath.Join(root, "app"), "src/main.tsx")
+	if info, err := os.Lstat(filepath.Join(rundir, "vite.config.ts")); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("the copied config should be left a real file: %v", err)
+	}
+	if target, err := os.Readlink(filepath.Join(rundir, "node_modules/react")); err != nil || target != filepath.Join(dir, "store/react") {
+		t.Errorf("the third-party tree's link should survive, got %q, %v", target, err)
+	}
+}
+
+func TestLiveDirs(t *testing.T) {
+	got := store.LiveDirs([]string{"index.html", "src/a.ts", "src/b/c.ts", "public/x.png", "vite.config.ts"})
+	want := []string{"public", "src"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("LiveDirs = %v, want %v", got, want)
+	}
+}
+
+func writeFiles(t *testing.T, dir string, rels ...string) {
+	t.Helper()
+	for _, rel := range rels {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Devlink(tree, root, spec); err != nil {
+		if err := os.WriteFile(p, []byte(rel), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	write("index.js", "old.js")
-	write("index.js")
-	if _, err := os.Lstat(filepath.Join(tree, "lib/old.js")); err == nil {
-		t.Error("a removed source should stop being served")
+}
+
+func writeLinks(t *testing.T, path string, sets ...store.LinkSet) {
+	t.Helper()
+	if err := store.WriteLinks(path, store.LinkSpec{Sets: sets, Skip: store.DefaultSkip}); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Lstat(filepath.Join(tree, "lib/index.js")); err != nil {
-		t.Errorf("the surviving source should still be there: %v", err)
+}
+
+// assertLinks checks that the symlinks under dir are exactly want, each
+// pointing at the same path under from, and that no directory is a link.
+func assertLinks(t *testing.T, dir, from string, want ...string) {
+	t.Helper()
+	var got []string
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == "node_modules" && p != dir {
+			return filepath.SkipDir
+		}
+		if d.Type()&fs.ModeSymlink == 0 {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, p)
+		target, _ := os.Readlink(p)
+		if target != filepath.Join(from, rel) {
+			t.Errorf("%s points at %s, want %s", rel, target, filepath.Join(from, rel))
+		}
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			t.Errorf("%s is a directory link", rel)
+		}
+		got = append(got, filepath.ToSlash(rel))
+		return nil
+	})
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("links = %v, want %v", got, want)
 	}
 }
 

@@ -92,10 +92,13 @@ var opts = struct {
 	} `command:"resolve" description:"Print the pins a workspace project's tree stages, one label per line"`
 
 	Overlay struct {
-		Tree string   `long:"tree" required:"true" description:"an existing node_modules tree"`
-		Lib  []string `long:"lib" description:"a first-party library, as metadata-path:directory"`
-		Out  string   `long:"out" required:"true" description:"node_modules root to write"`
-		Dev  bool     `long:"dev" description:"record libraries with sources for devlink instead of copying their built output"`
+		Tree     string   `long:"tree" required:"true" description:"an existing node_modules tree"`
+		Lib      []string `long:"lib" description:"a first-party library, as metadata-path:directory"`
+		Out      string   `long:"out" required:"true" description:"node_modules root to write"`
+		Dev      bool     `long:"dev" description:"record libraries with sources for link-sources instead of copying their built output"`
+		LinkFrom string   `long:"link-from" description:"the package link-src paths are relative to"`
+		LinkSrc  []string `long:"link-src" description:"a source the program reads from the repository, linked at run time"`
+		LinkLive bool     `long:"link-live" description:"mark the source directories live: linked as they are when the program starts, and kept in step by a watcher"`
 	} `command:"overlay" description:"Add first-party libraries to a node_modules tree"`
 
 	VerifyIntegrity struct {
@@ -109,11 +112,11 @@ var opts = struct {
 		Into string `long:"into" required:"true" description:"the node_modules to link it into, which may already hold first-party libraries"`
 	} `command:"link-tree" description:"Make a third-party tree resolvable from a node_modules without copying it"`
 
-	Devlink struct {
-		Tree string `long:"tree" required:"true" description:"the node_modules tree to write packages into"`
-		Root string `long:"root" required:"true" description:"the repository root the symlinks point into"`
-		Spec string `long:"spec" required:"true" description:"the devlinks.json overlay --dev wrote"`
-	} `command:"devlink" description:"Serve first-party packages from their sources"`
+	LinkSources struct {
+		Rundir string `long:"rundir" required:"true" description:"the run directory the links land in"`
+		Root   string `long:"root" required:"true" description:"the repository root the symlinks point into"`
+		Spec   string `long:"spec" required:"true" description:"the links.json overlay wrote"`
+	} `command:"link-sources" description:"Link a program's sources, and first-party packages as their sources, from the repository"`
 
 	Packages struct {
 		Dir string `long:"dir" default:"." description:"directory to scan for lib.json"`
@@ -201,7 +204,7 @@ func main() {
 		"overlay":     overlay,
 		"verify-integrity": verifyIntegrity,
 		"link-tree":   func() error { return store.LinkTree(opts.LinkTree.Tree, opts.LinkTree.Into) },
-		"devlink":     devlink,
+		"link-sources": linkSources,
 		"packages":    listPackages,
 		"hooks":       runHooks,
 		"junit":       convertJUnit,
@@ -748,16 +751,32 @@ func overlay() error {
 		_ = os.WriteFile(filepath.Join(filepath.Dir(opts.Overlay.Out), "covmap.json"), data, 0o644)
 	}
 
+	// What the program itself reads from the repository, as it is when the
+	// program runs rather than as it was built. Recorded whether or not
+	// libraries are served from source; link-sources makes both at start.
+	spec := store.LinkSpec{Skip: store.DefaultSkip}
+	if len(opts.Overlay.LinkSrc) > 0 {
+		spec.Sets = append(spec.Sets, store.LinkSet{
+			Into: ".",
+			From: opts.Overlay.LinkFrom,
+			Srcs: opts.Overlay.LinkSrc,
+			Live: liveDirs(opts.Overlay.LinkSrc),
+		})
+	}
+	specPath := filepath.Join(filepath.Dir(opts.Overlay.Out), "links.json")
+
 	if !opts.Overlay.Dev {
-		return store.Overlay(opts.Overlay.Out, libs)
+		if err := store.Overlay(opts.Overlay.Out, libs); err != nil {
+			return err
+		}
+		return store.WriteLinks(specPath, spec)
 	}
 
 	// Development: a library whose lib.json records sources is served from
-	// them, so nothing of it is copied here -- devlink builds it at run time.
+	// them, so nothing of it is copied here -- link-sources builds it at run time.
 	// One without source info still gets its built output, which is correct,
 	// just not hot.
 	var built []store.Source
-	var links []store.DevLink
 	for _, lib := range libs {
 		if lib.Meta.Role == "types" {
 			// Dev serves sources; the declarations twin has none, and letting
@@ -768,21 +787,32 @@ func overlay() error {
 			built = append(built, lib)
 			continue
 		}
-		links = append(links, store.DevLink{
-			Package:  lib.Meta.Package,
-			SrcDir:   lib.Meta.SrcDir,
-			SrcEntry: lib.Meta.SrcEntry,
+		spec.Sets = append(spec.Sets, store.LinkSet{
+			Into:     "node_modules/" + lib.Meta.Package,
+			From:     lib.Meta.SrcDir,
 			Srcs:     lib.Meta.Srcs,
+			Live:     liveDirs(lib.Meta.Srcs),
+			Package:  lib.Meta.Package,
+			SrcEntry: lib.Meta.SrcEntry,
 		})
 	}
 	if err := store.Overlay(opts.Overlay.Out, built); err != nil {
 		return err
 	}
-	return store.WriteDevLinks(filepath.Join(filepath.Dir(opts.Overlay.Out), "devlinks.json"), links)
+	return store.WriteLinks(specPath, spec)
 }
 
-func devlink() error {
-	return store.Devlink(opts.Devlink.Tree, opts.Devlink.Root, opts.Devlink.Spec)
+// liveDirs is store.LiveDirs when the program asked for live links, and
+// nothing otherwise: a program that is not a server sees what it declared.
+func liveDirs(srcs []string) []string {
+	if !opts.Overlay.LinkLive {
+		return nil
+	}
+	return store.LiveDirs(srcs)
+}
+
+func linkSources() error {
+	return store.Link(opts.LinkSources.Rundir, opts.LinkSources.Root, opts.LinkSources.Spec)
 }
 
 func listPackages() error {

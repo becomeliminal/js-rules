@@ -126,7 +126,7 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
 
 def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
               runner:str="", runner_args:list=[], link_srcs:list=[],
-              link_deps:bool=False,
+              link_deps:bool=False, link_live:bool=False,
               node_modules:str="", node_options:list=[], env:dict={},
               fixed_args:list=[], chdir:str="",
               visibility:list=None, labels:list=[]):
@@ -173,6 +173,20 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
 
             Requires runner: the only program that wants this is one serving the
             files, and it needs the tree the links land in.
+        link_live: Link what the source directories hold when the program
+                   starts, not only what was declared.
+
+            Each top-level directory of the package holding a link_srcs file
+            (src/, public/), and of each library link_deps serves, is linked
+            whole: a file created after the build is served without one.
+            Files at a package's own top level stay as declared -- BUILD,
+            package.json and node_modules live there. links.json marks these
+            directories live, with the skip rules, so a server's watcher can
+            keep them in step while it runs, as vite_dev's does.
+
+            Off by default, and only for a server: a program that discovers its
+            inputs by globbing its run directory -- vitest finding test files --
+            must see what it was given, not everything beside it.
         deps: js_library targets whose packages this program imports.
         node_modules: The third-party tree, from npm_link. Defaults to the
                       NodeModules config, so a single-tree repo never names it.
@@ -204,6 +218,7 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
                    test = False, visibility = visibility, labels = labels,
                    srcs = srcs, runner = runner, runner_args = runner_args,
                    link_srcs = link_srcs, link_deps = link_deps,
+                   link_live = link_live,
                    env = env, fixed_args = fixed_args, chdir = chdir)
 
 
@@ -516,7 +531,8 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
 
 def _js_run(name, entry_point, deps, node_modules, node_options, test,
             visibility, labels, srcs=[], data=[], runner="", runner_args=[],
-            runner_env={}, link_srcs=[], link_deps=False, env={}, fixed_args=[],
+            runner_env={}, link_srcs=[], link_deps=False, link_live=False,
+            env={}, fixed_args=[],
             chdir="", expected_exit_code=0, timeout=0, flaky=0, size=None):
     """Shared implementation of js_binary and js_test.
 
@@ -558,7 +574,9 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # must see later edits sees them. Nothing is written outside plz-out; the
     # links point into the source tree rather than the other way round.
     copy_srcs = bool(srcs)
-    strip = package_name() + "/"
+    # Bound here because the build language's f-strings take names, not calls.
+    pkg_dir = package_name()
+    strip = pkg_dir + "/"
 
     runtime = build_rule(
         name = name,
@@ -586,7 +604,13 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # by the launcher at start, so this output stays small and the tree
             # exists once, as its own build output.
             '"$PLEASE_JS" overlay --tree "" --out "$OUT/node_modules" $LIBS' +
-            (" --dev" if link_deps else ""),
+            (" --dev" if link_deps else "") +
+            (" --link-live" if link_live else "") +
+            # What the program reads from the repository: names, not inputs.
+            # Making them inputs would rebuild the run on every edit, which is
+            # the one thing a development server exists to avoid.
+            (f" --link-from {pkg_dir} " + " ".join(["--link-src '" + f.replace("'", "'\\''") + "'" for f in link_srcs])
+             if link_srcs else ""),
         ] + ([
             # At their own paths, because a test file's relative imports have to
             # keep working and because the reported name should be the file
@@ -644,34 +668,23 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     call = '"$NODE" @OPTS@ "$MAIN" ' + " ".join(
         ["'" + a.replace("'", "'\\''") + "'" for a in fixed_args]) + ' "$@"'
 
-    # Rebuilt every start, so a source dropped from srcs stops being served
-    # rather than lingering as a link nobody declared.
-    # Bound here because the build language's f-strings take names, not calls.
-    pkg_dir = package_name()
-    link_lines = []
-    if link_srcs:
-        link_lines = ['mkdir -p "$RUNDIR"']
-        for src in link_srcs:
-            if src.startswith(":") or src.startswith("/"):
-                # A label names something a rule produced, which has no place in
-                # the source tree to point at.
-                fail(f"js_binary {name}: link_srcs cannot link {src}, which is a " +
-                     "target rather than a file in this package")
-            link_lines += [
-                f'mkdir -p "$RUNDIR/$(dirname "{src}")"',
-                # Into the source tree, never out of it: the link lives in
-                # plz-out and points at the file the developer edits. srcs are
-                # written relative to the package, so the package is where the
-                # repository-relative path starts.
-                #
-                # Directories are skipped, not linked: Please's glob returns
-                # them alongside their contents, and a directory symlinked here
-                # would route every later link to a child THROUGH it -- writing
-                # into the source tree, the one place these links must never
-                # reach. The children are linked individually and mkdir -p
-                # builds the real directories they sit in.
-                f'[ -d "$ROOT/{pkg_dir}/{src}" ] || ln -sfn "$ROOT/{pkg_dir}/{src}" "$RUNDIR/{src}"',
-            ]
+    for src in link_srcs:
+        if src.startswith(":") or src.startswith("/"):
+            # A label names something a rule produced, which has no place in
+            # the source tree to point at.
+            fail(f"js_binary {name}: link_srcs cannot link {src}, which is a " +
+                 "target rather than a file in this package")
+    # The program's sources and the first-party libraries served as theirs,
+    # linked from the repository in one step at every start, from the spec the
+    # runtime build wrote. Remade each time, so a file deleted since the last
+    # run stops being served; with link_live it links what the source
+    # directories hold NOW, so a file created since the build is served
+    # without one, and a development server keeps that true while it runs.
+    link_lines = [
+        'TOOL=$(find_one "$ROOT/@TOOL@" "$ROOT/plz-out/bin/@TOOL@" "$ROOT/plz-out/bin/@TOOLSUB@") || {',
+        '    echo "js_binary: no please_js to link the sources" >&2; exit 1; }',
+        '"$TOOL" link-sources --rundir "$RUNDIR" --root "$ROOT" --spec "$RUNDIR/links.json"',
+    ] if link_srcs or link_deps else []
 
     if runner:
         pkg, _, bin = runner.partition("|")
@@ -684,12 +697,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             f'BIN=$("$TOOL" resolve-bin --tree "$RUNDIR/node_modules" --package {pkg}' +
             (f' --bin {bin}' if bin else '') + ')',
             'BIN=$(cd "$RUNDIR" && readlink -f "$BIN")',
-        ] + ([
-            # First-party packages, as their sources. Rebuilt every start, so a
-            # library removed from deps or a source removed from a library
-            # stops being served.
-            '"$TOOL" devlink --tree "$RUNDIR/node_modules" --root "$ROOT" --spec "$RUNDIR/devlinks.json"',
-        ] if link_deps else []) + [
+        ] + [
             # Please may give this relative, and relative to where the launcher
             # started, so it is resolved before anything changes directory.
             'case "${RESULTS_FILE:-}" in',
@@ -781,12 +789,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         "ROOT=$(pwd -P)",
         'HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)',
         "",
-        "find_one() {",
-        '    for c in "$@"; do',
-        '        [ -e "$c" ] && { printf %s "$c"; return 0; }',
-        "    done",
-        "    return 1",
-        "}",
+    ] + _FIND_ONE + [
         "",
         'NODE=$(find_one "$ROOT/@NODE@" "$ROOT/plz-out/bin/@NODE@") || {',
         '    echo "js_binary: no node toolchain at @NODE@" >&2; exit 1; }',
@@ -831,9 +834,9 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         # so it is needed whenever either happens -- under both staging layouts,
         # because a binary is reached through runtime_deps and a test through
         # data.
-        data = (data + _staged(runtime, suite or bool(runner) or bool(node_modules)) +
+        data = (data + _staged(runtime, suite or bool(runner) or bool(node_modules) or bool(link_srcs) or link_deps) +
                 ([node_modules] if node_modules else [])) if test else None,
-        runtime_deps = None if test else (_staged(runtime, suite or bool(runner) or bool(node_modules)) +
+        runtime_deps = None if test else (_staged(runtime, suite or bool(runner) or bool(node_modules) or bool(link_srcs) or link_deps) +
                                           ([node_modules] if node_modules else [])),
         binary = True,
         test = test,
@@ -1001,6 +1004,37 @@ def _runner_arg(arg:str):
     return '"$RESULTS"'.join([quote(part) for part in arg.split("$RESULTS_FILE")])
 
 
+# How every launcher finds what Please built, given candidate paths in order.
+#
+# A launcher runs from one of two places, and a candidate means different things
+# in each. In a staging directory -- a test's, or a build action's when the
+# program is a tool -- Please puts each dependency at its package path, so
+# $ROOT/<pkg>/<name> is the thing itself and there is no plz-out. At the
+# repository root -- `plz run`, or running plz-out/bin directly -- the same
+# path is the SOURCE tree, where a stale `npm install` leaves a node_modules
+# that has nothing to do with the build. Picking that up served a dev server
+# vite 6 from an old install while the lockfile pinned vite 7, with no sign
+# anything was wrong.
+#
+# So at the root only paths under plz-out count -- the launcher's own directory
+# is one -- and a miss is an error naming what is missing, never a fallback to
+# whatever the source tree holds. The root is recognised by its
+# .plzconfig, which no staging directory has.
+_FIND_ONE = [
+    'if [ -e "$ROOT/.plzconfig" ]; then AT_ROOT=1; else AT_ROOT=""; fi',
+    "find_one() {",
+    '    for c in "$@"; do',
+    '        case "$c" in',
+    '            "$ROOT"/plz-out/*) ;;',
+    '            *) if [ -n "$AT_ROOT" ]; then continue; fi ;;',
+    "        esac",
+    '        [ -e "$c" ] && { printf %s "$c"; return 0; }',
+    "    done",
+    "    return 1",
+    "}",
+]
+
+
 def _staged(runtime:str, needs_tool:bool):
     """What a launcher needs beside it, whichever way Please stages it."""
     out = [runtime, CONFIG.JS.NODE_TOOL.split("|")[0]]
@@ -1142,12 +1176,7 @@ def js_project(name:str, targets:list=["//..."], out:str="tsconfig.plz.json",
         "#!/bin/sh",
         "set -eu",
         "ROOT=$(pwd -P)",
-        "find_one() {",
-        '    for c in "$@"; do',
-        '        [ -e "$c" ] && { printf %s "$c"; return 0; }',
-        "    done",
-        "    return 1",
-        "}",
+    ] + _FIND_ONE + [
         'TOOL=$(find_one "$ROOT/@TOOL@" "$ROOT/plz-out/bin/@TOOL@" "$ROOT/plz-out/bin/@TOOLSUB@") || {',
         '    echo "js_project: no please_js" >&2; exit 1; }',
         "{",
