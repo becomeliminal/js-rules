@@ -98,6 +98,7 @@ var opts = struct {
 		Dev      bool     `long:"dev" description:"record libraries with sources for link-sources instead of copying their built output"`
 		LinkFrom string   `long:"link-from" description:"the package link-src paths are relative to"`
 		LinkSrc  []string `long:"link-src" description:"a source the program reads from the repository, linked at run time"`
+		LinkLive bool     `long:"link-live" description:"mark the source directories live: linked as they are when the program starts, and kept in step by a watcher"`
 	} `command:"overlay" description:"Add first-party libraries to a node_modules tree"`
 
 	VerifyIntegrity struct {
@@ -759,7 +760,7 @@ func overlay() error {
 			Into: ".",
 			From: opts.Overlay.LinkFrom,
 			Srcs: opts.Overlay.LinkSrc,
-			Live: store.LiveDirs(opts.Overlay.LinkSrc),
+			Live: liveDirs(opts.Overlay.LinkSrc),
 		})
 	}
 	specPath := filepath.Join(filepath.Dir(opts.Overlay.Out), "links.json")
@@ -790,7 +791,7 @@ func overlay() error {
 			Into:     "node_modules/" + lib.Meta.Package,
 			From:     lib.Meta.SrcDir,
 			Srcs:     lib.Meta.Srcs,
-			Live:     store.LiveDirs(lib.Meta.Srcs),
+			Live:     liveDirs(lib.Meta.Srcs),
 			Package:  lib.Meta.Package,
 			SrcEntry: lib.Meta.SrcEntry,
 		})
@@ -799,6 +800,15 @@ func overlay() error {
 		return err
 	}
 	return store.WriteLinks(specPath, spec)
+}
+
+// liveDirs is store.LiveDirs when the program asked for live links, and
+// nothing otherwise: a program that is not a server sees what it declared.
+func liveDirs(srcs []string) []string {
+	if !opts.Overlay.LinkLive {
+		return nil
+	}
+	return store.LiveDirs(srcs)
 }
 
 func linkSources() error {

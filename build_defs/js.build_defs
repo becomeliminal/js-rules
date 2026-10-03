@@ -126,7 +126,7 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
 
 def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
               runner:str="", runner_args:list=[], link_srcs:list=[],
-              link_deps:bool=False,
+              link_deps:bool=False, link_live:bool=False,
               node_modules:str="", node_options:list=[], env:dict={},
               fixed_args:list=[], chdir:str="",
               visibility:list=None, labels:list=[]):
@@ -173,6 +173,20 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
 
             Requires runner: the only program that wants this is one serving the
             files, and it needs the tree the links land in.
+        link_live: Link what the source directories hold when the program
+                   starts, not only what was declared.
+
+            Each top-level directory of the package holding a link_srcs file
+            (src/, public/), and of each library link_deps serves, is linked
+            whole: a file created after the build is served without one.
+            Files at a package's own top level stay as declared -- BUILD,
+            package.json and node_modules live there. links.json marks these
+            directories live, with the skip rules, so a server's watcher can
+            keep them in step while it runs, as vite_dev's does.
+
+            Off by default, and only for a server: a program that discovers its
+            inputs by globbing its run directory -- vitest finding test files --
+            must see what it was given, not everything beside it.
         deps: js_library targets whose packages this program imports.
         node_modules: The third-party tree, from npm_link. Defaults to the
                       NodeModules config, so a single-tree repo never names it.
@@ -204,6 +218,7 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
                    test = False, visibility = visibility, labels = labels,
                    srcs = srcs, runner = runner, runner_args = runner_args,
                    link_srcs = link_srcs, link_deps = link_deps,
+                   link_live = link_live,
                    env = env, fixed_args = fixed_args, chdir = chdir)
 
 
@@ -516,7 +531,8 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
 
 def _js_run(name, entry_point, deps, node_modules, node_options, test,
             visibility, labels, srcs=[], data=[], runner="", runner_args=[],
-            runner_env={}, link_srcs=[], link_deps=False, env={}, fixed_args=[],
+            runner_env={}, link_srcs=[], link_deps=False, link_live=False,
+            env={}, fixed_args=[],
             chdir="", expected_exit_code=0, timeout=0, flaky=0, size=None):
     """Shared implementation of js_binary and js_test.
 
@@ -589,6 +605,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # exists once, as its own build output.
             '"$PLEASE_JS" overlay --tree "" --out "$OUT/node_modules" $LIBS' +
             (" --dev" if link_deps else "") +
+            (" --link-live" if link_live else "") +
             # What the program reads from the repository: names, not inputs.
             # Making them inputs would rebuild the run on every edit, which is
             # the one thing a development server exists to avoid.
@@ -660,9 +677,9 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # The program's sources and the first-party libraries served as theirs,
     # linked from the repository in one step at every start, from the spec the
     # runtime build wrote. Remade each time, so a file deleted since the last
-    # run stops being served; and it links what the source directories hold
-    # NOW, so a file created since the build is served without one. A
-    # development server keeps that true while it runs -- see LinkSet.
+    # run stops being served; with link_live it links what the source
+    # directories hold NOW, so a file created since the build is served
+    # without one, and a development server keeps that true while it runs.
     link_lines = [
         'TOOL=$(find_one "$ROOT/@TOOL@" "$ROOT/plz-out/bin/@TOOL@" "$ROOT/plz-out/bin/@TOOLSUB@") || {',
         '    echo "js_binary: no please_js to link the sources" >&2; exit 1; }',
