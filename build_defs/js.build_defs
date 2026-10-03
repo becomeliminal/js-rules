@@ -558,7 +558,9 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # must see later edits sees them. Nothing is written outside plz-out; the
     # links point into the source tree rather than the other way round.
     copy_srcs = bool(srcs)
-    strip = package_name() + "/"
+    # Bound here because the build language's f-strings take names, not calls.
+    pkg_dir = package_name()
+    strip = pkg_dir + "/"
 
     runtime = build_rule(
         name = name,
@@ -590,7 +592,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             # What the program reads from the repository: names, not inputs.
             # Making them inputs would rebuild the run on every edit, which is
             # the one thing a development server exists to avoid.
-            (f" --link-from {package_name()} " + " ".join(["--link-src '" + f.replace("'", "'\\''") + "'" for f in link_srcs])
+            (f" --link-from {pkg_dir} " + " ".join(["--link-src '" + f.replace("'", "'\\''") + "'" for f in link_srcs])
              if link_srcs else ""),
         ] + ([
             # At their own paths, because a test file's relative imports have to
