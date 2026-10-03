@@ -334,9 +334,13 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
         node_modules: The tree the tool resolves through. Optional: a
                       self-contained tool needs none, which is how pnpm itself
                       runs before any tree exists.
-        srcs: Input files, staged alongside.
+        srcs: Input files, staged alongside. A directory, such as another
+              rule's directory output, is staged with its contents.
         outs: Files the tool is expected to produce.
-        out_dirs: Directories the tool is expected to produce.
+        out_dirs: Directories the tool is expected to produce, for outputs
+                  whose names cannot be declared. Hoisted: the directory's
+                  contents are this target's outputs, at the package root, and
+                  the directory itself is not one.
         args: Arguments passed to the executable.
         env: Environment variables for the action.
         stdout: Capture the tool's standard output to this file, declared as an
@@ -443,7 +447,10 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
             "libs": narrowed,
             "srcs": srcs,
         },
-        outs = outs + out_dirs,
+        # A directory in out_dirs is hoisted: its contents are the outputs.
+        # Declared in outs as well, the directory itself would be stored a
+        # second time, holding every file again.
+        outs = outs,
         output_dirs = out_dirs,
         cmd = " && ".join([
             'PLEASE_JS=$(readlink -f "$TOOLS_PLEASE_JS")',
@@ -458,7 +465,12 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
             # a copy per action duplicated it into every bundle, check and test.
             f'"$PLEASE_JS" overlay --tree "" --out {run_dir}/node_modules $LIBS',
             f'"$PLEASE_JS" link-tree --tree "${{SRCS_MODULES:-}}" --into {run_dir}/node_modules',
-            f'for s in ${SRCS_SRCS:-}; do mkdir -p "{run_dir}/$(dirname "$s")" && cp "$s" "{run_dir}/$s"; done',
+            # A directory among the sources is either a glob's entry for a
+            # directory whose files are listed beside it, or another rule's
+            # directory output, which is listed alone -- so it is copied with
+            # its contents, and the first case merely copies some files twice.
+            f'for s in ${SRCS_SRCS:-}; do mkdir -p "{run_dir}/$(dirname "$s")" && ' +
+            f'if [ -d "$s" ]; then mkdir -p "{run_dir}/$s" && cp -R "$s/." "{run_dir}/$s/"; else cp "$s" "{run_dir}/$s"; fi; done',
             # A rule with no sources still needs somewhere to run.
             f'mkdir -p "{workdir}"',
         ] + ([
@@ -470,6 +482,8 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
             f'cd "{workdir}" && {env_prefix} "$NODE" "$BIN" ' + " ".join(args) + redirect + status,
             "cd $TMP_DIR",
             f'for o in $OUTS; do cp -R "{workdir}/$o" "$o"; done',
+        ] + [
+            f'cp -R "{workdir}/{d}" "{d}"' for d in out_dirs
         ]),
         tools = {
             "node": [CONFIG.JS.NODE_TOOL],
