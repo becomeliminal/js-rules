@@ -8,7 +8,16 @@
 // the test that broke, and a passing one is invisible.
 //
 // Wrapping the loose cases makes the document standard, which is all Please
-// needs. This is the same job please_rust does for libtest output, with less
+// needs.
+//
+// Two more things node writes that Please reads differently. A nested describe
+// is a <testsuite> inside a <testsuite>, which Please does not read either, so
+// its tests vanished from the report. And every case is classnamed "test",
+// while Please tells tests apart by classname and name -- so two tests with
+// one name in different describe blocks were one test to it, and a failure
+// among them could be merged with the passes and reported as a flake. Suites
+// are flattened, each named by its describe path, and that path is each
+// case's classname. This is the same job please_rust does for libtest output, with less
 // work: node emits XML already, it is just shaped for a reader that tolerates
 // orphans.
 package junit
@@ -38,6 +47,8 @@ type Case struct {
 }
 
 // Suite is a describe block, or the synthetic one loose tests are put in.
+// Suites holds the describe blocks nested in it, as node writes them; after
+// Normalise there are none.
 type Suite struct {
 	XMLName  xml.Name `xml:"testsuite"`
 	Name     string   `xml:"name,attr"`
@@ -45,6 +56,7 @@ type Suite struct {
 	Tests    int      `xml:"tests,attr"`
 	Failures int      `xml:"failures,attr"`
 	Cases    []Case   `xml:"testcase"`
+	Suites   []Suite  `xml:"testsuite"`
 }
 
 // Document is what node writes and what Please reads. The difference between
@@ -56,23 +68,46 @@ type Document struct {
 }
 
 // Normalise moves loose cases into a suite of their own, named after the
-// target, and leaves everything else alone.
+// target, flattens nested describe blocks into suites named by their path
+// ("outer > inner"), and classnames every case with its suite's name.
 //
 // The synthetic suite goes first, so a file's own tests are read before the
 // describe blocks it also happens to contain -- which is the order they were
-// written in often enough to matter when scanning output.
+// written in often enough to matter when scanning output. Each nested block
+// follows its parent, in the order node wrote them.
 func Normalise(doc *Document, suiteName string) {
-	if len(doc.Loose) == 0 {
-		return
+	var flat []Suite
+	if len(doc.Loose) > 0 {
+		flat = append(flat, suite(suiteName, Suite{Cases: doc.Loose}))
+		doc.Loose = nil
 	}
-	wrapper := Suite{Name: suiteName, Cases: doc.Loose, Tests: len(doc.Loose)}
-	for _, c := range doc.Loose {
+	for _, s := range doc.Suites {
+		flat = flatten(flat, s.Name, s)
+	}
+	doc.Suites = flat
+}
+
+func flatten(into []Suite, path string, s Suite) []Suite {
+	if len(s.Cases) > 0 {
+		into = append(into, suite(path, s))
+	}
+	for _, child := range s.Suites {
+		into = flatten(into, path+" > "+child.Name, child)
+	}
+	return into
+}
+
+// suite is s's own cases under name, counted and classnamed by it.
+func suite(name string, s Suite) Suite {
+	out := Suite{Name: name, Time: s.Time, Tests: len(s.Cases)}
+	for _, c := range s.Cases {
+		c.Classname = name
 		if c.Failure != nil {
-			wrapper.Failures++
+			out.Failures++
 		}
+		out.Cases = append(out.Cases, c)
 	}
-	doc.Suites = append([]Suite{wrapper}, doc.Suites...)
-	doc.Loose = nil
+	return out
 }
 
 // Convert reads node's results and writes ones Please can read.

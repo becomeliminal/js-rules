@@ -95,3 +95,58 @@ func TestADocumentWithNoLooseCasesIsUntouched(t *testing.T) {
 		t.Errorf("got %+v", doc.Suites)
 	}
 }
+
+// Exactly what node writes for nested describes holding tests that share a
+// name: a <testsuite> inside a <testsuite>, and every case classnamed "test".
+const nodeNested = `<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="loose" time="0.000517" classname="test"/>
+	<testsuite name="outer" time="0.000648" tests="2" failures="0">
+		<testcase name="same" time="0.000117" classname="test"/>
+		<testsuite name="inner" time="0.000288" tests="2" failures="1">
+			<testcase name="same" time="0.000087" classname="test">
+				<failure type="testCodeFailure" message="inner broke">stack</failure>
+			</testcase>
+			<testcase name="deep" time="0.000106" classname="test"/>
+		</testsuite>
+	</testsuite>
+	<testsuite name="other" time="0.000731" tests="1" failures="0">
+		<testcase name="same" time="0.000665" classname="test"/>
+	</testsuite>
+</testsuites>`
+
+// A test inside a nested describe used to vanish from the report: only one
+// level of suite was read.
+func TestNestedDescribesAreReported(t *testing.T) {
+	got := convert(t, nodeNested)
+	if n := strings.Count(got, "<testcase "); n != 5 {
+		t.Errorf("expected all 5 tests, got %d:\n%s", n, got)
+	}
+	if !strings.Contains(got, `name="outer &gt; inner"`) {
+		t.Errorf("the nested describe should be a suite named by its path:\n%s", got)
+	}
+}
+
+// Please tells tests apart by classname and name, and node classnames every
+// test "test" -- so "same" in three describe blocks was one test to Please,
+// and a failure among them could be merged with the passes as a flake.
+func TestSameNamedTestsInDifferentDescribesStayDistinct(t *testing.T) {
+	got := convert(t, nodeNested)
+	for _, want := range []string{
+		`name="loose" time="0.000517" classname="my_test"`,
+		`name="same" time="0.000117" classname="outer"`,
+		`name="same" time="0.000087" classname="outer &gt; inner"`,
+		`name="same" time="0.000665" classname="other"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in:\n%s", want, got)
+		}
+	}
+	// The failure stays on the test that failed, counted by its own suite.
+	if !strings.Contains(got, `message="inner broke"`) {
+		t.Errorf("the failure lost its detail:\n%s", got)
+	}
+	if strings.Count(got, `failures="1"`) != 1 {
+		t.Errorf("exactly one suite should count the failure:\n%s", got)
+	}
+}
