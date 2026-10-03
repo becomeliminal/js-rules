@@ -487,7 +487,11 @@ func copyTree(src, dst string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			return os.WriteFile(target, data, info.Mode().Perm())
+			// Owner-writable whatever the source was. Remote execution stages
+			// inputs read-only, and a copy keeping that mode cannot be merged
+			// over -- a declarations twin overlays its manifest onto its
+			// package's. The copy is this action's own output to write.
+			return os.WriteFile(target, data, info.Mode().Perm()|0o200)
 		}
 	})
 }

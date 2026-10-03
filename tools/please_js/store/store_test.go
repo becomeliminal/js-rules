@@ -772,3 +772,46 @@ func TestPackagesListsWhatIsStaged(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+// Remote execution stages every input read-only. A library and its
+// declarations twin are overlaid into one directory, the twin's manifest over
+// the library's, so the library's copy has to be writable even though its
+// source was not -- a ts_library depending on another failed only on RBE.
+func TestOverlayMergesATwinOverReadOnlySources(t *testing.T) {
+	dir := t.TempDir()
+	write := func(d string, files map[string]string) string {
+		p := filepath.Join(dir, d)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range files {
+			if err := os.WriteFile(filepath.Join(p, name), []byte(body), 0o444); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return p
+	}
+	pkg := write("pkg", map[string]string{"package.json": `{"name":"@x/lib"}`, "index.js": "module.exports = 1;"})
+	twin := write("twin", map[string]string{"package.json": `{"name":"@x/lib","types":"index.d.ts"}`, "index.d.ts": "export {};"})
+	out := filepath.Join(dir, "node_modules")
+
+	err := store.Overlay(out, []store.Source{
+		{Dir: twin, Meta: store.Meta{Name: "lib_types", Package: "@x/lib", Role: "types"}},
+		{Dir: pkg, Meta: store.Meta{Name: "lib", Package: "@x/lib"}},
+	})
+	if err != nil {
+		t.Fatalf("overlay: %v", err)
+	}
+	manifest, err := os.ReadFile(filepath.Join(out, "@x/lib/package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), `"types"`) {
+		t.Errorf("the twin's manifest should win, got %s", manifest)
+	}
+	for _, f := range []string{"index.js", "index.d.ts"} {
+		if _, err := os.Stat(filepath.Join(out, "@x/lib", f)); err != nil {
+			t.Errorf("%s missing after the merge: %v", f, err)
+		}
+	}
+}
