@@ -235,6 +235,14 @@ def js_test(name:str, entry_point:str="", srcs:list=[], deps:list=[],
         srcs: Test files, run by node's test runner. Named individually rather
               than discovered, so a file the rule was not given cannot be picked
               up by accident.
+
+            An entry can also be a target, for tests some other rule produced
+            -- compiled TypeScript, generated JavaScript. Each file it outputs
+            is a test file; a directory among its outputs is staged whole, so
+            the files in it still import each other, and contributes the
+            *.test.js, *.test.mjs and *.test.cjs files in it. A suite that
+            ends up with no test files fails to build rather than passing
+            having run nothing.
         runner: An npm package providing the test runner, as "package" or
                 "package|bin" where a package publishes several.
 
@@ -582,9 +590,17 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         ] + ([
             # At their own paths, because a test file's relative imports have to
             # keep working and because the reported name should be the file
-            # someone wrote, not a flattened one.
-            'for s in $SRCS_SUITE; do mkdir -p "$OUT/$(dirname "${s#' + strip + '}")" && ' +
-            'cp "$s" "$OUT/${s#' + strip + '}"; done',
+            # someone wrote, not a flattened one. Which files are tests is
+            # recorded as they land, in _suite, because a source may be a
+            # target whose outputs are only known now: a directory is staged
+            # whole (writable, as remote execution stages inputs read-only)
+            # and its *.test files are the tests in it.
+            ': > "$OUT/_suite"',
+            'for s in $SRCS_SUITE; do r="${s#' + strip + '}"; mkdir -p "$OUT/$(dirname "$r")" && ' +
+            'if [ -d "$s" ]; then mkdir -p "$OUT/$r" && cp -Rf "$s/." "$OUT/$r/" && chmod -R u+w "$OUT/$r" && ' +
+            '(cd "$OUT" && find "$r" -type f \\( -name "*.test.js" -o -name "*.test.mjs" -o -name "*.test.cjs" \\) | sort >> _suite); ' +
+            'else cp -f "$s" "$OUT/$r" && echo "$r" >> "$OUT/_suite"; fi; done',
+            f'[ -s "$OUT/_suite" ] || {{ echo "js_test {name}: srcs hold no test files (*.test.js, *.test.mjs, *.test.cjs in a directory)" >&2; exit 1; }}',
         ] if copy_srcs else [] if from_dir else [
             'cp "$SRCS_ENTRY" "$OUT/' + entry_name + '"',  # a fixed name, so a label works
         ])),
@@ -698,15 +714,21 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     elif suite:
         # Named individually rather than by directory: node's runner takes paths,
         # and naming them means a file the rule was not given cannot be picked up
-        # by accident.
-        files = " ".join(['"$RUNDIR"/' + "'" + f + "'" for f in srcs])
+        # by accident. The names are the ones the runtime build recorded in
+        # _suite, since a source that is a target only has its files then; read
+        # into the positional parameters so each path stays one argument.
+        files = '"$@"'
+        suite_lines = [
+            "set --",
+            'while IFS= read -r f; do set -- "$@" "$RUNDIR/$f"; done < "$RUNDIR/_suite"',
+        ]
         # No cd. Node resolves a relative import from the importing file and
         # walks up from there for node_modules, so the test file's own location
         # is what matters and the working directory is not.
         #
         # Two whole commands rather than a variable holding flags, because a
         # variable would have to expand unquoted to become two arguments.
-        exec_line = "\n".join([
+        exec_line = "\n".join(suite_lines + [
             'if [ -n "${RESULTS_FILE:-}" ]; then',
             # Please may give this relative, and relative to the directory the
             # launcher started in.
