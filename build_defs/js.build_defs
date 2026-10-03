@@ -493,13 +493,17 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
             # directory output, which is listed alone -- so it is copied with
             # its contents, and the first case merely copies some files twice.
             # Remote execution stages every input read-only and cp keeps the
-            # mode, so a copied directory is made writable again and every
-            # copy replaces what is there (-f): otherwise the files listed
-            # after their directory cannot land, and the tool cannot write
-            # beside its sources.
+            # mode, so every copy -- a directory's contents and a single file
+            # alike -- is made writable again, and every copy replaces what is
+            # there (-f): otherwise the files listed after their directory
+            # cannot land, and the tool cannot write beside its sources. A
+            # local sandbox stages them writable, so this is what makes the two
+            # agree: vite copies public/ into its output keeping each file's
+            # mode, and a build step that rewrites one (landing's prerender
+            # replacing public/sitemap.xml) failed remotely only.
             f'for s in ${SRCS_SRCS:-}; do mkdir -p "{run_dir}/$(dirname "$s")" && ' +
             f'if [ -d "$s" ]; then mkdir -p "{run_dir}/$s" && cp -Rf "$s/." "{run_dir}/$s/" && chmod -R u+w "{run_dir}/$s"; ' +
-            f'else cp -f "$s" "{run_dir}/$s"; fi; done',
+            f'else cp -f "$s" "{run_dir}/$s" && chmod u+w "{run_dir}/$s"; fi; done',
             # A rule with no sources still needs somewhere to run.
             f'mkdir -p "{workdir}"',
         ] + ([
