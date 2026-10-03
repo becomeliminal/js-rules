@@ -136,3 +136,38 @@ func TestLinkTreeCopiesAFlatTree(t *testing.T) {
 		t.Errorf("b should be present at the top of the copied flat tree: %v", err)
 	}
 }
+
+// A tree copied into a run directory whose node_modules still links packages
+// into a build output must replace those links, never write through them: the
+// output is shared, and rewriting it in place corrupts every later build.
+func TestLinkTreeCopyNeverWritesThroughLinks(t *testing.T) {
+	dir := t.TempDir()
+	store_ := filepath.Join(dir, "store", "vite")
+	writeFiles(t, store_, "package.json")
+	dst := filepath.Join(dir, "run", "node_modules")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store_, filepath.Join(dst, "vite")); err != nil {
+		t.Fatal(err)
+	}
+	flat := filepath.Join(dir, "flat")
+	writeFiles(t, flat, "vite/package.json")
+	if err := os.WriteFile(filepath.Join(flat, "vite/package.json"), []byte("flat"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.LinkTree(flat, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	if data, _ := os.ReadFile(filepath.Join(store_, "package.json")); string(data) != "package.json" {
+		t.Errorf("the store was written through the link: %q", data)
+	}
+	if fi, err := os.Lstat(filepath.Join(dst, "vite")); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("the link should have been replaced by a real directory: %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dst, "vite/package.json")); string(data) != "flat" {
+		t.Errorf("the copy should land in the run, got %q", data)
+	}
+}

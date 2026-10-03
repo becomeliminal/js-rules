@@ -465,6 +465,17 @@ func copyTree(src, dst string) error {
 			return err
 		}
 		target := filepath.Join(dst, rel)
+		// Never through a link. A destination an earlier run left behind may
+		// hold symlinks into a build output -- a run directory's node_modules
+		// links each package into the store -- and copying through one
+		// rewrites that output in place: a stale npm tree copied this way
+		// once overwrote vite's own files in the plz-built store. A link is
+		// replaced, never followed.
+		if fi, err := os.Lstat(target); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(target); err != nil {
+				return err
+			}
+		}
 		switch {
 		case info.IsDir():
 			return os.MkdirAll(target, 0o755)
