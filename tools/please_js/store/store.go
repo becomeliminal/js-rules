@@ -670,7 +670,12 @@ func WritePackageJSON(path, name, main, types string, extra map[string]any) erro
 		if types != "" {
 			root = ordered{{"types", "./" + types}, {"default", "./" + main}}
 		}
-		manifest["exports"] = ordered{{".", root}, {"./*", "./*"}}
+		exports := ordered{{".", root}}
+		exports = append(exports, subpaths(filepath.Dir(path))...)
+		manifest["exports"] = append(exports, struct {
+			K string
+			V any
+		}{"./*", "./*"})
 	}
 	for k, v := range extra {
 		manifest[k] = v
@@ -680,6 +685,83 @@ func WritePackageJSON(path, name, main, types string, extra map[string]any) erro
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+// subpaths is an extensionless exports entry for every module in a package.
+//
+// Bundlers -- and so every app -- import a library's modules without their
+// extension, `@x/lib/uuid`, as CommonJS resolution allows. An exports map is
+// applied literally by both node and TypeScript, so the wildcard alone maps
+// that to a file named `uuid` that does not exist. Listing each module makes
+// the extensionless form resolve exactly, a directory's index answers for the
+// directory as CommonJS has it, and explicit keys outrank the wildcard, which
+// still serves anything named in full. A declarations twin holds only .d.ts
+// files, so its entries carry both conditions: its manifest is the one that
+// wins when the two are merged.
+func subpaths(dir string) ordered {
+	keys := map[string]ordered{}
+	// A key a directory's index claimed, which a file of the same name
+	// outranks: node and the bundlers resolve `./a` to a.js before a/index.js.
+	fromIndex := map[string]bool{}
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if info.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		var stem string
+		var conds ordered
+		switch {
+		case strings.HasSuffix(rel, ".d.ts"):
+			stem = strings.TrimSuffix(rel, ".d.ts")
+			conds = ordered{{"types", "./" + rel}, {"default", "./" + stem + ".js"}}
+		case strings.HasSuffix(rel, ".js"), strings.HasSuffix(rel, ".mjs"), strings.HasSuffix(rel, ".cjs"):
+			stem = strings.TrimSuffix(rel, filepath.Ext(rel))
+			conds = ordered{{"default", "./" + rel}}
+		default:
+			return nil
+		}
+		if stem == "index" {
+			return nil // the package root already answers for "."
+		}
+		if _, taken := keys["./"+stem]; !taken || fromIndex["./"+stem] {
+			keys["./"+stem] = conds
+			delete(fromIndex, "./"+stem)
+		}
+		if dirKey, ok := strings.CutSuffix(stem, "/index"); ok {
+			if _, taken := keys["./"+dirKey]; !taken {
+				keys["./"+dirKey] = conds
+				fromIndex["./"+dirKey] = true
+			}
+		}
+		return nil
+	})
+	var out ordered
+	for _, k := range sortedKeysOf(keys) {
+		out = append(out, struct {
+			K string
+			V any
+		}{k, keys[k]})
+	}
+	return out
+}
+
+func sortedKeysOf(m map[string]ordered) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ResolveBin returns the path to an executable a package publishes, relative to

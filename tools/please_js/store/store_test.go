@@ -815,3 +815,99 @@ func TestOverlayMergesATwinOverReadOnlySources(t *testing.T) {
 		}
 	}
 }
+
+// A first-party library is imported by subpath the way bundlers write it --
+// `@x/lib/uuid`, no extension -- and "./*": "./*" maps that to a file named
+// `uuid`, which does not exist: TypeScript and node both apply exports targets
+// literally. So every module the package holds gets an extensionless key, a
+// directory's index answers for the directory, and the declarations twin adds
+// the types condition. The wildcard stays last for explicit paths and assets.
+func TestSubpathsResolveWithoutTheirExtension(t *testing.T) {
+	write := func(dir string, files ...string) {
+		for _, f := range files {
+			p := filepath.Join(dir, f)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	exportsOf := func(dir string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	pkg := t.TempDir()
+	write(pkg, "index.js", "uuid.js", "machine/index.js", "machine/actions.js", "styles.css")
+	if err := store.WritePackageJSON(filepath.Join(pkg, "package.json"), "@x/lib", "index.js", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	got := exportsOf(pkg)
+	for _, want := range []string{
+		`"./uuid": {
+      "default": "./uuid.js"
+    }`,
+		`"./machine": {
+      "default": "./machine/index.js"
+    }`,
+		`"./machine/actions": {
+      "default": "./machine/actions.js"
+    }`,
+		`"./*": "./*"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `"./styles"`) {
+		t.Errorf("an asset is reached by its own name, through the wildcard:\n%s", got)
+	}
+	if strings.Index(got, `"./*"`) < strings.Index(got, `"./uuid"`) {
+		t.Errorf("the wildcard must come after the explicit subpaths:\n%s", got)
+	}
+
+	twin := t.TempDir()
+	write(twin, "index.d.ts", "uuid.d.ts")
+	if err := store.WritePackageJSON(filepath.Join(twin, "package.json"), "@x/lib", "index.js", "index.d.ts", nil); err != nil {
+		t.Fatal(err)
+	}
+	if want := `"./uuid": {
+      "types": "./uuid.d.ts",
+      "default": "./uuid.js"
+    }`; !strings.Contains(exportsOf(twin), want) {
+		t.Errorf("the twin's manifest -- the one that wins the merge -- needs both conditions, missing %s in:\n%s", want, exportsOf(twin))
+	}
+}
+
+// node and the bundlers resolve `./a` to a.js before a/index.js, so a file
+// outranks a directory's index for the same key, whichever is walked first.
+func TestAFileOutranksADirectoryIndexOfTheSameName(t *testing.T) {
+	pkg := t.TempDir()
+	for _, f := range []string{"index.js", "machine.js", "machine/index.js"} {
+		p := filepath.Join(pkg, f)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.WritePackageJSON(filepath.Join(pkg, "package.json"), "@x/lib", "index.js", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(pkg, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"./machine": {
+      "default": "./machine.js"
+    }`; !strings.Contains(string(data), want) {
+		t.Errorf("missing %s in:\n%s", want, data)
+	}
+}
