@@ -177,3 +177,9 @@ not a compiler, and resolution belongs to the tools.
 The tests are the living documentation: every feature above has a fixture
 under `test/` that builds it for real, and most were verified by watching the
 failure mode first. `plz test //...` runs them all.
+
+`plz lint` runs ESLint over the repository's own JavaScript and TypeScript
+(`tools/eslint`). It is also the example of a `js_binary` that lints a
+repository rather than its run directory: `chdir = "."` starts it at the
+root, and `$RUNDIR` in `runner_args` names the config staged beside the tree
+its plugins resolve through.

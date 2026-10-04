@@ -72,3 +72,8 @@ fileextension = .mjs
 fileextension = .cjs
 fileextension = .ts
 fileextension = .tsx
+
+; plz lint: ESLint over this repository's JavaScript and TypeScript.
+[alias "lint"]
+desc = Lints the JavaScript and TypeScript in this repository
+cmd = run //tools/eslint -- .

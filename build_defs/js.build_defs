@@ -707,6 +707,9 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # The third-party tree is staged beside the program rather than copied into
     # its runtime, and linked in when the launcher starts.
     tree_rel = _staged_path(canonicalise(node_modules)) if node_modules else ""
+    # A tree another plugin publishes (///js//third_party/js/eslint:node_modules)
+    # is built under that subrepo's name, as the tool is.
+    tree_sub = (_subrepo_path(canonicalise(node_modules)) or tree_rel) if node_modules else ""
 
     # Exported before exec, single-quoted so a value carrying a space or a
     # dollar reaches the program as written.
@@ -859,7 +862,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     ] + ([
         # Linked, not copied: one link per top-level package into the tree,
         # which stays a single build output however many programs use it.
-        'TREE=$(find_one "$HERE/@TREENAME@" "$ROOT/@TREE@" "$ROOT/plz-out/gen/@TREE@") || {',
+        'TREE=$(find_one "$HERE/@TREENAME@" "$ROOT/@TREE@" "$ROOT/plz-out/gen/@TREE@" "$ROOT/plz-out/gen/@TREESUB@") || {',
         '    echo "js_binary: no node_modules tree at @TREE@" >&2; exit 1; }',
         'LINKER=$(find_one "$ROOT/@TOOL@" "$ROOT/plz-out/bin/@TOOL@" "$ROOT/plz-out/bin/@TOOLSUB@") || {',
         '    echo "js_binary: no please_js to link the tree" >&2; exit 1; }',
@@ -876,6 +879,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         .replace("@TOOL@", tool_rel)
 
         .replace("@TREENAME@", tree_rel.split("/")[-1])
+        .replace("@TREESUB@", tree_sub)
         .replace("@TREE@", tree_rel)
         .replace("@ENTRY@", entry_name)
         .replace("@OPTS@", " ".join(node_options)))
