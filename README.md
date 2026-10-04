@@ -36,8 +36,7 @@ esbuild platform packages can be declared honestly, and only the one that can
 run here is fetched. `npm_link` assembles a tree in pnpm's store layout --
 relative symlinks, each package's dependencies siblings inside its own store
 entry, so nothing resolves upward into something undeclared. `hoisted = True`
-produces npm's flat layout instead, for tools that cannot tolerate symlinks; a
-development server is the case that forces this.
+produces npm's flat layout instead, for tools that cannot tolerate symlinks.
 
 The generated `BUILD` file and the lockfile are sources, and `npm_update` is
 the one sanctioned way they change:
@@ -125,10 +124,11 @@ changes over time, stays a committed, reviewed step; everything after it is a
 cached build. Each project's tree reads its own slice of the lockfile, so a
 dependency change in one app leaves every other app's tree a cache hit.
 
-Also supported, each with a test that proves it: npm and yarn lockfiles,
-package aliases, workspace packages (`link:`), private registries with
-per-scope URLs and secret headers, patches (zero-fuzz, a failed hunk fails the
-build), bins a manifest omits, and `public_hoist`-style escape hatches.
+Also supported, each with a test that proves it: npm lockfiles (a yarn
+lockfile is converted with `pnpm import`), package aliases, workspace packages
+(`link:`), private registries with per-scope URLs and secret headers, patches
+(zero-fuzz, a failed hunk fails the build), bins a manifest omits, and
+`public_hoist`-style escape hatches.
 
 ### Lifecycle hooks are off by default
 
@@ -156,9 +156,9 @@ published by an npm package as a build action, with `node_modules` staged
 beside its inputs so the tool's own resolution works unchanged. Compilers,
 bundlers and test runners above this layer are wrappers over it.
 
-`npm_package` / `npm_link_package` package first-party code for publishing and
-consume it back by name; stamping (`{revision}`, `{describe}`, `{date}`)
-requires `stamp = True` and refuses otherwise.
+`npm_package` packages a first-party library for publishing; stamping
+(`{revision}`, `{describe}`, `{date}`) requires `stamp = True` and refuses
+otherwise.
 
 `js_project` writes the tsconfig fragment an editor needs so the TypeScript
 language server can find the assembled `node_modules` -- run it once per
