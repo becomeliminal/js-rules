@@ -12,7 +12,7 @@ Inherit = true
 
 [PluginConfig "please_js_tool"]
 ConfigKey = PleaseJsTool
-DefaultValue = //tools/please_js
+DefaultValue = ///js//tools/please_js
 Help = Build label for the please_js companion tool.
 Inherit = true
 
