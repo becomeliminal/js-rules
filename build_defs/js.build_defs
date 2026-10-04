@@ -156,7 +156,7 @@ def side_effects_flag(side_effects:list|bool=None):
 
 def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
               runner:str="", runner_args:list=[], link_srcs:list=[],
-              link_deps:bool=False, link_live:bool=False,
+              link_deps:bool=False, link_live:bool=False, link_dirs:list=[],
               node_modules:str="", node_options:list=[], env:dict={},
               fixed_args:list=[], chdir:str="",
               visibility:list=None, labels:list=[]):
@@ -166,6 +166,14 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
         name: Target name.
         entry_point: The file node runs, relative to this package. Exactly one
                      of this and runner.
+
+            With link_srcs, a first-party program run from a directory of
+            linked sources, as a runner is: the entry is linked with them, the
+            program starts in that directory, and node keeps the links' paths
+            rather than resolving them into the repository, so the program's
+            imports resolve through the tree beside it. For a script that
+            drives a tool over the package's own files -- a renderer, a
+            generator -- and so needs both the sources and the tree.
         srcs: Files staged beside the program, at their own paths. Only useful
               with a runner, which finds its own inputs.
         runner: An npm package providing the program, as "package" or
@@ -217,6 +225,13 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
             Off by default, and only for a server: a program that discovers its
             inputs by globbing its run directory -- vitest finding test files --
             must see what it was given, not everything beside it.
+        link_dirs: Directories, relative to this package, the program writes
+                   its output into: each is a link in the run directory to the
+                   same directory in the repository, created if missing, so
+                   what the program writes lands beside the sources rather
+                   than in plz-out. For a program run from its run directory
+                   (a runner, or an entry with link_srcs) whose output is the
+                   point -- a video render into out/, say.
         deps: js_library targets whose packages this program imports.
         node_modules: The third-party tree, from npm_link. Defaults to the
                       NodeModules config, so a single-tree repo never names it.
@@ -243,12 +258,15 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
         fail(f"js_binary {name}: set exactly one of entry_point or runner")
     if link_deps and not runner:
         fail(f"js_binary {name}: link_deps serves dependencies to a runner, and there is none")
+    if link_dirs and not (runner or link_srcs):
+        fail(f"js_binary {name}: link_dirs links output directories into a run directory, " +
+             "and only a runner or an entry with link_srcs runs from one")
 
     return _js_run(name, entry_point, deps, node_modules, node_options,
                    test = False, visibility = visibility, labels = labels,
                    srcs = srcs, runner = runner, runner_args = runner_args,
                    link_srcs = link_srcs, link_deps = link_deps,
-                   link_live = link_live,
+                   link_live = link_live, link_dirs = link_dirs,
                    env = env, fixed_args = fixed_args, chdir = chdir)
 
 
@@ -572,7 +590,7 @@ def js_run_binary(name:str, package:str, bin:str="", tool_modules:str="",
 
 def _js_run(name, entry_point, deps, node_modules, node_options, test,
             visibility, labels, srcs=[], data=[], runner="", runner_args=[],
-            runner_env={}, link_srcs=[], link_deps=False, link_live=False,
+            runner_env={}, link_srcs=[], link_deps=False, link_live=False, link_dirs=[],
             env={}, fixed_args=[],
             chdir="", expected_exit_code=0, timeout=0, flaky=0, size=None):
     """Shared implementation of js_binary and js_test.
@@ -611,6 +629,11 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # A run directory rather than a single entry file: anything with sources of
     # its own, or a runner that finds its own inputs, works from a directory.
     from_dir = bool(srcs) or bool(runner) or bool(link_srcs)
+    # An entry among linked sources runs from the run directory, linked like
+    # them, rather than being copied in as main.js.
+    linked_entry = bool(entry_point) and bool(link_srcs) and not srcs
+    if linked_entry and entry_point not in link_srcs:
+        link_srcs = link_srcs + [entry_point]
     # Symlinked at run time rather than copied at build time, so a program that
     # must see later edits sees them. Nothing is written outside plz-out; the
     # links point into the source tree rather than the other way round.
@@ -623,7 +646,7 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         name = name,
         tag = "runtime",
         srcs = {
-            "entry": [entry_point] if entry_point else [],
+            "entry": [entry_point] if entry_point and not linked_entry else [],
             "suite": srcs if copy_srcs else [],
             "libs": narrowed,
         },
@@ -714,7 +737,10 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
 
     # fixed_args come before the caller's, which is what makes them fixed: a
     # wrapper's own arguments cannot be displaced by whoever runs it.
-    call = '"$NODE" @OPTS@ "$MAIN" ' + " ".join(
+    # A linked entry keeps its link's path, and so do the links it imports,
+    # so a bare import resolves from the run directory's tree rather than from
+    # the repository, where there is none.
+    call = '"$NODE" ' + ("--preserve-symlinks --preserve-symlinks-main " if linked_entry else "") + '@OPTS@ "$MAIN" ' + " ".join(
         ["'" + a.replace("'", "'\\''") + "'" for a in fixed_args]) + ' "$@"'
 
     for src in link_srcs:
@@ -734,6 +760,23 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
         '    echo "js_binary: no please_js to link the sources" >&2; exit 1; }',
         '"$TOOL" link-sources --rundir "$RUNDIR" --root "$ROOT" --spec "$RUNDIR/links.json"',
     ] if link_srcs or link_deps else []
+    # Output directories, linked into the run directory from the repository.
+    # A real directory in the way is refused rather than replaced: it would be
+    # somebody's output, written before this rule linked it.
+    for d in link_dirs:
+        if d.startswith("/") or ".." in d.split("/"):
+            fail(f"js_binary {name}: link_dirs {d} is not a directory in this package")
+        link_lines = link_lines + [
+            f'mkdir -p "$ROOT/{pkg_dir}/{d}"',
+            f'[ -L "$RUNDIR/{d}" ] && rm "$RUNDIR/{d}"',
+            f'[ -e "$RUNDIR/{d}" ] && {{ echo "js_binary: $RUNDIR/{d} is not a link; move it aside" >&2; exit 1; }}',
+            f'mkdir -p "$(dirname "$RUNDIR/{d}")" && ln -s "$ROOT/{pkg_dir}/{d}" "$RUNDIR/{d}"',
+        ]
+    if linked_entry:
+        entry_rel = entry_point[len(strip):] if entry_point.startswith(strip) else entry_point
+        link_lines = link_lines + [f'MAIN="$RUNDIR/{entry_rel}"']
+        if not chdir:
+            chdir_lines = ['cd "$RUNDIR"']
 
     if runner:
         pkg, _, bin = runner.partition("|")
