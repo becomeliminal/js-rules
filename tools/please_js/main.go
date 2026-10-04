@@ -55,7 +55,7 @@ var opts = struct {
 		CPU     []string `long:"cpu" description:"architectures this package supports; empty means any"`
 		Types   string   `long:"types" description:"declarations entry, for the generated package.json"`
 		Bin     []string `long:"bin" description:"an executable the package's own manifest omits, as name=path"`
-		Set     []string `long:"set" description:"an extra package.json field, as key=value"`
+		Set     []string `long:"set" description:"an extra package.json field, as key=value; JSON values are kept as JSON"`
 		Main    string   `long:"main" description:"entry file, for the generated package.json of a first-party library"`
 		Role     string   `long:"role" description:"what this entry is for; 'types' marks a declarations twin merged into its package"`
 		SrcDir   string   `long:"src-dir" description:"repo-relative directory holding this library's sources"`
@@ -245,25 +245,36 @@ func runHooks() error {
 	return hooks.Run(opts.Hooks.Dir, env, os.Stdout)
 }
 
-// publish patches rather than regenerates, so the exports map the library
-// already produced survives intact -- getting that wrong makes a package either
-// unimportable or untyped, and neither failure happens until someone installs it.
-func publish() error {
+// manifestFields reads --set key=value pairs into package.json fields.
+//
+// A value that parses as JSON is kept as JSON, so sideEffects can be false or
+// a list of globs, and repository and keywords objects and lists, rather than
+// strings that look like them. Anything else is a plain string, which is what
+// "type=module" is.
+func manifestFields(sets []string) (map[string]any, error) {
 	fields := map[string]any{}
-	for _, kv := range opts.Publish.Set {
+	for _, kv := range sets {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok {
-			return fmt.Errorf("--set %q is not key=value", kv)
+			return nil, fmt.Errorf("--set %q is not key=value", kv)
 		}
-		// A value that parses as JSON is kept as JSON, so repository and
-		// keywords can be objects and lists rather than strings that look like
-		// them. Anything else is a plain string.
 		var parsed any
 		if err := json.Unmarshal([]byte(v), &parsed); err == nil {
 			fields[k] = parsed
 		} else {
 			fields[k] = v
 		}
+	}
+	return fields, nil
+}
+
+// publish patches rather than regenerates, so the exports map the library
+// already produced survives intact -- getting that wrong makes a package either
+// unimportable or untyped, and neither failure happens until someone installs it.
+func publish() error {
+	fields, err := manifestFields(opts.Publish.Set)
+	if err != nil {
+		return err
 	}
 	return store.Publish(opts.Publish.Dir, opts.Publish.Version, fields)
 }
@@ -449,13 +460,9 @@ func describe() error {
 		}
 	}
 
-	extra := map[string]any{}
-	for _, kv := range o.Set {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			return fmt.Errorf("--set %q is not key=value", kv)
-		}
-		extra[k] = v
+	extra, err := manifestFields(o.Set)
+	if err != nil {
+		return err
 	}
 
 	// A first-party library needs a manifest for node to resolve it as a

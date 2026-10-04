@@ -16,7 +16,7 @@ name.
 
 
 def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
-               package:str="", visibility:list=None,
+               package:str="", side_effects:list|bool=None, visibility:list=None,
                test_only:bool&testonly=False, labels:list=[]):
     """A first-party JavaScript library.
 
@@ -47,6 +47,17 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
         package: The name source code imports this by. Defaults to the package
                  path, as Go derives an import path from the directory:
                  //common/js/components is imported as "common/js/components".
+        side_effects: The package.json "sideEffects" field: False, or the
+                      globs of the files that do have them.
+
+            A bundler keeps a module it cannot prove harmless to load, and a
+            module that computes anything at its top level -- an object
+            spread, a call -- is one it cannot prove. This says which files
+            are loaded for what they do, so every other one is dropped when
+            nothing uses what it exports. Left unset, the field is not
+            written and a bundler assumes every file has them, which is
+            always safe. A stylesheet imported for its effect is the usual
+            entry: ["**/*.css"].
         visibility: Visibility specification.
         test_only: If True, only visible to test rules.
         labels: Additional labels.
@@ -98,6 +109,7 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
                 f"--main {entry}",
                 f"--src-dir {pkg_dir} --src-entry {entry}",
                 " ".join([f"--src {f}" for f in src_rel]),
+                side_effects_flag(side_effects),
                 '--dir "$OUTS_PKG/pkg" --out "$OUTS_PKG/lib.json"',
             ]),
             # The twin describes the same package in the types role: a compiler
@@ -108,6 +120,9 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
                 "$TOOLS_PLEASE_JS describe",
                 f"--name {name}_types --package {package} --version 0.0.0",
                 f"--main {entry} --types {types_entry} --role types",
+                # In the twin as well: its manifest is the one that wins when
+                # the two are merged into one package.
+                side_effects_flag(side_effects),
                 '--dir "$OUTS_TYPES/pkg" --out "$OUTS_TYPES/lib.json"',
             ]),
         ]),
@@ -122,6 +137,21 @@ def js_library(name:str, srcs:list, deps:list=[], types:list=[], data:list=[],
         labels = labels + ["js_library", f"js_library:{package}"],
         building_description = "Arranging...",
     )
+
+
+def side_effects_flag(side_effects:list|bool=None):
+    """The describe flag that writes a library's "sideEffects" field, if it has one.
+
+    Shared with ts_library, which describes the same package shape.
+    """
+    if side_effects == None:
+        return ""
+    if side_effects == True or side_effects == False:
+        return "--set sideEffects=" + ("true" if side_effects else "false")
+    for glob in side_effects:
+        if "'" in glob or '"' in glob:
+            fail(f"side_effects glob {glob} holds a quote, which no path it could match does")
+    return "--set 'sideEffects=[" + ", ".join([f'"{glob}"' for glob in side_effects]) + "]'"
 
 
 def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
