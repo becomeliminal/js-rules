@@ -23,4 +23,6 @@ js_binary(
     link_dirs = ["out"],
     link_srcs = ["src/input.txt"],
     node_modules = ":node_modules",
+    # Copied, not linked: read once, as a tool's config would be.
+    srcs = ["config.json"],
 )

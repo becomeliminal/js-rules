@@ -174,8 +174,9 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
             imports resolve through the tree beside it. For a script that
             drives a tool over the package's own files -- a renderer, a
             generator -- and so needs both the sources and the tree.
-        srcs: Files staged beside the program, at their own paths. Only useful
-              with a runner, which finds its own inputs.
+        srcs: Files staged beside the program, at their own paths, copied
+              rather than linked: a runner's inputs, or what a linked entry's
+              tool loads by its real path (a config that imports packages).
         runner: An npm package providing the program, as "package" or
                 "package|bin". The same argument js_test takes, for the same
                 reason: a tool from the tree is resolved at run time, from the
@@ -258,6 +259,9 @@ def js_binary(name:str, entry_point:str="", srcs:list=[], deps:list=[],
         fail(f"js_binary {name}: set exactly one of entry_point or runner")
     if link_deps and not runner:
         fail(f"js_binary {name}: link_deps serves dependencies to a runner, and there is none")
+    if entry_point and srcs and not link_srcs:
+        fail(f"js_binary {name}: srcs stage files beside a runner, or beside an entry with " +
+             "link_srcs; an entry alone is copied in by itself and sees nothing else")
     if link_dirs and not (runner or link_srcs):
         fail(f"js_binary {name}: link_dirs links output directories into a run directory, " +
              "and only a runner or an entry with link_srcs runs from one")
@@ -625,13 +629,15 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
     # read. The exec branch checks runner first, so nothing here needs the
     # negation -- and with it, no_test_output silently discarded every junit
     # file jest wrote, reporting one nameless pass per target.
-    suite = bool(srcs)
+    # Only a test is a suite. A binary's srcs are files staged beside it -- a
+    # runner's inputs, or the config a linked entry's tool reads.
+    suite = bool(srcs) and test
     # A run directory rather than a single entry file: anything with sources of
     # its own, or a runner that finds its own inputs, works from a directory.
     from_dir = bool(srcs) or bool(runner) or bool(link_srcs)
     # An entry among linked sources runs from the run directory, linked like
     # them, rather than being copied in as main.js.
-    linked_entry = bool(entry_point) and bool(link_srcs) and not srcs
+    linked_entry = bool(entry_point) and bool(link_srcs)
     if linked_entry and entry_point not in link_srcs:
         link_srcs = link_srcs + [entry_point]
     # Symlinked at run time rather than copied at build time, so a program that

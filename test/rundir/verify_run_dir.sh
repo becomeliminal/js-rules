@@ -14,6 +14,7 @@ cp "$DIR/src/input.txt" "$DIR/src/input.txt.bak"
 
 plz run //$DIR:render >/dev/null 2>&1
 check "the program ran and wrote into the repository's out/" 1 "$(grep -c RUNDIR_INPUT_MARKER "$OUT" 2>/dev/null || echo 0)"
+check "  ... reading a copied src beside it" 1 "$(grep -c COPIED_CONFIG_MARKER "$OUT" 2>/dev/null || echo 0)"
 check "  ... importing a package from the tree beside it" 1 "$(grep -c '1m' "$OUT" 2>/dev/null || echo 0)"
 
 # A linked source: an edit is read by the next run without a rebuild.
