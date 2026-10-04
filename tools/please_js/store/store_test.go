@@ -697,8 +697,19 @@ func TestLinkServesLibrarySources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"./index.ts"`) {
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest["main"] != "index.ts" || manifest["name"] != "@test/greeter" {
 		t.Errorf("the entry should be the source, got:\n%s", data)
+	}
+	// No exports map. A bundler applies one literally, so with it a directory
+	// import -- @test/greeter/deep, for deep/index.ts -- is a target that is a
+	// directory and fails, and a module created while the server runs is not
+	// in a map written at start. Without it both resolve against the files.
+	if _, has := manifest["exports"]; has {
+		t.Errorf("a library served from its sources declares no exports map, got:\n%s", data)
 	}
 	assertLinks(t, filepath.Join(rundir, "node_modules/@test/greeter"), filepath.Join(root, "lib/greeter"),
 		"deep/util.ts", "index.ts")

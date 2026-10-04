@@ -155,9 +155,10 @@ func Link(rundir, root, specPath string) error {
 			// The entry points at the source as written -- index.ts, not a
 			// compiled index.js -- which is what makes a TypeScript library
 			// hot-load with no compile step: the server transforms what it
-			// serves.
-			if err := WritePackageJSON(
-				filepath.Join(into, "package.json"), set.Package, set.SrcEntry, "", nil); err != nil {
+			// serves. No exports map: the files are live, so subpaths resolve
+			// against the directory (see WriteSourcePackageJSON).
+			if err := WriteSourcePackageJSON(
+				filepath.Join(into, "package.json"), set.Package, set.SrcEntry); err != nil {
 				return err
 			}
 		} else if err := unlinkInto(into, from); err != nil {
