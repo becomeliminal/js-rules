@@ -698,6 +698,34 @@ func WritePackageJSON(path, name, main, types string, extra map[string]any) erro
 	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
+// WriteSourcePackageJSON emits the manifest of a library a development server
+// serves from its sources: an entry, and no "exports".
+//
+// An exports map is a snapshot of the files a package holds. WritePackageJSON
+// walks the built package to list every module, and a directory's index
+// answers for the directory only because it is listed there. A development
+// run's files are not a snapshot: they are linked from the repository, and one
+// created while the server runs has to resolve with nothing regenerated -- a
+// server caches each manifest it reads. Without the map a bundler resolves a
+// subpath against the directory itself, trying extensions and then an index,
+// which is exactly what the map's entries spell out for a built package. So
+// `@x/lib/errors` finds errors/index.ts here as it finds errors/index.js there,
+// where a map holding only the wildcard made the first a failed import: a
+// bundler applies an exports target literally, and `./errors` is a directory.
+//
+// Only a bundler reads this. Node could not load the TypeScript it names.
+func WriteSourcePackageJSON(path, name, entry string) error {
+	data, err := json.MarshalIndent(map[string]any{
+		"name":    name,
+		"version": "0.0.0",
+		"main":    entry,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
 // subpaths is an extensionless exports entry for every module in a package.
 //
 // Bundlers -- and so every app -- import a library's modules without their
