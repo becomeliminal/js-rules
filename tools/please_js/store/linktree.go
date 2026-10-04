@@ -27,7 +27,7 @@ import (
 // It is copied instead, as before.
 //
 // Links from an earlier start are replaced, so the result reflects the tree
-// as it is now. A name held by both a first-party library and the tree is an
+// as it is now, and several starts may link the same directory at once. A name held by both a first-party library and the tree is an
 // error, as it is when libraries are overlaid at build time.
 func LinkTree(tree, dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
@@ -79,9 +79,10 @@ func linkDir(src, dst string, top bool) error {
 		fi, err := os.Lstat(to)
 		switch {
 		case err == nil && fi.Mode()&os.ModeSymlink != 0:
-			// A link from an earlier start: replace it.
-			if err := os.Remove(to); err != nil {
-				return err
+			// A link from an earlier start, or from another start of the same
+			// program running now. One that already points here is left alone.
+			if target, err := os.Readlink(to); err == nil && target == from {
+				continue
 			}
 		case err == nil:
 			rel := strings.TrimPrefix(to, filepath.Dir(filepath.Dir(to))+string(filepath.Separator))
@@ -90,7 +91,15 @@ func linkDir(src, dst string, top bool) error {
 		case !os.IsNotExist(err):
 			return err
 		}
-		if err := os.Symlink(from, to); err != nil {
+		// Made under a name of this process's own and renamed into place: the
+		// rename replaces an older link in one step, so programs started
+		// together never find the name missing or taken.
+		tmp := fmt.Sprintf("%s.%d.tmp", to, os.Getpid())
+		if err := os.Symlink(from, tmp); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, to); err != nil {
+			os.Remove(tmp)
 			return err
 		}
 	}

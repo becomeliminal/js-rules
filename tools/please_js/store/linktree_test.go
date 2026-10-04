@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"tools/please_js/store"
@@ -98,6 +99,43 @@ func TestLinkTreeCanRunAgainOnTheSameDirectory(t *testing.T) {
 	// THEN the old links are replaced, not reported as collisions
 	if err != nil {
 		t.Errorf("relinking should succeed: %v", err)
+	}
+}
+
+func TestLinkTreeStartedTogetherOnTheSameDirectory(t *testing.T) {
+	// GIVEN a runtime the tree was already linked into, and one program
+	// started many times at once, each linking that same directory
+	tree := storeTree(t, store.Store)
+	dst := filepath.Join(t.TempDir(), "node_modules")
+	if err := store.LinkTree(tree, dst); err != nil {
+		t.Fatal(err)
+	}
+	const starts = 32
+	errs := make(chan error, starts)
+	var ready, done sync.WaitGroup
+	ready.Add(1)
+
+	// WHEN they all link together
+	for i := 0; i < starts; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			ready.Wait()
+			errs <- store.LinkTree(tree, dst)
+		}()
+	}
+	ready.Done()
+	done.Wait()
+	close(errs)
+
+	// THEN every one succeeds, and the package still resolves through the tree
+	for err := range errs {
+		if err != nil {
+			t.Errorf("a start failed to link: %v", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dst, "a", "index.js")); err != nil {
+		t.Errorf("a should resolve after the starts: %v", err)
 	}
 }
 
