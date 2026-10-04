@@ -26,3 +26,19 @@ js_binary(
     # Copied, not linked: read once, as a tool's config would be.
     srcs = ["config.json"],
 )
+
+# A program whose only srcs are a directory -- a built site a server serves --
+# staged whole beside it. `plz run //test/rundir:serve` prints its index.html.
+js_binary(
+    name = "serve",
+    entry_point = "serve.mjs",
+    link_srcs = ["serve.mjs"],
+    node_modules = ":node_modules",
+    srcs = [":site"],
+)
+
+genrule(
+    name = "site",
+    outs = ["site"],
+    cmd = "mkdir -p $OUT && echo STAGED_DIR_MARKER > $OUT/index.html",
+)
