@@ -701,8 +701,11 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             'if [ -d "$s" ]; then mkdir -p "$OUT/$r" && cp -Rf "$s/." "$OUT/$r/" && chmod -R u+w "$OUT/$r" && ' +
             '(cd "$OUT" && find "$r" -type f \\( -name "*.test.js" -o -name "*.test.mjs" -o -name "*.test.cjs" \\) | sort >> _suite); ' +
             'else cp -f "$s" "$OUT/$r" && echo "$r" >> "$OUT/_suite"; fi; done',
+        ] + ([
+            # Only a test needs one: a binary's srcs are what its program reads
+            # -- a built site a server serves, say -- and may hold none.
             f'[ -s "$OUT/_suite" ] || {{ echo "js_test {name}: srcs hold no test files (*.test.js, *.test.mjs, *.test.cjs in a directory)" >&2; exit 1; }}',
-        ] if copy_srcs else [] if from_dir else [
+        ] if test else []) if copy_srcs else [] if from_dir else [
             'cp "$SRCS_ENTRY" "$OUT/' + entry_name + '"',  # a fixed name, so a label works
             # The fixed name drops the entry's own extension, and with it the
             # module type an .mjs or .cjs declares: node would parse an ES

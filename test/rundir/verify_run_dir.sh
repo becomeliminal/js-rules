@@ -22,5 +22,8 @@ printf 'EDITED_MARKER\n' > "$DIR/src/input.txt"
 plz run //$DIR:render >/dev/null 2>&1
 check "an edited source is read without a rebuild" 1 "$(grep -c EDITED_MARKER "$OUT" 2>/dev/null || echo 0)"
 
+# A directory as the only src: staged whole, and no test files asked of it.
+check "a directory src is staged beside the program" STAGED_DIR_MARKER "$(plz run //$DIR:serve 2>/dev/null)"
+
 [ "$fail" = 0 ] && echo "PASS" || echo "FAIL"
 exit "$fail"
