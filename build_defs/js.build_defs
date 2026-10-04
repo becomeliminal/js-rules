@@ -668,6 +668,14 @@ def _js_run(name, entry_point, deps, node_modules, node_options, test,
             f'[ -s "$OUT/_suite" ] || {{ echo "js_test {name}: srcs hold no test files (*.test.js, *.test.mjs, *.test.cjs in a directory)" >&2; exit 1; }}',
         ] if copy_srcs else [] if from_dir else [
             'cp "$SRCS_ENTRY" "$OUT/' + entry_name + '"',  # a fixed name, so a label works
+            # The fixed name drops the entry's own extension, and with it the
+            # module type an .mjs or .cjs declares: node would parse an ES
+            # module named main.js as CommonJS first, then warn and reparse.
+            # So the type is declared beside it instead, for this directory
+            # alone; a .js entry keeps node's own default.
+            'case "$SRCS_ENTRY" in ' +
+            '*.mjs) echo \'{"type": "module"}\' > "$OUT/package.json";; ' +
+            '*.cjs) echo \'{"type": "commonjs"}\' > "$OUT/package.json";; esac'
         ])),
         tools = {"please_js": [CONFIG.JS.PLEASE_JS_TOOL]},
         deps = deps,
