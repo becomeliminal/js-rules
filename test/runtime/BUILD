@@ -20,3 +20,10 @@ js_test(
     expected_exit_code = 3,
 )
 
+
+# An .mjs entry keeps its module type through the copy to main.js.
+js_test(
+    name = "esm_entry_test",
+    entry_point = "esm.mjs",
+    node_options = ["--no-experimental-detect-module"],
+)
