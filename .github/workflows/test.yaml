@@ -1,0 +1,33 @@
+# Runs the whole test suite on Linux and on macOS. The plugin's build
+# commands are shell run on the user's machine, and BSD userland (macOS)
+# differs from GNU in ways a Linux-only run never sees: BSD wc pads its count,
+# which once sent @types/node's "node v22.18" root one directory too deep on
+# every Mac.
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.runner }}
+    name: test (${{ matrix.runner }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: ./pleasew test //...

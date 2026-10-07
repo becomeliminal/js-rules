@@ -227,8 +227,10 @@ def npm_repo(name:str, pkg:str="", version:str="", hashes:list=None, integrity:s
         ] if integrity else [
             'PKG_DIR="$SRCS_PKG"',
         ]) + [
+            # tr, because BSD wc (macOS) pads its count with spaces and "   1"
+            # is not "1".
             'if [ -d "$PKG_DIR/package" ]; then ROOT="$PKG_DIR/package";' +
-            ' elif [ "$(ls -1 "$PKG_DIR" | wc -l)" = 1 ] && [ -d "$PKG_DIR/$(ls -1 "$PKG_DIR")" ];' +
+            ' elif [ "$(ls -1 "$PKG_DIR" | wc -l | tr -d \' \')" = 1 ] && [ -d "$PKG_DIR/$(ls -1 "$PKG_DIR")" ];' +
             ' then ROOT="$PKG_DIR/$(ls -1 "$PKG_DIR")"; else ROOT="$PKG_DIR"; fi',
             'cp -R "$ROOT/." "$OUT/pkg/"',
         ] + ([
