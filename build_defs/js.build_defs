@@ -1071,14 +1071,26 @@ def npm_package(name:str, lib:str, version:str, fields:dict={}, files:list=[],
 
     return build_rule(
         name = name,
-        srcs = {"lib": [lib], "files": files},
+        # The library's two outputs, named: pkg is what runs, types its
+        # declaration twin, whose manifest wins when the two are merged.
+        # Finding "the" lib.json by searching the build directory instead
+        # picked whichever of the two the filesystem listed first, so a
+        # package could ship with its declarations and no sources.
+        srcs = {
+            "pkg": [lib + "|pkg"],
+            "types": [lib + "|types"] if include_types else [],
+            "files": files,
+        },
         outs = [name],
         cmd = " && ".join([
-            # The library's own output, found by shape rather than named: it
-            # describes itself, exactly as every consumer of it does.
-            'LIB=$(find . -name lib.json -not -path "./$OUT/*" | head -1)',
             'mkdir -p "$OUT"',
-            'cp -R "$(dirname "$LIB")/pkg/." "$OUT/"',
+            'cp -R "$SRCS_PKG/pkg/." "$OUT/"',
+        ] + ([
+            # Only a library with declarations: the twin's manifest names a
+            # types entry, which for a plain JS library would point at nothing.
+            'if [ -n "$(find "$SRCS_TYPES/pkg" -name "*.d.ts" | head -1)" ]; then ' +
+            'cp -R "$SRCS_TYPES/pkg/." "$OUT/"; fi',
+        ] if include_types else []) + [
             'for f in ${SRCS_FILES:-}; do cp "$f" "$OUT/$(basename "$f")"; done',
         ] + ([] if include_types else [
             'find "$OUT" -name "*.d.ts" -delete',
