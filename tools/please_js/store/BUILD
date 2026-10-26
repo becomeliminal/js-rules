@@ -14,6 +14,7 @@ go_test(
     name = "store_test",
     srcs = [
         "linktree_test.go",
+        "share_test.go",
         "store_test.go",
     ],
     external = True,
