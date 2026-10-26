@@ -11,11 +11,13 @@ package store
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // StoreRoot is the directory inside node_modules holding one copy of every
@@ -105,9 +107,10 @@ type Source struct {
 //
 // The second exists because some tools cannot follow symlinks without also
 // resolving away paths that must stay as written -- a development server
-// serving a developer's real files is the case that forces it. Hoisting costs
-// a copy only where two resolutions of one name are both reachable: measured
-// against a real 1,283-package lockfile, 67 extra placements of 1,279, or 5%.
+// serving a developer's real files is the case that forces it. A second
+// placement of one resolution is another directory of links to the same body,
+// not another body. Two resolutions of one name are both reachable in 67
+// placements of 1,279 in a real lockfile, or 5%.
 type Layout int
 
 const (
@@ -360,13 +363,14 @@ func Build(root string, sources []Source, links []Ref, layout Layout) error {
 		return s, nil
 	}
 
-	// Every package's files, once, at a path keyed by its identity.
+	// Every package's files, once, at a path keyed by its identity. Hardlinked
+	// to the pin so a second tree shares those inodes; see stageTree.
 	for _, s := range sources {
 		if s.Meta.Unsupported {
 			continue
 		}
 		dst := filepath.Join(root, StoreRoot, StoreDir(s.Meta.Name), "node_modules", s.Meta.Package)
-		if err := copyTree(s.Dir, dst); err != nil {
+		if err := stageTree(s.Dir, dst); err != nil {
 			return fmt.Errorf("staging %s: %w", s.Meta.Name, err)
 		}
 	}
@@ -401,7 +405,7 @@ func Build(root string, sources []Source, links []Ref, layout Layout) error {
 		for _, s := range sources {
 			if s.Meta.Package == twin.Meta.Package && !s.Meta.Unsupported {
 				dst := filepath.Join(root, StoreRoot, StoreDir(s.Meta.Name), "node_modules", s.Meta.Package)
-				if err := copyTree(twin.Dir, dst); err != nil {
+				if err := stageTree(twin.Dir, dst); err != nil {
 					return fmt.Errorf("merging %s into %s: %w", twin.Meta.Name, s.Meta.Name, err)
 				}
 			}
@@ -431,7 +435,10 @@ func Build(root string, sources []Source, links []Ref, layout Layout) error {
 			return fmt.Errorf("linking %s: %w", ref.As, err)
 		}
 	}
-	return nil
+	// Please keeps an existing output when the new one hashes the same, which
+	// would throw away the hardlinks and leave the copied bodies in place.
+	// The marker is the difference. It lives under .plz, which nothing imports.
+	return writeSharedMarker(filepath.Join(root, StoreRoot))
 }
 
 // symlink points from at to, relative to from's own directory so the finished
@@ -452,10 +459,34 @@ func symlink(from, to string) error {
 }
 
 // CopyTree copies a directory, preserving symlinks rather than following them
-// out of the tree.
+// out of the tree. The copies are private: nothing here shares an inode with
+// the source.
 func CopyTree(src, dst string) error { return copyTree(src, dst) }
 
 func copyTree(src, dst string) error {
+	return transferTree(src, dst, writeCopy)
+}
+
+// stageTree places src at dst the way a tree holds a pin.
+//
+// A regular file is hardlinked, so every tree that stages one pin names the
+// same inode and du counts the body once. Please stages an action's inputs by
+// hardlink, so the file in the action's temp dir is already the pin's inode in
+// plz-out, not a copy that dies with the sandbox; linking it again keeps that
+// inode after the temp dir is removed. A link that cannot be made -- another
+// device, or a filesystem without hardlinks -- falls back to a private copy.
+//
+// The shared inode is left without write bits. Mode lives on the inode, so
+// this makes the pin read-only too, and a write in the tree fails instead of
+// changing the pin. A symlink is recreated with the same target and never
+// hardlinked: link follows one, and a tree that followed a link into the pin
+// once overwrote vite's files there. Remote execution uploads file contents,
+// so a hardlink is bytes on the worker rather than a path that would dangle.
+func stageTree(src, dst string) error {
+	return transferTree(src, dst, stageFile)
+}
+
+func transferTree(src, dst string, place func(src, dst string, info os.FileInfo) error) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -489,22 +520,116 @@ func copyTree(src, dst string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
+			if err := removeLeaf(target); err != nil {
+				return err
+			}
 			return os.Symlink(link, target)
 		default:
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			// Owner-writable whatever the source was. Remote execution stages
-			// inputs read-only, and a copy keeping that mode cannot be merged
-			// over -- a declarations twin overlays its manifest onto its
-			// package's. The copy is this action's own output to write.
-			return os.WriteFile(target, data, info.Mode().Perm()|0o200)
+			return place(path, target, info)
 		}
 	})
+}
+
+// stageFile hardlinks one regular file, or copies it when the link cannot be
+// made. Anything that is not a regular file is copied; a hardlink of a symlink
+// would name the target.
+func stageFile(src, dst string, info os.FileInfo) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	// Drop any name already at dst before linking. link fails if the name
+	// exists, and truncating it would write through a hardlink into the pin.
+	if err := removeLeaf(dst); err != nil {
+		return err
+	}
+	if info.Mode().IsRegular() {
+		if err := os.Link(src, dst); err == nil {
+			if err := dropWrites(dst); err != nil {
+				// A writable hardlink is a write into the pin. Give up the
+				// shared inode rather than leave it writable.
+				if rmErr := os.Remove(dst); rmErr != nil {
+					return fmt.Errorf("removing %s after chmod: %v (chmod: %w)", dst, rmErr, err)
+				}
+				return writeCopy(src, dst, info)
+			}
+			return nil
+		} else if !linkFallsBack(err) {
+			return err
+		}
+	}
+	return writeCopy(src, dst, info)
+}
+
+// dropWrites clears the write bits on a hardlinked file. The mode is the
+// inode's, so the pin loses them too: that is what makes a later write fail
+// instead of changing the pin.
+func dropWrites(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	perm := info.Mode().Perm()
+	next := perm &^ 0o222
+	if next == perm {
+		return nil
+	}
+	return os.Chmod(path, next)
+}
+
+// linkFallsBack reports whether a failed hardlink should become a private copy.
+// EXDEV is a different device. The rest are filesystems that do not support
+// hardlinks, or a source mount that refuses the link-count update.
+func linkFallsBack(err error) bool {
+	for _, target := range []error{
+		syscall.EXDEV,
+		syscall.EPERM,
+		syscall.EACCES,
+		syscall.EROFS,
+		syscall.ENOSYS,
+		syscall.EMLINK,
+		syscall.EOPNOTSUPP,
+		syscall.ENOTSUP,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// removeLeaf removes a file or symlink at path. A directory is left alone, and
+// a missing path is not an error. Removing a hardlink drops this name only.
+func removeLeaf(path string) error {
+	fi, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fi.IsDir() {
+		return nil
+	}
+	return os.Remove(path)
+}
+
+func writeCopy(src, dst string, info os.FileInfo) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	// Replace, never truncate. Truncating a hardlink would write the pin.
+	if err := removeLeaf(dst); err != nil {
+		return err
+	}
+	// Owner-writable whatever the source was. Remote execution stages inputs
+	// read-only, and a copy keeping that mode cannot be merged over -- a
+	// declarations twin overlays its manifest onto its package's. The copy is
+	// this action's own output to write.
+	return os.WriteFile(dst, data, info.Mode().Perm()|0o200)
 }
 
 // ReadMeta loads the description npm_repo wrote beside a package.
@@ -986,10 +1111,23 @@ func buildHoisted(root string, sources []Source, links []Ref) error {
 	for entry, paths := range placements {
 		src := byName[entry]
 		for _, at := range paths {
-			if err := copyTree(src.Dir, filepath.Join(root, filepath.FromSlash(at))); err != nil {
+			if err := stageTree(src.Dir, filepath.Join(root, filepath.FromSlash(at))); err != nil {
 				return fmt.Errorf("staging %s at %s: %w", entry, at, err)
 			}
 		}
 	}
-	return nil
+	return writeSharedMarker(root)
+}
+
+// sharedMarker makes a tree's hash differ from one whose package bodies were
+// copied. Please leaves an existing output in place when the bytes match, so
+// without this the hardlinks would be built in the temp dir and discarded.
+const sharedMarkerName = ".shared"
+const sharedMarkerBody = "hardlink\n"
+
+func writeSharedMarker(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, sharedMarkerName), []byte(sharedMarkerBody), 0o644)
 }
