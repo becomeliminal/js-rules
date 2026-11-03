@@ -1,0 +1,6 @@
+{
+  "plugins": [],
+  "rules": {
+    "no-debugger": "error"
+  }
+}

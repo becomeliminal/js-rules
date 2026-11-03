@@ -9,3 +9,9 @@ filegroup(
     srcs = ["js.build_defs"],
     visibility = ["PUBLIC"],
 )
+
+filegroup(
+    name = "oxlint",
+    srcs = ["oxlint.build_defs"],
+    visibility = ["PUBLIC"],
+)
