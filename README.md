@@ -183,3 +183,31 @@ failure mode first. `plz test //...` runs them all.
 repository rather than its run directory: `chdir = "."` starts it at the
 root, and `$RUNDIR` in `runner_args` names the config staged beside the tree
 its plugins resolve through.
+
+## Native OXLint checks
+
+`js_lint` in `///js//build_defs:oxlint` runs the pinned OXLint binary as a
+Please build action. The caller declares every source and the configuration
+file, plus any local plugin or configuration dependencies as `data`. A
+successful target produces `ok` and `checked-files.txt`; a violation, invalid
+config, unsupported source extension, or missing declared file fails the build.
+The action key includes the sources, config, data, flags and pinned executable.
+It does not change `js_binary` or the Node runtime used by tests and bundlers.
+
+```python
+subinclude("///js//build_defs:oxlint")
+
+js_lint(
+    name = "lint",
+    srcs = ["src/index.ts", "src/view.tsx"],
+    config = ".oxlintrc.json",
+    args = ["--deny-warnings"],
+)
+```
+
+A repository can include `plz build //path:lint` in its lint alias or CI
+workflow. List the exact files to check; this rule passes `--no-ignore` so
+implicit ignore files cannot silently drop a declared input. OXLint's
+JavaScript plugin support is optional and experimental; when a config imports
+local plugin files, declare those files in `data` as well. The rule does not
+translate an existing ESLint policy automatically.
