@@ -193,6 +193,8 @@ successful target produces `ok` and `checked-files.txt`; a violation, invalid
 config, unsupported source extension, or missing declared file fails the build.
 The action key includes the sources, config, data, flags and pinned executable.
 It does not change `js_binary` or the Node runtime used by tests and bundlers.
+The `OxlintTool` plugin config defaults to the native binary in node-rules and
+can be overridden with another pinned executable target.
 
 ```python
 subinclude("///js//build_defs:oxlint")

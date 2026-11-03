@@ -19,7 +19,7 @@ def js_lint(name:str, srcs:list, config:str, data:list=[],
         fail("js_lint " + name + ": srcs must name at least one file")
     if not config:
         fail("js_lint " + name + ": config is required")
-    tool = oxlint or CONFIG.NODE.OXLINT_TOOL
+    tool = oxlint or CONFIG.JS.OXLINT_TOOL
     flags = " ".join([_shell_quote(arg) for arg in args])
     command = "\n".join([
         "set -eu",
