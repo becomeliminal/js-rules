@@ -192,9 +192,15 @@ file, plus any local plugin or configuration dependencies as `data`. A
 successful target produces `ok` and `checked-files.txt`; a violation, invalid
 config, unsupported source extension, or missing declared file fails the build.
 The action key includes the sources, config, data, flags and pinned executable.
-It does not change `js_binary` or the Node runtime used by tests and bundlers.
 The `OxlintTool` plugin config defaults to the native binary in node-rules and
-can be overridden with another pinned executable target.
+can be overridden with another pinned executable target. For an npm-distributed
+OXLint CLI that loads JavaScript plugins, set `runner` to its package (or
+`package|bin`) and provide the `node_modules` target. The rule stages that tree
+and invokes the CLI with the repository's pinned Node toolchain. Leave `runner`
+unset to use the native OXLint executable; that path does not require Node or
+an npm tree. Large source lists are split into bounded build actions and
+collected under the original target, avoiding OS limits on the length of the
+staged file list.
 
 ```python
 subinclude("///js//build_defs:oxlint")
