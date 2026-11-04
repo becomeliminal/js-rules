@@ -112,7 +112,9 @@ def js_lint(name:str, srcs:list, config:str, data:list=[],
     chunk_targets = []
     for index, source_chunk in enumerate(source_chunks):
         chunk_name = "_" + name + "_files_" + str(index)
-        chunk_inputs = dict(inputs)
+        chunk_inputs = {}
+        for key, value in inputs.items():
+            chunk_inputs[key] = value
         chunk_inputs["files"] = source_chunk
         build_rule(
             name = chunk_name,
