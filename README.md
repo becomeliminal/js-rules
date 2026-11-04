@@ -198,7 +198,9 @@ OXLint CLI that loads JavaScript plugins, set `runner` to its package (or
 `package|bin`) and provide the `node_modules` target. The rule stages that tree
 and invokes the CLI with the repository's pinned Node toolchain. Leave `runner`
 unset to use the native OXLint executable; that path does not require Node or
-an npm tree.
+an npm tree. Large source lists are split into bounded build actions and
+collected under the original target, avoiding OS limits on the length of the
+staged file list.
 
 ```python
 subinclude("///js//build_defs:oxlint")

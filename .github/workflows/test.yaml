@@ -43,6 +43,9 @@ jobs:
           test -f plz-out/gen/test/oxlint/npm_runner_clean/ok
           test -f plz-out/gen/test/oxlint/npm_runner_clean/checked-files.txt
           grep -q 'clean.js' plz-out/gen/test/oxlint/npm_runner_clean/checked-files.txt
+          ./pleasew build //test/oxlint:large_source_list
+          test -f plz-out/gen/test/oxlint/large_source_list/ok
+          test -f plz-out/gen/test/oxlint/large_source_list/checked-files.txt
           for target in violation bad_config unsupported; do
             if ./pleasew build "//test/oxlint:$target"; then
               echo "expected $target to fail" >&2

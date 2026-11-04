@@ -19,7 +19,8 @@ def js_lint(name:str, srcs:list, config:str, data:list=[],
     `runner` selects an npm-distributed CLI ("package" or "package|bin")
     and requires its `node_modules` target. It runs with the configured Node
     and please_js tools. With neither set, `oxlint` or the configured native
-    OXLint tool runs directly.
+    OXLint tool runs directly. Large source sets are split into bounded actions
+    and their manifests are collected by the public target.
     """
     if not srcs:
         fail("js_lint " + name + ": srcs must name at least one file")
@@ -79,13 +80,69 @@ def js_lint(name:str, srcs:list, config:str, data:list=[],
     ] + runner_command + [
         'touch "$OUT/ok"',
     ])
+
+    # Please exposes source paths to a build action in SRCS_FILES. Keep that
+    # value below common OS per-argument/environment limits for large packages.
+    source_chunks = []
+    chunk = []
+    chunk_bytes = 0
+    for source in srcs:
+        source_bytes = len(source) + 1
+        if chunk and chunk_bytes + source_bytes > 64 * 1024:
+            source_chunks.append(chunk)
+            chunk = []
+            chunk_bytes = 0
+        chunk.append(source)
+        chunk_bytes += source_bytes
+    if chunk:
+        source_chunks.append(chunk)
+
+    if len(source_chunks) == 1:
+        return build_rule(
+            name = name,
+            srcs = inputs,
+            outs = [name],
+            tools = tools,
+            cmd = command,
+            visibility = visibility,
+            labels = labels + ["js_lint"],
+            building_description = "Linting...",
+        )
+
+    chunk_targets = []
+    for index, source_chunk in enumerate(source_chunks):
+        chunk_name = "_" + name + "_files_" + str(index)
+        chunk_inputs = dict(inputs)
+        chunk_inputs["files"] = source_chunk
+        build_rule(
+            name = chunk_name,
+            srcs = chunk_inputs,
+            outs = [chunk_name],
+            tools = tools,
+            cmd = command,
+            visibility = visibility,
+            labels = labels + ["js_lint"],
+            building_description = "Linting...",
+        )
+        chunk_targets.append(":" + chunk_name)
+
+    aggregate_command = "\n".join([
+        "set -eu",
+        'mkdir -p "$OUT"',
+        ': > "$OUT/checked-files.txt"',
+        'for chunk in ${SRCS_CHUNKS:-}; do',
+        '    [ -f "$chunk/checked-files.txt" ] || { echo "js_lint: missing chunk manifest $chunk" >&2; exit 1; }',
+        '    cat "$chunk/checked-files.txt" >> "$OUT/checked-files.txt"',
+        "done",
+        '[ -s "$OUT/checked-files.txt" ] || { echo "js_lint: no files were checked" >&2; exit 1; }',
+        'touch "$OUT/ok"',
+    ])
     return build_rule(
         name = name,
-        srcs = inputs,
+        srcs = {"chunks": chunk_targets},
         outs = [name],
-        tools = tools,
-        cmd = command,
+        cmd = aggregate_command,
         visibility = visibility,
         labels = labels + ["js_lint"],
-        building_description = "Linting...",
+        building_description = "Collecting lint results...",
     )
