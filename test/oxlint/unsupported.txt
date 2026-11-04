@@ -1,1 +1,0 @@
-This file is deliberately not a JavaScript or TypeScript source.

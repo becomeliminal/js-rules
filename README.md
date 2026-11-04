@@ -183,39 +183,3 @@ failure mode first. `plz test //...` runs them all.
 repository rather than its run directory: `chdir = "."` starts it at the
 root, and `$RUNDIR` in `runner_args` names the config staged beside the tree
 its plugins resolve through.
-
-## Native OXLint checks
-
-`js_lint` in `///js//build_defs:oxlint` runs the pinned OXLint binary as a
-Please build action. The caller declares every source and the configuration
-file, plus any local plugin or configuration dependencies as `data`. A
-successful target produces `ok` and `checked-files.txt`; a violation, invalid
-config, unsupported source extension, or missing declared file fails the build.
-The action key includes the sources, config, data, flags and pinned executable.
-The `OxlintTool` plugin config defaults to the native binary in node-rules and
-can be overridden with another pinned executable target. For an npm-distributed
-OXLint CLI that loads JavaScript plugins, set `runner` to its package (or
-`package|bin`) and provide the `node_modules` target. The rule stages that tree
-and invokes the CLI with the repository's pinned Node toolchain. Leave `runner`
-unset to use the native OXLint executable; that path does not require Node or
-an npm tree. Large source lists are split into bounded build actions and
-collected under the original target, avoiding OS limits on the length of the
-staged file list.
-
-```python
-subinclude("///js//build_defs:oxlint")
-
-js_lint(
-    name = "lint",
-    srcs = ["src/index.ts", "src/view.tsx"],
-    config = ".oxlintrc.json",
-    args = ["--deny-warnings"],
-)
-```
-
-A repository can include `plz build //path:lint` in its lint alias or CI
-workflow. List the exact files to check; this rule passes `--no-ignore` so
-implicit ignore files cannot silently drop a declared input. OXLint's
-JavaScript plugin support is optional and experimental; when a config imports
-local plugin files, declare those files in `data` as well. The rule does not
-translate an existing ESLint policy automatically.
