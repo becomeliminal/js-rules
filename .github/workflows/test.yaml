@@ -31,17 +31,3 @@ jobs:
 
       - name: Test
         run: ./pleasew test //...
-
-      - name: Native lint rule
-        run: |
-          ./pleasew build //test/oxlint:clean
-          test -f plz-out/gen/test/oxlint/clean/ok
-          test -f plz-out/gen/test/oxlint/clean/checked-files.txt
-          grep -q 'clean.js' plz-out/gen/test/oxlint/clean/checked-files.txt
-          grep -q 'clean.ts' plz-out/gen/test/oxlint/clean/checked-files.txt
-          for target in violation bad_config unsupported; do
-            if ./pleasew build "//test/oxlint:$target"; then
-              echo "expected $target to fail" >&2
-              exit 1
-            fi
-          done

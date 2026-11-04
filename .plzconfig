@@ -10,12 +10,6 @@ DefaultValue = ///js//third_party/node:node|node
 Help = Build label for the Node.js binary. Defaults to a toolchain from node-rules.
 Inherit = true
 
-[PluginConfig "oxlint_tool"]
-ConfigKey = OxlintTool
-DefaultValue = ///node//third_party/oxlint:oxlint|oxlint
-Help = Build label for the native OXLint binary from node-rules.
-Inherit = true
-
 [PluginConfig "please_js_tool"]
 ConfigKey = PleaseJsTool
 DefaultValue = ///js//tools/please_js
@@ -61,7 +55,6 @@ NodeTool = //third_party/node:node|node
 # self-reference. Point them at the local targets instead.
 [Plugin "js"]
 NodeTool = //third_party/node:node|node
-OxlintTool = ///node//third_party/oxlint:oxlint|oxlint
 PleaseJsTool = //tools/please_js
 NodeModules = //third_party/js:node_modules
 ; The fixture workspace, so test/project/app's bare npm_project() exercises the
