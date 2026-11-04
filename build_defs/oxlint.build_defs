@@ -6,8 +6,7 @@ def _shell_quote(value:str):
 
 
 def js_lint(name:str, srcs:list, config:str, data:list=[],
-            args:list=[], oxlint:str="", runner:str="",
-            node_modules:str="", visibility:list=None,
+            args:list=[], oxlint:str="", visibility:list=None,
             labels:list=[]):
     """Check exactly the declared JavaScript and TypeScript files with OXLint.
 
@@ -15,52 +14,13 @@ def js_lint(name:str, srcs:list, config:str, data:list=[],
     `data` can hold relative JavaScript plugins and other config dependencies.
     The output directory records the checked file list and a success stamp.
     Use a build of this target as a lint gate; the caller chooses its policy.
-
-    `runner` selects an npm-distributed CLI ("package" or "package|bin")
-    and requires its `node_modules` target. It runs with the configured Node
-    and please_js tools. With neither set, `oxlint` or the configured native
-    OXLint tool runs directly. Large source sets are split into bounded actions
-    and their manifests are collected by the public target.
     """
     if not srcs:
         fail("js_lint " + name + ": srcs must name at least one file")
     if not config:
         fail("js_lint " + name + ": config is required")
-    if runner and oxlint:
-        fail("js_lint " + name + ": set either runner or oxlint, not both")
-    if runner and not node_modules:
-        fail("js_lint " + name + ": node_modules is required with runner")
-    if node_modules and not runner:
-        fail("js_lint " + name + ": node_modules requires runner")
+    tool = oxlint or CONFIG.JS.OXLINT_TOOL
     flags = " ".join([_shell_quote(arg) for arg in args])
-    tools = {"oxlint": [oxlint or CONFIG.JS.OXLINT_TOOL]}
-    inputs = {
-        "files": srcs,
-        "config": [config],
-        "data": data,
-    }
-    if runner:
-        package, separator, binary = runner.partition("|")
-        if not package:
-            fail("js_lint " + name + ": runner must name an npm package")
-        quoted_package = _shell_quote(package)
-        binary_arg = " --bin " + _shell_quote(binary) if separator and binary else ""
-        tools = {
-            "node": [CONFIG.JS.NODE_TOOL],
-            "please_js": [CONFIG.JS.PLEASE_JS_TOOL],
-        }
-        inputs["modules"] = [node_modules]
-        runner_command = [
-            'mkdir -p "$TMP_DIR/node_modules"',
-            '"$TOOLS_PLEASE_JS" link-tree --tree "$SRCS_MODULES" --into "$TMP_DIR/node_modules"',
-            'RUNNER_BIN=$("$TOOLS_PLEASE_JS" resolve-bin --tree "$TMP_DIR/node_modules" --package ' + quoted_package + binary_arg + ')',
-            'RUNNER_BIN=$(cd "$TMP_DIR" && readlink -f "$RUNNER_BIN")',
-            '"$TOOLS_NODE" "$RUNNER_BIN" --config "$SRCS_CONFIG" --no-ignore ' + flags + ' "$@"',
-        ]
-    else:
-        runner_command = [
-            '"$TOOLS_OXLINT" --config "$SRCS_CONFIG" --no-ignore ' + flags + ' "$@"',
-        ]
     command = "\n".join([
         "set -eu",
         'mkdir -p "$OUT"',
@@ -77,74 +37,20 @@ def js_lint(name:str, srcs:list, config:str, data:list=[],
         "done",
         '[ "$#" -gt 0 ] || { echo "js_lint: no files were staged" >&2; exit 1; }',
         '[ -f "$SRCS_CONFIG" ] || { echo "js_lint: missing config" >&2; exit 1; }',
-    ] + runner_command + [
-        'touch "$OUT/ok"',
-    ])
-
-    # Please exposes source paths to a build action in SRCS_FILES. Keep that
-    # value below common OS per-argument/environment limits for large packages.
-    source_chunks = []
-    chunk = []
-    chunk_bytes = 0
-    for source in srcs:
-        source_bytes = len(source) + 1
-        if chunk and chunk_bytes + source_bytes > 64 * 1024:
-            source_chunks.append(chunk)
-            chunk = []
-            chunk_bytes = 0
-        chunk.append(source)
-        chunk_bytes += source_bytes
-    if chunk:
-        source_chunks.append(chunk)
-
-    if len(source_chunks) == 1:
-        return build_rule(
-            name = name,
-            srcs = inputs,
-            outs = [name],
-            tools = tools,
-            cmd = command,
-            visibility = visibility,
-            labels = labels + ["js_lint"],
-            building_description = "Linting...",
-        )
-
-    chunk_targets = []
-    for index, source_chunk in enumerate(source_chunks):
-        chunk_name = "_" + name + "_files_" + str(index)
-        chunk_inputs = {}
-        for key, value in inputs.items():
-            chunk_inputs[key] = value
-        chunk_inputs["files"] = source_chunk
-        build_rule(
-            name = chunk_name,
-            srcs = chunk_inputs,
-            outs = [chunk_name],
-            tools = tools,
-            cmd = command,
-            visibility = visibility,
-            labels = labels + ["js_lint"],
-            building_description = "Linting...",
-        )
-        chunk_targets.append(":" + chunk_name)
-
-    aggregate_command = "\n".join([
-        "set -eu",
-        'mkdir -p "$OUT"',
-        ': > "$OUT/checked-files.txt"',
-        'for chunk in ${SRCS_CHUNKS:-}; do',
-        '    [ -f "$chunk/checked-files.txt" ] || { echo "js_lint: missing chunk manifest $chunk" >&2; exit 1; }',
-        '    cat "$chunk/checked-files.txt" >> "$OUT/checked-files.txt"',
-        "done",
-        '[ -s "$OUT/checked-files.txt" ] || { echo "js_lint: no files were checked" >&2; exit 1; }',
+        '"$TOOLS_OXLINT" --config "$SRCS_CONFIG" --no-ignore ' + flags + ' "$@"',
         'touch "$OUT/ok"',
     ])
     return build_rule(
         name = name,
-        srcs = {"chunks": chunk_targets},
+        srcs = {
+            "files": srcs,
+            "config": [config],
+            "data": data,
+        },
         outs = [name],
-        cmd = aggregate_command,
+        tools = {"oxlint": [tool]},
+        cmd = command,
         visibility = visibility,
         labels = labels + ["js_lint"],
-        building_description = "Collecting lint results...",
+        building_description = "Linting...",
     )

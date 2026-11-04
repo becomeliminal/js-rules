@@ -26,29 +26,3 @@ js_lint(
     srcs = ["unsupported.txt"],
     config = ".oxlintrc.json",
 )
-
-js_lint(
-    name = "npm_runner_clean",
-    srcs = ["clean.js"],
-    config = "eslint.config.mjs",
-    runner = "eslint|eslint",
-    node_modules = "//third_party/js/eslint:node_modules",
-)
-
-js_lint(
-    name = "npm_runner_violation",
-    srcs = ["violation.js"],
-    config = "eslint.config.mjs",
-    runner = "eslint|eslint",
-    node_modules = "//third_party/js/eslint:node_modules",
-)
-
-# A long source list is split into build actions below the shell environment
-# limit and joined back into one js_lint target.
-js_lint(
-    name = "large_source_list",
-    srcs = ["clean.js"] * 8500,
-    config = "eslint.config.mjs",
-    runner = "eslint|eslint",
-    node_modules = "//third_party/js/eslint:node_modules",
-)
